@@ -190,6 +190,13 @@ type Server struct {
 	// capacity changes.
 	blockedEvals *BlockedEvals
 
+	// evalBroker is used to manage the in-progress evaluations
+	// that are waiting to be brokered to a sub-scheduler
+	evalBroker *EvalBroker
+
+	//
+	brokerLock sync.Mutex
+
 	// deploymentWatcher is used to watch deployments and their allocations and
 	// make the required calls to continue to transition the deployment.
 	deploymentWatcher *deploymentwatcher.Watcher
@@ -199,10 +206,6 @@ type Server struct {
 
 	// volumeWatcher is used to release volume claims
 	volumeWatcher *volumewatcher.Watcher
-
-	// evalBroker is used to manage the in-progress evaluations
-	// that are waiting to be brokered to a sub-scheduler
-	evalBroker *EvalBroker
 
 	// periodicDispatcher is used to track and create evaluations for periodic jobs.
 	periodicDispatcher *PeriodicDispatch

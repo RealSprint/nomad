@@ -126,6 +126,13 @@ func (e *Eval) Dequeue(args *structs.EvalDequeueRequest,
 			args.SchedulerVersion, scheduler.SchedulerVersion)
 	}
 
+	// If the eval broker is not enabled, but we are the leader, we have
+	// nothing to do. Not checking this will return errors to the workers which
+	// does nothing but clog up the logs.
+	if !e.srv.evalBroker.Enabled() {
+		return nil
+	}
+
 	// Ensure there is a default timeout
 	if args.Timeout <= 0 {
 		args.Timeout = DefaultDequeueTimeout
