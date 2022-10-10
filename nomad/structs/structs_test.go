@@ -320,8 +320,8 @@ func TestJob_SpecChanged(t *testing.T) {
 		{
 			Name:     "With Affinities",
 			Changed:  false,
-			Original: &Job{Affinities: []*Affinity{{"A", "B", "=", 1}}},
-			New:      &Job{Affinities: []*Affinity{{"A", "B", "=", 1}}},
+			Original: &Job{Affinities: []*Affinity{{"A", "B", "=", 1, true}}},
+			New:      &Job{Affinities: []*Affinity{{"A", "B", "=", 1, true}}},
 		},
 	}
 
@@ -866,14 +866,14 @@ func TestJob_PartEqual(t *testing.T) {
 	}))
 
 	as := &Affinities{
-		&Affinity{"left0", "right0", "=", 0},
-		&Affinity{"left1", "right1", "=", 0},
-		&Affinity{"left2", "right2", "=", 0},
+		&Affinity{"left0", "right0", "=", 0, true},
+		&Affinity{"left1", "right1", "=", 0, true},
+		&Affinity{"left2", "right2", "=", 0, true},
 	}
 	require.True(t, as.Equals(&Affinities{
-		&Affinity{"left0", "right0", "=", 0},
-		&Affinity{"left2", "right2", "=", 0},
-		&Affinity{"left1", "right1", "=", 0},
+		&Affinity{"left0", "right0", "=", 0, true},
+		&Affinity{"left2", "right2", "=", 0, true},
+		&Affinity{"left1", "right1", "=", 0, true},
 	}))
 }
 
