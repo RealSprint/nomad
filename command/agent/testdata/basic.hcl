@@ -146,7 +146,8 @@ server {
       batch_scheduler_enabled   = true
       system_scheduler_enabled  = true
       service_scheduler_enabled = true
-    }
+    },
+    node_affinity_normalization_disabled = false,
   }
 
   license_path = "/tmp/nomad.hclic"

@@ -307,7 +307,8 @@
           "batch_scheduler_enabled": true,
           "system_scheduler_enabled": true,
           "service_scheduler_enabled": true
-        }]
+        }],
+        "node_affinity_normalization_disabled": false
       }],
       "upgrade_version": "0.8.0",
       "license_path": "/tmp/nomad.hclic"
