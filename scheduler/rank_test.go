@@ -2069,7 +2069,7 @@ func TestNodeAffinityIterator(t *testing.T) {
 	tg := job.TaskGroups[0]
 	tg.Affinities = affinities
 
-	nodeAffinity := NewNodeAffinityIterator(ctx, static, testSchedulerConfig)
+	nodeAffinity := NewNodeAffinityIterator(ctx, static)
 	nodeAffinity.SetTaskGroup(tg)
 
 	scoreNorm := NewScoreNormalizationIterator(ctx, nodeAffinity)

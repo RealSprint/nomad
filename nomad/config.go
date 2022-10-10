@@ -421,7 +421,6 @@ func DefaultConfig() *Config {
 				BatchSchedulerEnabled:    false,
 				ServiceSchedulerEnabled:  false,
 			},
-			NodeAffinityNormalizationDisabled: false,
 		},
 		DeploymentQueryRateLimit: deploymentwatcher.LimitStateQueriesPerSecond,
 	}

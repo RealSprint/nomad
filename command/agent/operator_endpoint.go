@@ -267,7 +267,6 @@ func (s *HTTPServer) schedulerUpdateConfig(resp http.ResponseWriter, req *http.R
 			SysBatchSchedulerEnabled: conf.PreemptionConfig.SysBatchSchedulerEnabled,
 			BatchSchedulerEnabled:    conf.PreemptionConfig.BatchSchedulerEnabled,
 			ServiceSchedulerEnabled:  conf.PreemptionConfig.ServiceSchedulerEnabled},
-		NodeAffinityNormalizationDisabled: conf.NodeAffinityNormalizationDisabled,
 	}
 
 	if err := args.Config.Validate(); err != nil {

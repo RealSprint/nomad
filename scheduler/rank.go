@@ -672,21 +672,19 @@ func (iter *NodeReschedulingPenaltyIterator) Reset() {
 // NodeAffinityIterator is used to resolve any affinity rules in the job or task group,
 // and apply a weighted score to nodes if they match.
 type NodeAffinityIterator struct {
-	ctx                   Context
-	source                RankIterator
-	jobAffinities         []*structs.Affinity
-	affinities            []*structs.Affinity
-	normalizeNodeAffinity bool
+	ctx           Context
+	source        RankIterator
+	jobAffinities []*structs.Affinity
+	affinities    []*structs.Affinity
 }
 
 // NewNodeAffinityIterator is used to create a NodeAffinityIterator that
 // applies a weighted score according to whether nodes match any
 // affinities in the job or task group.
-func NewNodeAffinityIterator(ctx Context, source RankIterator, schedConfig *structs.SchedulerConfiguration) *NodeAffinityIterator {
+func NewNodeAffinityIterator(ctx Context, source RankIterator) *NodeAffinityIterator {
 	return &NodeAffinityIterator{
-		ctx:                   ctx,
-		source:                source,
-		normalizeNodeAffinity: !schedConfig.NodeAffinityNormalizationDisabled,
+		ctx:    ctx,
+		source: source,
 	}
 }
 
@@ -731,12 +729,9 @@ func (iter *NodeAffinityIterator) Next() *RankedNode {
 		return option
 	}
 	// TODO(preetha): we should calculate normalized weights once and reuse it here
-	sumWeight := 1.0
-	if iter.normalizeNodeAffinity {
-		sumWeight = 0.0
-		for _, affinity := range iter.affinities {
-			sumWeight += math.Abs(float64(affinity.Weight))
-		}
+	sumWeight := 0.0
+	for _, affinity := range iter.affinities {
+		sumWeight += math.Abs(float64(affinity.Weight))
 	}
 
 	totalAffinityScore := 0.0

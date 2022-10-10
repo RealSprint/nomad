@@ -419,7 +419,7 @@ func NewGenericStack(batch bool, ctx Context) *GenericStack {
 	s.nodeReschedulingPenalty = NewNodeReschedulingPenaltyIterator(ctx, s.jobAntiAff)
 
 	// Apply scores based on affinity stanza
-	s.nodeAffinity = NewNodeAffinityIterator(ctx, s.nodeReschedulingPenalty, schedConfig)
+	s.nodeAffinity = NewNodeAffinityIterator(ctx, s.nodeReschedulingPenalty)
 
 	// Apply scores based on spread stanza
 	s.spread = NewSpreadIterator(ctx, s.nodeAffinity)

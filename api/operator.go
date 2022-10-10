@@ -134,8 +134,6 @@ type SchedulerConfiguration struct {
 	// management ACL token
 	RejectJobRegistration bool
 
-	NodeAffinityNormalizationDisabled bool
-
 	// CreateIndex/ModifyIndex store the create/modify indexes of this configuration.
 	CreateIndex uint64
 	ModifyIndex uint64
