@@ -2777,10 +2777,11 @@ func TestJobs_ApiJobToStructsJob(t *testing.T) {
 		},
 		Affinities: []*structs.Affinity{
 			{
-				LTarget: "a",
-				RTarget: "b",
-				Operand: "c",
-				Weight:  50,
+				LTarget:               "a",
+				RTarget:               "b",
+				Operand:               "c",
+				Weight:                50,
+				NormalizeNodeAffinity: true,
 			},
 		},
 		Spreads: []*structs.Spread{
