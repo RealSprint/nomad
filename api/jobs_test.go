@@ -2055,7 +2055,7 @@ func TestJobs_AddAffinity(t *testing.T) {
 	job := &Job{Affinities: nil}
 
 	// Create and add an affinity
-	out := job.AddAffinity(NewAffinity("kernel.version", "=", "4.6", 100))
+	out := job.AddAffinity(NewAffinity("kernel.version", "=", "4.6", 100, true))
 	if n := len(job.Affinities); n != 1 {
 		t.Fatalf("expected 1 affinity, got: %d", n)
 	}
@@ -2066,19 +2066,21 @@ func TestJobs_AddAffinity(t *testing.T) {
 	}
 
 	// Adding another affinity preserves the original
-	job.AddAffinity(NewAffinity("${node.datacenter}", "=", "dc2", 50))
+	job.AddAffinity(NewAffinity("${node.datacenter}", "=", "dc2", 50, true))
 	expect := []*Affinity{
 		{
-			LTarget: "kernel.version",
-			RTarget: "4.6",
-			Operand: "=",
-			Weight:  int8ToPtr(100),
+			LTarget:               "kernel.version",
+			RTarget:               "4.6",
+			Operand:               "=",
+			Weight:                int8ToPtr(100),
+			NormalizeNodeAffinity: boolToPtr(true),
 		},
 		{
-			LTarget: "${node.datacenter}",
-			RTarget: "dc2",
-			Operand: "=",
-			Weight:  int8ToPtr(50),
+			LTarget:               "${node.datacenter}",
+			RTarget:               "dc2",
+			Operand:               "=",
+			Weight:                int8ToPtr(50),
+			NormalizeNodeAffinity: boolToPtr(true),
 		},
 	}
 	if !reflect.DeepEqual(job.Affinities, expect) {

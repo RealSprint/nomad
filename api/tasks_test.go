@@ -62,7 +62,7 @@ func TestTaskGroup_AddAffinity(t *testing.T) {
 	grp := NewTaskGroup("grp1", 1)
 
 	// Add an affinity to the group
-	out := grp.AddAffinity(NewAffinity("kernel.version", "=", "4.6", 100))
+	out := grp.AddAffinity(NewAffinity("kernel.version", "=", "4.6", 100, true))
 	if n := len(grp.Affinities); n != 1 {
 		t.Fatalf("expected 1 affinity, got: %d", n)
 	}
@@ -73,19 +73,21 @@ func TestTaskGroup_AddAffinity(t *testing.T) {
 	}
 
 	// Add a second affinity
-	grp.AddAffinity(NewAffinity("${node.affinity}", "=", "dc2", 50))
+	grp.AddAffinity(NewAffinity("${node.affinity}", "=", "dc2", 50, true))
 	expect := []*Affinity{
 		{
-			LTarget: "kernel.version",
-			RTarget: "4.6",
-			Operand: "=",
-			Weight:  int8ToPtr(100),
+			LTarget:               "kernel.version",
+			RTarget:               "4.6",
+			Operand:               "=",
+			Weight:                int8ToPtr(100),
+			NormalizeNodeAffinity: boolToPtr(true),
 		},
 		{
-			LTarget: "${node.affinity}",
-			RTarget: "dc2",
-			Operand: "=",
-			Weight:  int8ToPtr(50),
+			LTarget:               "${node.affinity}",
+			RTarget:               "dc2",
+			Operand:               "=",
+			Weight:                int8ToPtr(50),
+			NormalizeNodeAffinity: boolToPtr(true),
 		},
 	}
 	if !reflect.DeepEqual(grp.Affinities, expect) {
@@ -324,7 +326,7 @@ func TestTask_AddAffinity(t *testing.T) {
 	task := NewTask("task1", "exec")
 
 	// Add an affinity to the task
-	out := task.AddAffinity(NewAffinity("kernel.version", "=", "4.6", 100))
+	out := task.AddAffinity(NewAffinity("kernel.version", "=", "4.6", 100, true))
 	require := require.New(t)
 	require.Len(out.Affinities, 1)
 
@@ -334,19 +336,21 @@ func TestTask_AddAffinity(t *testing.T) {
 	}
 
 	// Add a second affinity
-	task.AddAffinity(NewAffinity("${node.datacenter}", "=", "dc2", 50))
+	task.AddAffinity(NewAffinity("${node.datacenter}", "=", "dc2", 50, true))
 	expect := []*Affinity{
 		{
-			LTarget: "kernel.version",
-			RTarget: "4.6",
-			Operand: "=",
-			Weight:  int8ToPtr(100),
+			LTarget:               "kernel.version",
+			RTarget:               "4.6",
+			Operand:               "=",
+			Weight:                int8ToPtr(100),
+			NormalizeNodeAffinity: boolToPtr(true),
 		},
 		{
-			LTarget: "${node.datacenter}",
-			RTarget: "dc2",
-			Operand: "=",
-			Weight:  int8ToPtr(50),
+			LTarget:               "${node.datacenter}",
+			RTarget:               "dc2",
+			Operand:               "=",
+			Weight:                int8ToPtr(50),
+			NormalizeNodeAffinity: boolToPtr(true),
 		},
 	}
 	if !reflect.DeepEqual(task.Affinities, expect) {

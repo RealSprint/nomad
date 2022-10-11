@@ -2777,10 +2777,11 @@ func TestJobs_ApiJobToStructsJob(t *testing.T) {
 		},
 		Affinities: []*structs.Affinity{
 			{
-				LTarget: "a",
-				RTarget: "b",
-				Operand: "c",
-				Weight:  50,
+				LTarget:               "a",
+				RTarget:               "b",
+				Operand:               "c",
+				Weight:                50,
+				NormalizeNodeAffinity: true,
 			},
 		},
 		Spreads: []*structs.Spread{
@@ -2842,10 +2843,11 @@ func TestJobs_ApiJobToStructsJob(t *testing.T) {
 				},
 				Affinities: []*structs.Affinity{
 					{
-						LTarget: "x",
-						RTarget: "y",
-						Operand: "z",
-						Weight:  100,
+						LTarget:               "x",
+						RTarget:               "y",
+						Operand:               "z",
+						Weight:                100,
+						NormalizeNodeAffinity: true,
 					},
 				},
 				RestartPolicy: &structs.RestartPolicy{
@@ -2973,10 +2975,11 @@ func TestJobs_ApiJobToStructsJob(t *testing.T) {
 						},
 						Affinities: []*structs.Affinity{
 							{
-								LTarget: "a",
-								RTarget: "b",
-								Operand: "c",
-								Weight:  50,
+								LTarget:               "a",
+								RTarget:               "b",
+								Operand:               "c",
+								Weight:                50,
+								NormalizeNodeAffinity: true,
 							},
 						},
 						Env: map[string]string{
@@ -3084,10 +3087,11 @@ func TestJobs_ApiJobToStructsJob(t *testing.T) {
 									},
 									Affinities: []*structs.Affinity{
 										{
-											LTarget: "a",
-											RTarget: "b",
-											Operand: "c",
-											Weight:  50,
+											LTarget:               "a",
+											RTarget:               "b",
+											Operand:               "c",
+											Weight:                50,
+											NormalizeNodeAffinity: true,
 										},
 									},
 								},
@@ -3476,6 +3480,7 @@ func TestJobs_ApiJobToStructsJobUpdate(t *testing.T) {
 }
 
 // TestJobs_Matching_Resources asserts:
+//
 //	api.{Default,Min}Resources == structs.{Default,Min}Resources
 //
 // While this is an odd place to test that, this is where both are imported,

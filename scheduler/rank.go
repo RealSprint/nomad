@@ -731,17 +731,29 @@ func (iter *NodeAffinityIterator) Next() *RankedNode {
 	// TODO(preetha): we should calculate normalized weights once and reuse it here
 	sumWeight := 0.0
 	for _, affinity := range iter.affinities {
-		sumWeight += math.Abs(float64(affinity.Weight))
+		if affinity.NormalizeNodeAffinity {
+			sumWeight += math.Abs(float64(affinity.Weight))
+		}
 	}
 
+	if sumWeight == 0.0 {
+		sumWeight = 1.0
+	}
+
+	totalAffinityScoreToNormalize := 0.0
 	totalAffinityScore := 0.0
 	for _, affinity := range iter.affinities {
 		if matchesAffinity(iter.ctx, affinity, option.Node) {
-			totalAffinityScore += float64(affinity.Weight)
+			if affinity.NormalizeNodeAffinity {
+				totalAffinityScoreToNormalize += float64(affinity.Weight)
+			} else {
+				totalAffinityScore += float64(affinity.Weight)
+			}
 		}
 	}
-	normScore := totalAffinityScore / sumWeight
-	if totalAffinityScore != 0.0 {
+
+	normScore := totalAffinityScoreToNormalize/sumWeight + totalAffinityScore
+	if normScore != 0.0 {
 		option.Scores = append(option.Scores, normScore)
 		iter.ctx.Metrics().ScoreNode(option.Node, "node-affinity", normScore)
 	}

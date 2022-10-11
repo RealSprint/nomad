@@ -159,24 +159,29 @@ func (r *ReschedulePolicy) Canonicalize(jobType string) {
 
 // Affinity is used to serialize task group affinities
 type Affinity struct {
-	LTarget string `hcl:"attribute,optional"` // Left-hand target
-	RTarget string `hcl:"value,optional"`     // Right-hand target
-	Operand string `hcl:"operator,optional"`  // Constraint operand (<=, <, =, !=, >, >=), set_contains_all, set_contains_any
-	Weight  *int8  `hcl:"weight,optional"`    // Weight applied to nodes that match the affinity. Can be negative
+	LTarget               string `hcl:"attribute,optional"` // Left-hand target
+	RTarget               string `hcl:"value,optional"`     // Right-hand target
+	Operand               string `hcl:"operator,optional"`  // Constraint operand (<=, <, =, !=, >, >=), set_contains_all, set_contains_any
+	Weight                *int8  `hcl:"weight,optional"`    // Weight applied to nodes that match the affinity. Can be negative
+	NormalizeNodeAffinity *bool  `hcl:"normalize_node_affinity,optional"`
 }
 
-func NewAffinity(lTarget string, operand string, rTarget string, weight int8) *Affinity {
+func NewAffinity(lTarget string, operand string, rTarget string, weight int8, normalizeNodeAffinity bool) *Affinity {
 	return &Affinity{
-		LTarget: lTarget,
-		RTarget: rTarget,
-		Operand: operand,
-		Weight:  int8ToPtr(weight),
+		LTarget:               lTarget,
+		RTarget:               rTarget,
+		Operand:               operand,
+		Weight:                int8ToPtr(weight),
+		NormalizeNodeAffinity: boolToPtr(normalizeNodeAffinity),
 	}
 }
 
 func (a *Affinity) Canonicalize() {
 	if a.Weight == nil {
 		a.Weight = int8ToPtr(50)
+	}
+	if a.NormalizeNodeAffinity == nil {
+		a.NormalizeNodeAffinity = boolToPtr(true)
 	}
 }
 
