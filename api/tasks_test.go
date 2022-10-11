@@ -76,16 +76,18 @@ func TestTaskGroup_AddAffinity(t *testing.T) {
 	grp.AddAffinity(NewAffinity("${node.affinity}", "=", "dc2", 50, true))
 	expect := []*Affinity{
 		{
-			LTarget: "kernel.version",
-			RTarget: "4.6",
-			Operand: "=",
-			Weight:  int8ToPtr(100),
+			LTarget:               "kernel.version",
+			RTarget:               "4.6",
+			Operand:               "=",
+			Weight:                int8ToPtr(100),
+			NormalizeNodeAffinity: boolToPtr(true),
 		},
 		{
-			LTarget: "${node.affinity}",
-			RTarget: "dc2",
-			Operand: "=",
-			Weight:  int8ToPtr(50),
+			LTarget:               "${node.affinity}",
+			RTarget:               "dc2",
+			Operand:               "=",
+			Weight:                int8ToPtr(50),
+			NormalizeNodeAffinity: boolToPtr(true),
 		},
 	}
 	if !reflect.DeepEqual(grp.Affinities, expect) {

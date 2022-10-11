@@ -78,10 +78,11 @@ func TestCompose(t *testing.T) {
 				},
 				Affinities: []*Affinity{
 					{
-						LTarget: "${node.class}",
-						RTarget: "large",
-						Operand: "=",
-						Weight:  int8ToPtr(50),
+						LTarget:               "${node.class}",
+						RTarget:               "large",
+						Operand:               "=",
+						Weight:                int8ToPtr(50),
+						NormalizeNodeAffinity: boolToPtr(true),
 					},
 				},
 				Spreads: []*Spread{
