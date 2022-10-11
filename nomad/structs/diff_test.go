@@ -808,6 +808,12 @@ func TestJobDiff(t *testing.T) {
 							},
 							{
 								Type: DiffTypeAdded,
+								Name: "NormalizeNodeAffinity",
+								Old:  "",
+								New:  "true",
+							},
+							{
+								Type: DiffTypeAdded,
 								Name: "Operand",
 								Old:  "",
 								New:  "baz",
@@ -834,6 +840,12 @@ func TestJobDiff(t *testing.T) {
 								Type: DiffTypeDeleted,
 								Name: "LTarget",
 								Old:  "bar",
+								New:  "",
+							},
+							{
+								Type: DiffTypeDeleted,
+								Name: "NormalizeNodeAffinity",
+								Old:  "true",
 								New:  "",
 							},
 							{
@@ -1559,32 +1571,36 @@ func TestTaskGroupDiff(t *testing.T) {
 			Old: &TaskGroup{
 				Affinities: []*Affinity{
 					{
-						LTarget: "foo",
-						RTarget: "foo",
-						Operand: "foo",
-						Weight:  20,
+						LTarget:               "foo",
+						RTarget:               "foo",
+						Operand:               "foo",
+						Weight:                20,
+						NormalizeNodeAffinity: true,
 					},
 					{
-						LTarget: "bar",
-						RTarget: "bar",
-						Operand: "bar",
-						Weight:  20,
+						LTarget:               "bar",
+						RTarget:               "bar",
+						Operand:               "bar",
+						Weight:                20,
+						NormalizeNodeAffinity: true,
 					},
 				},
 			},
 			New: &TaskGroup{
 				Affinities: []*Affinity{
 					{
-						LTarget: "foo",
-						RTarget: "foo",
-						Operand: "foo",
-						Weight:  20,
+						LTarget:               "foo",
+						RTarget:               "foo",
+						Operand:               "foo",
+						Weight:                20,
+						NormalizeNodeAffinity: true,
 					},
 					{
-						LTarget: "baz",
-						RTarget: "baz",
-						Operand: "baz",
-						Weight:  20,
+						LTarget:               "baz",
+						RTarget:               "baz",
+						Operand:               "baz",
+						Weight:                20,
+						NormalizeNodeAffinity: true,
 					},
 				},
 			},
@@ -1600,6 +1616,12 @@ func TestTaskGroupDiff(t *testing.T) {
 								Name: "LTarget",
 								Old:  "",
 								New:  "baz",
+							},
+							{
+								Type: DiffTypeAdded,
+								Name: "NormalizeNodeAffinity",
+								Old:  "",
+								New:  "true",
 							},
 							{
 								Type: DiffTypeAdded,
@@ -1629,6 +1651,12 @@ func TestTaskGroupDiff(t *testing.T) {
 								Type: DiffTypeDeleted,
 								Name: "LTarget",
 								Old:  "bar",
+								New:  "",
+							},
+							{
+								Type: DiffTypeDeleted,
+								Name: "NormalizeNodeAffinity",
+								Old:  "true",
 								New:  "",
 							},
 							{
@@ -4286,32 +4314,36 @@ func TestTaskDiff(t *testing.T) {
 			Old: &Task{
 				Affinities: []*Affinity{
 					{
-						LTarget: "foo",
-						RTarget: "foo",
-						Operand: "foo",
-						Weight:  20,
+						LTarget:               "foo",
+						RTarget:               "foo",
+						Operand:               "foo",
+						Weight:                20,
+						NormalizeNodeAffinity: true,
 					},
 					{
-						LTarget: "bar",
-						RTarget: "bar",
-						Operand: "bar",
-						Weight:  20,
+						LTarget:               "bar",
+						RTarget:               "bar",
+						Operand:               "bar",
+						Weight:                20,
+						NormalizeNodeAffinity: true,
 					},
 				},
 			},
 			New: &Task{
 				Affinities: []*Affinity{
 					{
-						LTarget: "foo",
-						RTarget: "foo",
-						Operand: "foo",
-						Weight:  20,
+						LTarget:               "foo",
+						RTarget:               "foo",
+						Operand:               "foo",
+						Weight:                20,
+						NormalizeNodeAffinity: true,
 					},
 					{
-						LTarget: "baz",
-						RTarget: "baz",
-						Operand: "baz",
-						Weight:  20,
+						LTarget:               "baz",
+						RTarget:               "baz",
+						Operand:               "baz",
+						Weight:                20,
+						NormalizeNodeAffinity: true,
 					},
 				},
 			},
@@ -4327,6 +4359,12 @@ func TestTaskDiff(t *testing.T) {
 								Name: "LTarget",
 								Old:  "",
 								New:  "baz",
+							},
+							{
+								Type: DiffTypeAdded,
+								Name: "NormalizeNodeAffinity",
+								Old:  "",
+								New:  "true",
 							},
 							{
 								Type: DiffTypeAdded,
@@ -4356,6 +4394,12 @@ func TestTaskDiff(t *testing.T) {
 								Type: DiffTypeDeleted,
 								Name: "LTarget",
 								Old:  "bar",
+								New:  "",
+							},
+							{
+								Type: DiffTypeDeleted,
+								Name: "NormalizeNodeAffinity",
+								Old:  "true",
 								New:  "",
 							},
 							{
