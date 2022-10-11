@@ -8846,10 +8846,11 @@ SETEQUALS:
 
 // Affinity is used to score placement options based on a weight
 type Affinity struct {
-	LTarget string // Left-hand target
-	RTarget string // Right-hand target
-	Operand string // Affinity operand (<=, <, =, !=, >, >=), set_contains_all, set_contains_any
-	Weight  int8   // Weight applied to nodes that match the affinity. Can be negative
+	LTarget               string // Left-hand target
+	RTarget               string // Right-hand target
+	Operand               string // Affinity operand (<=, <, =, !=, >, >=), set_contains_all, set_contains_any
+	Weight                int8   // Weight applied to nodes that match the affinity. Can be negative
+	NormalizeNodeAffinity bool
 }
 
 // Equals checks if two affinities are equal.
@@ -8858,7 +8859,8 @@ func (a *Affinity) Equals(o *Affinity) bool {
 		a.LTarget == o.LTarget &&
 			a.RTarget == o.RTarget &&
 			a.Operand == o.Operand &&
-			a.Weight == o.Weight
+			a.Weight == o.Weight &&
+			a.NormalizeNodeAffinity == o.NormalizeNodeAffinity
 }
 
 func (a *Affinity) Equal(o *Affinity) bool {
@@ -8870,15 +8872,16 @@ func (a *Affinity) Copy() *Affinity {
 		return nil
 	}
 	return &Affinity{
-		LTarget: a.LTarget,
-		RTarget: a.RTarget,
-		Operand: a.Operand,
-		Weight:  a.Weight,
+		LTarget:               a.LTarget,
+		RTarget:               a.RTarget,
+		Operand:               a.Operand,
+		Weight:                a.Weight,
+		NormalizeNodeAffinity: a.NormalizeNodeAffinity,
 	}
 }
 
 func (a *Affinity) String() string {
-	return fmt.Sprintf("%s %s %s %v", a.LTarget, a.Operand, a.RTarget, a.Weight)
+	return fmt.Sprintf("%s %s %s %v %t", a.LTarget, a.Operand, a.RTarget, a.Weight, a.NormalizeNodeAffinity)
 }
 
 func (a *Affinity) Validate() error {
