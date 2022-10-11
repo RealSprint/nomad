@@ -2787,10 +2787,11 @@ func TestJobs_ApiJobToStructsJob(t *testing.T) {
 		},
 		Affinities: []*structs.Affinity{
 			{
-				LTarget: "a",
-				RTarget: "b",
-				Operand: "c",
-				Weight:  50,
+				LTarget:               "a",
+				RTarget:               "b",
+				Operand:               "c",
+				Weight:                50,
+				NormalizeNodeAffinity: true,
 			},
 		},
 		Spreads: []*structs.Spread{
@@ -2852,10 +2853,11 @@ func TestJobs_ApiJobToStructsJob(t *testing.T) {
 				},
 				Affinities: []*structs.Affinity{
 					{
-						LTarget: "x",
-						RTarget: "y",
-						Operand: "z",
-						Weight:  100,
+						LTarget:               "x",
+						RTarget:               "y",
+						Operand:               "z",
+						Weight:                100,
+						NormalizeNodeAffinity: true,
 					},
 				},
 				RestartPolicy: &structs.RestartPolicy{
@@ -2986,10 +2988,11 @@ func TestJobs_ApiJobToStructsJob(t *testing.T) {
 						},
 						Affinities: []*structs.Affinity{
 							{
-								LTarget: "a",
-								RTarget: "b",
-								Operand: "c",
-								Weight:  50,
+								LTarget:               "a",
+								RTarget:               "b",
+								Operand:               "c",
+								Weight:                50,
+								NormalizeNodeAffinity: true,
 							},
 						},
 						Env: map[string]string{
@@ -3097,10 +3100,11 @@ func TestJobs_ApiJobToStructsJob(t *testing.T) {
 									},
 									Affinities: []*structs.Affinity{
 										{
-											LTarget: "a",
-											RTarget: "b",
-											Operand: "c",
-											Weight:  50,
+											LTarget:               "a",
+											RTarget:               "b",
+											Operand:               "c",
+											Weight:                50,
+											NormalizeNodeAffinity: true,
 										},
 									},
 								},
