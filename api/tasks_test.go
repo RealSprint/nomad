@@ -337,16 +337,18 @@ func TestTask_AddAffinity(t *testing.T) {
 	task.AddAffinity(NewAffinity("${node.datacenter}", "=", "dc2", 50, true))
 	expect := []*Affinity{
 		{
-			LTarget: "kernel.version",
-			RTarget: "4.6",
-			Operand: "=",
-			Weight:  int8ToPtr(100),
+			LTarget:               "kernel.version",
+			RTarget:               "4.6",
+			Operand:               "=",
+			Weight:                int8ToPtr(100),
+			NormalizeNodeAffinity: boolToPtr(true),
 		},
 		{
-			LTarget: "${node.datacenter}",
-			RTarget: "dc2",
-			Operand: "=",
-			Weight:  int8ToPtr(50),
+			LTarget:               "${node.datacenter}",
+			RTarget:               "dc2",
+			Operand:               "=",
+			Weight:                int8ToPtr(50),
+			NormalizeNodeAffinity: boolToPtr(true),
 		},
 	}
 	if !reflect.DeepEqual(task.Affinities, expect) {
