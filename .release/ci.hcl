@@ -3,7 +3,7 @@ schema = "1"
 project "nomad" {
   team = "nomad"
   slack {
-    notification_channel = "CUYKT2A73"
+    notification_channel = "qwe"
   }
   github {
     organization = "hashicorp"
