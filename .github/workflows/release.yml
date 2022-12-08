@@ -46,13 +46,6 @@ jobs:
           chmod +x "${local_bin}/semver"
           echo "${local_bin}" >> $GITHUB_PATH
 
-      - name: Validate release version
-        run: |
-          if [ "$(semver validate ${{ github.event.inputs.version }})" == "invalid" ]; then
-            echo "::error::Version ${{ github.event.inputs.version }} is invalid"
-            exit 1
-          fi
-
       - uses: actions/checkout@v2
 
       - name: Setup Git
