@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package client
 
 import (
@@ -7,6 +10,7 @@ import (
 
 	"github.com/hashicorp/nomad/ci"
 	"github.com/hashicorp/nomad/client/allocrunner"
+	"github.com/hashicorp/nomad/client/allocrunner/interfaces"
 	"github.com/hashicorp/nomad/client/config"
 	"github.com/hashicorp/nomad/client/stats"
 	"github.com/hashicorp/nomad/helper/testlog"
@@ -29,7 +33,7 @@ func gcConfig() *GCConfig {
 
 // exitAllocRunner is a helper that updates the allocs on the given alloc
 // runners to be terminal
-func exitAllocRunner(runners ...AllocRunner) {
+func exitAllocRunner(runners ...interfaces.AllocRunner) {
 	for _, ar := range runners {
 		terminalAlloc := ar.Alloc().Copy()
 		terminalAlloc.DesiredStatus = structs.AllocDesiredStatusStop
@@ -394,7 +398,7 @@ func TestAllocGarbageCollector_MakeRoomFor_MaxAllocs(t *testing.T) {
 
 	upsertJobFn := func(server *nomad.Server, j *structs.Job) {
 		state := server.State()
-		require.NoError(state.UpsertJob(structs.MsgTypeTestSetup, nextIndex(), j))
+		require.NoError(state.UpsertJob(structs.MsgTypeTestSetup, nextIndex(), nil, j))
 		require.NoError(state.UpsertJobSummary(nextIndex(), mock.JobSummary(j.ID)))
 	}
 

@@ -1,9 +1,11 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package client
 
 import (
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"net/rpc"
 	"os"
@@ -55,7 +57,6 @@ import (
 	nconfig "github.com/hashicorp/nomad/nomad/structs/config"
 	"github.com/hashicorp/nomad/plugins/csi"
 	"github.com/hashicorp/nomad/plugins/device"
-	"github.com/hashicorp/nomad/plugins/drivers"
 	vaultapi "github.com/hashicorp/vault/api"
 	"github.com/shirou/gopsutil/v3/host"
 	"golang.org/x/exp/maps"
@@ -136,38 +137,6 @@ type ClientStatsReporter interface {
 	LatestHostStats() *stats.HostStats
 }
 
-// AllocRunner is the interface implemented by the core alloc runner.
-// TODO Create via factory to allow testing Client with mock AllocRunners.
-type AllocRunner interface {
-	Alloc() *structs.Allocation
-	AllocState() *arstate.State
-	Destroy()
-	Shutdown()
-	GetAllocDir() *allocdir.AllocDir
-	IsDestroyed() bool
-	IsMigrating() bool
-	IsWaiting() bool
-	Listener() *cstructs.AllocListener
-	Restore() error
-	Run()
-	StatsReporter() interfaces.AllocStatsReporter
-	Update(*structs.Allocation)
-	WaitCh() <-chan struct{}
-	DestroyCh() <-chan struct{}
-	ShutdownCh() <-chan struct{}
-	Signal(taskName, signal string) error
-	GetTaskEventHandler(taskName string) drivermanager.EventHandler
-	PersistState() error
-
-	RestartTask(taskName string, taskEvent *structs.TaskEvent) error
-	RestartRunning(taskEvent *structs.TaskEvent) error
-	RestartAll(taskEvent *structs.TaskEvent) error
-	Reconnect(update *structs.Allocation) error
-
-	GetTaskExecHandler(taskName string) drivermanager.TaskExecHandler
-	GetTaskDriverCapabilities(taskName string) (*drivers.Capabilities, error)
-}
-
 // Client is used to implement the client interaction with Nomad. Clients
 // are expected to register as a schedule-able node to the servers, and to
 // run allocations as determined by the servers.
@@ -186,8 +155,14 @@ type Client struct {
 	// 	// <mutate newConfig>
 	// 	c.config = newConfig
 	// 	c.configLock.Unlock()
-	config     *config.Config
-	configLock sync.Mutex
+	configLock  sync.Mutex
+	config      *config.Config
+	metaDynamic map[string]*string // dynamic node metadata
+
+	// metaStatic are the Node's static metadata set via the agent configuration
+	// and defaults during client initialization. Since this map is never updated
+	// at runtime it may be accessed outside of locks.
+	metaStatic map[string]string
 
 	logger    hclog.InterceptLogger
 	rpcLogger hclog.Logger
@@ -227,8 +202,11 @@ type Client struct {
 
 	// allocs maps alloc IDs to their AllocRunner. This map includes all
 	// AllocRunners - running and GC'd - until the server GCs them.
-	allocs    map[string]AllocRunner
+	allocs    map[string]interfaces.AllocRunner
 	allocLock sync.RWMutex
+
+	// allocrunnerFactory is the function called to create new allocrunners
+	allocrunnerFactory config.AllocRunnerFactory
 
 	// invalidAllocs is a map that tracks allocations that failed because
 	// the client couldn't initialize alloc or task runners for it. This can
@@ -236,8 +214,8 @@ type Client struct {
 	invalidAllocs     map[string]struct{}
 	invalidAllocsLock sync.Mutex
 
-	// allocUpdates stores allocations that need to be synced to the server.
-	allocUpdates chan *structs.Allocation
+	// pendingUpdates stores allocations that need to be synced to the server.
+	pendingUpdates *pendingClientUpdates
 
 	// consulService is the Consul handler implementation for managing services
 	// and checks.
@@ -324,6 +302,10 @@ type Client struct {
 	// applied to the node
 	fpInitialized chan struct{}
 
+	// registeredCh is closed when Node.Register has successfully run once.
+	registeredCh   chan struct{}
+	registeredOnce sync.Once
+
 	// serversContactedCh is closed when GetClientAllocs and runAllocs have
 	// successfully run once.
 	serversContactedCh   chan struct{}
@@ -388,8 +370,8 @@ func NewClient(cfg *config.Config, consulCatalog consul.CatalogAPI, consulProxie
 		streamingRpcs:        structs.NewStreamingRpcRegistry(),
 		logger:               logger,
 		rpcLogger:            logger.Named("rpc"),
-		allocs:               make(map[string]AllocRunner),
-		allocUpdates:         make(chan *structs.Allocation, 64),
+		allocs:               make(map[string]interfaces.AllocRunner),
+		pendingUpdates:       newPendingClientUpdates(),
 		shutdownCh:           make(chan struct{}),
 		triggerDiscoveryCh:   make(chan struct{}),
 		triggerNodeUpdate:    make(chan struct{}, 8),
@@ -398,9 +380,17 @@ func NewClient(cfg *config.Config, consulCatalog consul.CatalogAPI, consulProxie
 		invalidAllocs:        make(map[string]struct{}),
 		serversContactedCh:   make(chan struct{}),
 		serversContactedOnce: sync.Once{},
+		registeredCh:         make(chan struct{}),
+		registeredOnce:       sync.Once{},
 		cpusetManager:        cgutil.CreateCPUSetManager(cfg.CgroupParent, cfg.ReservableCores, logger),
-		getter:               getter.NewGetter(logger.Named("artifact_getter"), cfg.Artifact),
+		getter:               getter.New(cfg.Artifact, logger),
 		EnterpriseClient:     newEnterpriseClient(logger),
+		allocrunnerFactory:   cfg.AllocRunnerFactory,
+	}
+
+	// we can't have this set in the default Config because of import cycles
+	if c.allocrunnerFactory == nil {
+		c.allocrunnerFactory = allocrunner.NewAllocRunner
 	}
 
 	c.batchNodeUpdates = newBatchNodeUpdates(
@@ -435,9 +425,7 @@ func NewClient(cfg *config.Config, consulCatalog consul.CatalogAPI, consulProxie
 	c.setupClientRpc(rpcs)
 
 	// Initialize the ACL state
-	if err := c.clientACLResolver.init(); err != nil {
-		return nil, fmt.Errorf("failed to initialize ACL state: %v", err)
-	}
+	c.clientACLResolver.init()
 
 	// Setup the node
 	if err := c.setupNode(); err != nil {
@@ -506,7 +494,7 @@ func NewClient(cfg *config.Config, consulCatalog consul.CatalogAPI, consulProxie
 	c.serviceRegWrapper = wrapper.NewHandlerWrapper(c.logger, c.consulService, c.nomadService)
 
 	// Batching of initial fingerprints is done to reduce the number of node
-	// updates sent to the server on startup. This is the first RPC to the servers
+	// updates sent to the server on startup.
 	go c.batchFirstFingerprints()
 
 	// create heartbeatStop. We go after the first attempt to connect to the server, so
@@ -617,7 +605,7 @@ func (c *Client) init() error {
 
 	} else {
 		// Otherwise make a temp directory to use.
-		p, err := ioutil.TempDir("", "NomadClient")
+		p, err := os.MkdirTemp("", "NomadClient")
 		if err != nil {
 			return fmt.Errorf("failed creating temporary directory for the StateDir: %v", err)
 		}
@@ -658,7 +646,7 @@ func (c *Client) init() error {
 		}
 	} else {
 		// Otherwise make a temp directory to use.
-		p, err := ioutil.TempDir("", "NomadClient")
+		p, err := os.MkdirTemp("", "NomadClient")
 		if err != nil {
 			return fmt.Errorf("failed creating temporary directory for the AllocDir: %v", err)
 		}
@@ -733,7 +721,7 @@ func (c *Client) reloadTLSConnections(newConfig *nconfig.TLSConfig) error {
 	return nil
 }
 
-// Reload allows a client to reload its configuration on the fly
+// Reload allows a client to reload parts of its configuration on the fly
 func (c *Client) Reload(newConfig *config.Config) error {
 	existing := c.GetConfig()
 	shouldReloadTLS, err := tlsutil.ShouldReloadRPCConnections(existing.TLSConfig, newConfig.TLSConfig)
@@ -743,7 +731,9 @@ func (c *Client) Reload(newConfig *config.Config) error {
 	}
 
 	if shouldReloadTLS {
-		return c.reloadTLSConnections(newConfig.TLSConfig)
+		if err := c.reloadTLSConnections(newConfig.TLSConfig); err != nil {
+			return err
+		}
 	}
 
 	c.fingerprintManager.Reload()
@@ -753,8 +743,12 @@ func (c *Client) Reload(newConfig *config.Config) error {
 
 // Leave is used to prepare the client to leave the cluster
 func (c *Client) Leave() error {
-	// TODO
-	return nil
+	if c.GetConfig().DevMode {
+		return nil
+	}
+
+	// In normal mode optionally drain the node
+	return c.DrainSelf()
 }
 
 // GetConfig returns the config of the client. Do *not* mutate without first
@@ -781,6 +775,30 @@ func (c *Client) UpdateConfig(cb func(*config.Config)) *config.Config {
 	c.config = newConfig
 
 	return newConfig
+}
+
+// UpdateNode allows mutating just the Node portion of the client
+// configuration. The updated Node is returned.
+//
+// This is similar to UpdateConfig but avoids deep copying the entier Config
+// struct when only the Node is updated.
+func (c *Client) UpdateNode(cb func(*structs.Node)) *structs.Node {
+	c.configLock.Lock()
+	defer c.configLock.Unlock()
+
+	// Create a new copy of Node for updating
+	newNode := c.config.Node.Copy()
+
+	// newNode is now a fresh unshared copy, mutate away!
+	cb(newNode)
+
+	// Shallow copy config before mutating Node pointer which might have
+	// concurrent readers
+	newConfig := *c.config
+	newConfig.Node = newNode
+	c.config = &newConfig
+
+	return newNode
 }
 
 // Datacenter returns the datacenter for the given client
@@ -948,7 +966,7 @@ func (c *Client) Node() *structs.Node {
 
 // getAllocRunner returns an AllocRunner or an UnknownAllocation error if the
 // client has no runner for the given alloc ID.
-func (c *Client) getAllocRunner(allocID string) (AllocRunner, error) {
+func (c *Client) getAllocRunner(allocID string) (interfaces.AllocRunner, error) {
 	c.allocLock.RLock()
 	defer c.allocLock.RUnlock()
 
@@ -1192,7 +1210,7 @@ func (c *Client) restoreState() error {
 		prevAllocWatcher := allocwatcher.NoopPrevAlloc{}
 		prevAllocMigrator := allocwatcher.NoopPrevAlloc{}
 
-		arConf := &allocrunner.Config{
+		arConf := &config.AllocRunnerConfig{
 			Alloc:               alloc,
 			Logger:              c.logger,
 			ClientConfig:        conf,
@@ -1217,7 +1235,7 @@ func (c *Client) restoreState() error {
 			Getter:              c.getter,
 		}
 
-		ar, err := allocrunner.NewAllocRunner(arConf)
+		ar, err := c.allocrunnerFactory(arConf)
 		if err != nil {
 			c.logger.Error("error running alloc", "error", err, "alloc_id", alloc.ID)
 			c.handleInvalidAllocs(alloc, err)
@@ -1232,6 +1250,14 @@ func (c *Client) restoreState() error {
 			// Destroy the alloc runner since this is a failed restore
 			ar.Destroy()
 			continue
+		}
+
+		allocState, err := c.stateDB.GetAcknowledgedState(alloc.ID)
+		if err != nil {
+			c.logger.Error("error restoring last acknowledged alloc state, will update again",
+				err, "alloc_id", alloc.ID)
+		} else {
+			ar.AcknowledgeState(allocState)
 		}
 
 		// Maybe mark the alloc for halt on missing server heartbeats
@@ -1303,10 +1329,7 @@ func (c *Client) handleInvalidAllocs(alloc *structs.Allocation, err error) {
 
 	// Mark alloc as failed so server can handle this
 	failed := makeFailedAlloc(alloc, err)
-	select {
-	case c.allocUpdates <- failed:
-	case <-c.shutdownCh:
-	}
+	c.pendingUpdates.add(failed)
 }
 
 // saveState is used to snapshot our state into the data dir.
@@ -1318,7 +1341,7 @@ func (c *Client) saveState() error {
 	wg.Add(len(runners))
 
 	for id, ar := range runners {
-		go func(id string, ar AllocRunner) {
+		go func(id string, ar interfaces.AllocRunner) {
 			err := ar.PersistState()
 			if err != nil {
 				c.logger.Error("error saving alloc state", "error", err, "alloc_id", id)
@@ -1335,10 +1358,10 @@ func (c *Client) saveState() error {
 }
 
 // getAllocRunners returns a snapshot of the current set of alloc runners.
-func (c *Client) getAllocRunners() map[string]AllocRunner {
+func (c *Client) getAllocRunners() map[string]interfaces.AllocRunner {
 	c.allocLock.RLock()
 	defer c.allocLock.RUnlock()
-	runners := make(map[string]AllocRunner, len(c.allocs))
+	runners := make(map[string]interfaces.AllocRunner, len(c.allocs))
 	for id, ar := range c.allocs {
 		runners[id] = ar
 	}
@@ -1384,14 +1407,14 @@ func ensureNodeID(conf *config.Config) (id, secret string, err error) {
 
 	// Attempt to read existing ID
 	idPath := filepath.Join(conf.StateDir, "client-id")
-	idBuf, err := ioutil.ReadFile(idPath)
+	idBuf, err := os.ReadFile(idPath)
 	if err != nil && !os.IsNotExist(err) {
 		return "", "", err
 	}
 
 	// Attempt to read existing secret ID
 	secretPath := filepath.Join(conf.StateDir, "secret-id")
-	secretBuf, err := ioutil.ReadFile(secretPath)
+	secretBuf, err := os.ReadFile(secretPath)
 	if err != nil && !os.IsNotExist(err) {
 		return "", "", err
 	}
@@ -1403,7 +1426,7 @@ func ensureNodeID(conf *config.Config) (id, secret string, err error) {
 		id = hostID
 
 		// Persist the ID
-		if err := ioutil.WriteFile(idPath, []byte(id), 0700); err != nil {
+		if err := os.WriteFile(idPath, []byte(id), 0700); err != nil {
 			return "", "", err
 		}
 	}
@@ -1415,7 +1438,7 @@ func ensureNodeID(conf *config.Config) (id, secret string, err error) {
 		secret = uuid.Generate()
 
 		// Persist the ID
-		if err := ioutil.WriteFile(secretPath, []byte(secret), 0700); err != nil {
+		if err := os.WriteFile(secretPath, []byte(secret), 0700); err != nil {
 			return "", "", err
 		}
 	}
@@ -1507,7 +1530,7 @@ func (c *Client) setupNode() error {
 	}
 	node.Status = structs.NodeStatusInit
 
-	// Setup default meta
+	// Setup default static meta
 	if _, ok := node.Meta[envoy.SidecarMetaParam]; !ok {
 		node.Meta[envoy.SidecarMetaParam] = envoy.ImageFormat
 	}
@@ -1519,6 +1542,43 @@ func (c *Client) setupNode() error {
 	}
 	if _, ok := node.Meta["connect.proxy_concurrency"]; !ok {
 		node.Meta["connect.proxy_concurrency"] = defaultConnectProxyConcurrency
+	}
+
+	// Since node.Meta will get dynamic metadata merged in, save static metadata
+	// here.
+	c.metaStatic = maps.Clone(node.Meta)
+
+	// Merge dynamic node metadata
+	c.metaDynamic, err = c.stateDB.GetNodeMeta()
+	if err != nil {
+		return fmt.Errorf("error reading dynamic node metadata: %w", err)
+	}
+
+	if c.metaDynamic == nil {
+		c.metaDynamic = map[string]*string{}
+	}
+
+	for dk, dv := range c.metaDynamic {
+		if dv == nil {
+			_, ok := node.Meta[dk]
+			if ok {
+				// Unset static node metadata
+				delete(node.Meta, dk)
+			} else {
+				// Forget dynamic node metadata tombstone as there's no
+				// static value to erase.
+				delete(c.metaDynamic, dk)
+			}
+			continue
+		}
+
+		node.Meta[dk] = *dv
+	}
+
+	// Write back dynamic node metadata as tombstones may have been removed
+	// above
+	if err := c.stateDB.PutNodeMeta(c.metaDynamic); err != nil {
+		return fmt.Errorf("error syncing dynamic node metadata: %w", err)
 	}
 
 	c.config = newConfig
@@ -1778,6 +1838,7 @@ func (c *Client) periodicSnapshot() {
 
 // run is a long lived goroutine used to run the client. Shutdown() stops it first
 func (c *Client) run() {
+
 	// Watch for changes in allocations
 	allocUpdates := make(chan *allocUpdates, 8)
 	go c.watchAllocations(allocUpdates)
@@ -1812,8 +1873,11 @@ func (c *Client) submitNodeEvents(events []*structs.NodeEvent) error {
 		nodeID: events,
 	}
 	req := structs.EmitNodeEventsRequest{
-		NodeEvents:   nodeEvents,
-		WriteRequest: structs.WriteRequest{Region: c.Region()},
+		NodeEvents: nodeEvents,
+		WriteRequest: structs.WriteRequest{
+			Region:    c.Region(),
+			AuthToken: c.secretNodeID(),
+		},
 	}
 	var resp structs.EmitNodeEventsResponse
 	if err := c.RPC("Node.EmitEvents", &req, &resp); err != nil {
@@ -1869,18 +1933,28 @@ func (c *Client) triggerNodeEvent(nodeEvent *structs.NodeEvent) {
 // retryRegisterNode is used to register the node or update the registration and
 // retry in case of failure.
 func (c *Client) retryRegisterNode() {
+
+	authToken := c.getRegistrationToken()
+
 	for {
-		err := c.registerNode()
+		err := c.registerNode(authToken)
 		if err == nil {
 			// Registered!
 			return
 		}
 
 		retryIntv := registerRetryIntv
-		if err == noServersErr {
+		if err == noServersErr || structs.IsErrNoRegionPath(err) {
 			c.logger.Debug("registration waiting on servers")
 			c.triggerDiscovery()
 			retryIntv = noServerRetryIntv
+		} else if structs.IsErrPermissionDenied(err) {
+			// any previous cluster state we have here is invalid (ex. client
+			// has been assigned to a new region), so clear the token and local
+			// state for next pass.
+			authToken = ""
+			c.stateDB.PutNodeRegistration(&cstructs.NodeRegistration{HasRegistered: false})
+			c.logger.Error("error registering", "error", err)
 		} else {
 			c.logger.Error("error registering", "error", err)
 		}
@@ -1893,14 +1967,63 @@ func (c *Client) retryRegisterNode() {
 	}
 }
 
-// registerNode is used to register the node or update the registration
-func (c *Client) registerNode() error {
-	req := structs.NodeRegisterRequest{
-		Node:         c.Node(),
-		WriteRequest: structs.WriteRequest{Region: c.Region()},
+// getRegistrationToken gets the node secret to use for the Node.Register call.
+// Registration is trust-on-first-use so we can't send the auth token with the
+// initial request, but we want to add the auth token after that so that we can
+// capture metrics.
+func (c *Client) getRegistrationToken() string {
+
+	select {
+	case <-c.registeredCh:
+		return c.secretNodeID()
+	default:
+		// If we haven't yet closed the registeredCh we're either starting for
+		// the 1st time or we've just restarted. Check the local state to see if
+		// we've written a successful registration previously so that we don't
+		// block allocrunner operations on disconnected clients.
+		registration, err := c.stateDB.GetNodeRegistration()
+		if err != nil {
+			c.logger.Error("could not determine previous node registration", "error", err)
+		}
+		if registration != nil && registration.HasRegistered {
+			c.registeredOnce.Do(func() { close(c.registeredCh) })
+			return c.secretNodeID()
+		}
 	}
+	return ""
+}
+
+// registerNode is used to register the node or update the registration
+func (c *Client) registerNode(authToken string) error {
+	req := structs.NodeRegisterRequest{
+		Node: c.Node(),
+		WriteRequest: structs.WriteRequest{
+			Region:    c.Region(),
+			AuthToken: authToken,
+		},
+	}
+
 	var resp structs.NodeUpdateResponse
-	if err := c.RPC("Node.Register", &req, &resp); err != nil {
+	if err := c.UnauthenticatedRPC("Node.Register", &req, &resp); err != nil {
+		return err
+	}
+
+	// Signal that we've registered once so that RPCs sent from the client can
+	// send authenticated requests. Persist this information in the state so
+	// that we don't block restoring running allocs when restarting while
+	// disconnected
+	c.registeredOnce.Do(func() {
+		err := c.stateDB.PutNodeRegistration(&cstructs.NodeRegistration{
+			HasRegistered: true,
+		})
+		if err != nil {
+			c.logger.Error("could not write node registration", "error", err)
+		}
+		close(c.registeredCh)
+	})
+
+	err := c.handleNodeUpdateResponse(resp)
+	if err != nil {
 		return err
 	}
 
@@ -1918,6 +2041,7 @@ func (c *Client) registerNode() error {
 	defer c.heartbeatLock.Unlock()
 	c.heartbeatStop.setLastOk(time.Now())
 	c.heartbeatTTL = resp.HeartbeatTTL
+
 	return nil
 }
 
@@ -1925,9 +2049,12 @@ func (c *Client) registerNode() error {
 func (c *Client) updateNodeStatus() error {
 	start := time.Now()
 	req := structs.NodeUpdateStatusRequest{
-		NodeID:       c.NodeID(),
-		Status:       structs.NodeStatusReady,
-		WriteRequest: structs.WriteRequest{Region: c.Region()},
+		NodeID: c.NodeID(),
+		Status: structs.NodeStatusReady,
+		WriteRequest: structs.WriteRequest{
+			Region:    c.Region(),
+			AuthToken: c.secretNodeID(),
+		},
 	}
 	var resp structs.NodeUpdateResponse
 	if err := c.RPC("Node.UpdateStatus", &req, &resp); err != nil {
@@ -1962,13 +2089,30 @@ func (c *Client) updateNodeStatus() error {
 	}
 
 	// Check heartbeat response for information about the server-side scheduling
-	// state of this node
+	// state of this node. If there are errors on the server side, this will come
+	// back as an empty string.
 	c.UpdateConfig(func(c *config.Config) {
 		if resp.SchedulingEligibility != "" {
 			c.Node.SchedulingEligibility = resp.SchedulingEligibility
 		}
 	})
 
+	err := c.handleNodeUpdateResponse(resp)
+	if err != nil {
+		return fmt.Errorf("heartbeat response returned no valid servers")
+	}
+
+	// If there's no Leader in the response we may be talking to a partitioned
+	// server. Redo discovery to ensure our server list is up to date.
+	if resp.LeaderRPCAddr == "" {
+		c.triggerDiscovery()
+	}
+
+	c.EnterpriseClient.SetFeatures(resp.Features)
+	return nil
+}
+
+func (c *Client) handleNodeUpdateResponse(resp structs.NodeUpdateResponse) error {
 	// Update the number of nodes in the cluster so we can adjust our server
 	// rebalance rate.
 	c.servers.SetNumNodes(resp.NumNodes)
@@ -1985,20 +2129,9 @@ func (c *Client) updateNodeStatus() error {
 		nomadServers = append(nomadServers, e)
 	}
 	if len(nomadServers) == 0 {
-		return fmt.Errorf("heartbeat response returned no valid servers")
+		return noServersErr
 	}
 	c.servers.SetServers(nomadServers)
-
-	// Begin polling Consul if there is no Nomad leader.  We could be
-	// heartbeating to a Nomad server that is in the minority of a
-	// partition of the Nomad server quorum, but this Nomad Agent still
-	// has connectivity to the existing majority of Nomad Servers, but
-	// only if it queries Consul.
-	if resp.LeaderRPCAddr == "" {
-		c.triggerDiscovery()
-	}
-
-	c.EnterpriseClient.SetFeatures(resp.Features)
 	return nil
 }
 
@@ -2031,10 +2164,7 @@ func (c *Client) AllocStateUpdated(alloc *structs.Allocation) {
 	stripped.DeploymentStatus = alloc.DeploymentStatus
 	stripped.NetworkStatus = alloc.NetworkStatus
 
-	select {
-	case c.allocUpdates <- stripped:
-	case <-c.shutdownCh:
-	}
+	c.pendingUpdates.add(stripped)
 }
 
 // PutAllocation stores an allocation or returns an error if it could not be stored.
@@ -2046,30 +2176,31 @@ func (c *Client) PutAllocation(alloc *structs.Allocation) error {
 // server.
 func (c *Client) allocSync() {
 	syncTicker := time.NewTicker(allocSyncIntv)
-	updates := make(map[string]*structs.Allocation)
+	updateTicks := 0
+
 	for {
 		select {
 		case <-c.shutdownCh:
 			syncTicker.Stop()
 			return
-		case alloc := <-c.allocUpdates:
-			// Batch the allocation updates until the timer triggers.
-			updates[alloc.ID] = alloc
-		case <-syncTicker.C:
-			// Fast path if there are no updates
-			if len(updates) == 0 {
-				continue
-			}
 
-			sync := make([]*structs.Allocation, 0, len(updates))
-			for _, alloc := range updates {
-				sync = append(sync, alloc)
+		case <-syncTicker.C:
+
+			updateTicks++
+			toSync := c.pendingUpdates.nextBatch(c, updateTicks)
+
+			if len(toSync) == 0 {
+				syncTicker.Reset(allocSyncIntv)
+				continue
 			}
 
 			// Send to server.
 			args := structs.AllocUpdateRequest{
-				Alloc:        sync,
-				WriteRequest: structs.WriteRequest{Region: c.Region()},
+				Alloc: toSync,
+				WriteRequest: structs.WriteRequest{
+					Region:    c.Region(),
+					AuthToken: c.secretNodeID(),
+				},
 			}
 
 			var resp structs.GenericResponse
@@ -2078,19 +2209,34 @@ func (c *Client) allocSync() {
 				// Error updating allocations, do *not* clear
 				// updates and retry after backoff
 				c.logger.Error("error updating allocations", "error", err)
-				syncTicker.Stop()
-				syncTicker = time.NewTicker(c.retryIntv(allocSyncRetryIntv))
+
+				// refill the updates queue with updates that we failed to make
+				c.pendingUpdates.restore(toSync)
+				syncTicker.Reset(c.retryIntv(allocSyncRetryIntv))
 				continue
 			}
 
-			// Successfully updated allocs, reset map and ticker.
-			// Always reset ticker to give loop time to receive
-			// alloc updates. If the RPC took the ticker interval
-			// we may call it in a tight loop before draining
-			// buffered updates.
-			updates = make(map[string]*structs.Allocation, len(updates))
-			syncTicker.Stop()
-			syncTicker = time.NewTicker(allocSyncIntv)
+			// Record that we've successfully synced these updates so that it's
+			// written to disk
+			c.allocLock.RLock()
+			for _, update := range toSync {
+				if ar, ok := c.allocs[update.ID]; ok {
+					ar.AcknowledgeState(&arstate.State{
+						ClientStatus:      update.ClientStatus,
+						ClientDescription: update.ClientDescription,
+						DeploymentStatus:  update.DeploymentStatus,
+						TaskStates:        update.TaskStates,
+						NetworkStatus:     update.NetworkStatus,
+					})
+				}
+			}
+			c.allocLock.RUnlock()
+
+			// Successfully updated allocs. Reset ticker to give loop time to
+			// receive new alloc updates. Otherwise if the RPC took the ticker
+			// interval we may call it in a tight loop reading empty updates.
+			updateTicks = 0
+			syncTicker.Reset(allocSyncIntv)
 		}
 	}
 }
@@ -2128,6 +2274,7 @@ func (c *Client) watchAllocations(updates chan *allocUpdates) {
 			// After the first request, only require monotonically
 			// increasing state.
 			AllowStale: false,
+			AuthToken:  c.secretNodeID(),
 		},
 	}
 	var resp structs.NodeClientAllocsResponse
@@ -2539,7 +2686,7 @@ func (c *Client) addAlloc(alloc *structs.Allocation, migrateToken string) error 
 	}
 	prevAllocWatcher, prevAllocMigrator := allocwatcher.NewAllocWatcher(watcherConfig)
 
-	arConf := &allocrunner.Config{
+	arConf := &config.AllocRunnerConfig{
 		Alloc:               alloc,
 		Logger:              c.logger,
 		ClientConfig:        c.GetConfig(),
@@ -2563,7 +2710,7 @@ func (c *Client) addAlloc(alloc *structs.Allocation, migrateToken string) error 
 		Getter:              c.getter,
 	}
 
-	ar, err := allocrunner.NewAllocRunner(arConf)
+	ar, err := c.allocrunnerFactory(arConf)
 	if err != nil {
 		return err
 	}
@@ -2645,6 +2792,7 @@ func (c *Client) deriveToken(alloc *structs.Allocation, taskNames []string, vcli
 			Region:        c.Region(),
 			AllowStale:    false,
 			MinQueryIndex: alloc.CreateIndex,
+			AuthToken:     c.secretNodeID(),
 		},
 	}
 
@@ -2718,11 +2866,14 @@ func (c *Client) deriveSIToken(alloc *structs.Allocation, taskNames []string) (m
 	}
 
 	req := &structs.DeriveSITokenRequest{
-		NodeID:       c.NodeID(),
-		SecretID:     c.secretNodeID(),
-		AllocID:      alloc.ID,
-		Tasks:        tasks,
-		QueryOptions: structs.QueryOptions{Region: c.Region()},
+		NodeID:   c.NodeID(),
+		SecretID: c.secretNodeID(),
+		AllocID:  alloc.ID,
+		Tasks:    tasks,
+		QueryOptions: structs.QueryOptions{
+			Region:    c.Region(),
+			AuthToken: c.secretNodeID(),
+		},
 	}
 
 	// Nicely ask Nomad Server for the tokens.
@@ -2840,14 +2991,6 @@ func (c *Client) consulDiscoveryImpl() error {
 		dcs = dcs[0:helper.Min(len(dcs), datacenterQueryLimit)]
 	}
 
-	// Query for servers in this client's region only
-	region := c.Region()
-	rpcargs := structs.GenericRequest{
-		QueryOptions: structs.QueryOptions{
-			Region: region,
-		},
-	}
-
 	serviceName := c.GetConfig().ConsulConfig.ServerServiceName
 	var mErr multierror.Error
 	var nomadServers servers.Servers
@@ -2877,27 +3020,15 @@ DISCOLOOP:
 				mErr.Errors = append(mErr.Errors, err)
 				continue
 			}
-			var peers []string
-			if err := c.connPool.RPC(region, addr, "Status.Peers", rpcargs, &peers); err != nil {
-				mErr.Errors = append(mErr.Errors, err)
-				continue
-			}
 
-			// Successfully received the Server peers list of the correct
-			// region
-			for _, p := range peers {
-				addr, err := net.ResolveTCPAddr("tcp", p)
-				if err != nil {
-					mErr.Errors = append(mErr.Errors, err)
-					continue
-				}
-				srv := &servers.Server{Addr: addr}
-				nomadServers = append(nomadServers, srv)
-			}
-			if len(nomadServers) > 0 {
-				break DISCOLOOP
-			}
+			srv := &servers.Server{Addr: addr}
+			nomadServers = append(nomadServers, srv)
 		}
+
+		if len(nomadServers) > 0 {
+			break DISCOLOOP
+		}
+
 	}
 	if len(nomadServers) == 0 {
 		if len(mErr.Errors) > 0 {
@@ -2936,6 +3067,7 @@ func (c *Client) emitStats() {
 		{Name: "node_id", Value: c.NodeID()},
 		{Name: "datacenter", Value: c.Datacenter()},
 		{Name: "node_class", Value: emittedNodeClass},
+		{Name: "node_pool", Value: c.Node().NodePool},
 	}
 
 	// Start collecting host stats right away and then keep collecting every
@@ -2982,7 +3114,11 @@ func (c *Client) setGaugeForCPUStats(nodeID string, hStats *stats.HostStats, bas
 			Value: cpu.CPU,
 		})
 
-		metrics.SetGaugeWithLabels([]string{"client", "host", "cpu", "total"}, float32(cpu.Total), labels)
+		// Keep "total" around to remain compatible with older consumers of the metrics
+		metrics.SetGaugeWithLabels([]string{"client", "host", "cpu", "total"}, float32(cpu.TotalPercent), labels)
+		metrics.SetGaugeWithLabels([]string{"client", "host", "cpu", "total_percent"}, float32(cpu.TotalPercent), labels)
+		metrics.SetGaugeWithLabels([]string{"client", "host", "cpu", "total_ticks"}, float32(cpu.TotalTicks), labels)
+		metrics.IncrCounterWithLabels([]string{"client", "host", "cpu", "total_ticks_count"}, float32(cpu.TotalTicks), labels)
 		metrics.SetGaugeWithLabels([]string{"client", "host", "cpu", "user"}, float32(cpu.User), labels)
 		metrics.SetGaugeWithLabels([]string{"client", "host", "cpu", "idle"}, float32(cpu.Idle), labels)
 		metrics.SetGaugeWithLabels([]string{"client", "host", "cpu", "system"}, float32(cpu.System), labels)
@@ -3217,4 +3353,104 @@ func (g *group) AddCh(ch <-chan struct{}) {
 // complete.
 func (g *group) Wait() {
 	g.wg.Wait()
+}
+
+// pendingClientUpdates are the set of allocation updates that the client is
+// waiting to send
+type pendingClientUpdates struct {
+	updates map[string]*structs.Allocation
+	lock    sync.Mutex
+}
+
+func newPendingClientUpdates() *pendingClientUpdates {
+	return &pendingClientUpdates{
+		updates: make(map[string]*structs.Allocation, 64),
+	}
+}
+
+// add overwrites a pending update. The updates we get from the allocrunner are
+// lightweight copies of its *structs.Allocation (i.e. just the client state),
+// serialized with an internal lock. So the latest update is always the
+// authoritative one, and the server only cares about that one.
+func (p *pendingClientUpdates) add(alloc *structs.Allocation) {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+	p.updates[alloc.ID] = alloc
+}
+
+// restore refills the pending updates map, but only if a newer update hasn't come in
+func (p *pendingClientUpdates) restore(toRestore []*structs.Allocation) {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+
+	for _, alloc := range toRestore {
+		if _, ok := p.updates[alloc.ID]; !ok {
+			p.updates[alloc.ID] = alloc
+		}
+	}
+}
+
+// nextBatch returns a list of client allocation updates we need to make in this
+// tick of the allocSync. It returns nil if there's no updates to make yet. The
+// caller is responsible for calling restore() if it can't successfully send the
+// updates.
+func (p *pendingClientUpdates) nextBatch(c *Client, updateTicks int) []*structs.Allocation {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+
+	// Fast path if there are no pending updates
+	if len(p.updates) == 0 {
+		return nil
+	}
+
+	// Ensure we never send an update before we've had at least one sync from
+	// the server
+	select {
+	case <-c.serversContactedCh:
+	default:
+		return nil
+	}
+
+	toSync, urgent := p.filterAcknowledgedUpdatesLocked(c)
+
+	// Only update every 5th tick if there's no priority updates
+	if updateTicks%5 != 0 && !urgent {
+		return nil
+	}
+
+	// Clear here so that allocrunners can queue up the next set of updates
+	// while we're waiting to hear from the server
+	maps.Clear(p.updates)
+
+	return toSync
+
+}
+
+// filteredAcknowledgedUpdatesLocked returns a list of client alloc updates with
+// the already-acknowledged updates removed, and the highest priority of any
+// update. note: this method requires that p.lock is held
+func (p *pendingClientUpdates) filterAcknowledgedUpdatesLocked(c *Client) ([]*structs.Allocation, bool) {
+	var urgent bool
+	sync := make([]*structs.Allocation, 0, len(p.updates))
+	c.allocLock.RLock()
+	defer c.allocLock.RUnlock()
+
+	for allocID, update := range p.updates {
+		if ar, ok := c.allocs[allocID]; ok {
+			switch ar.GetUpdatePriority(update) {
+			case cstructs.AllocUpdatePriorityUrgent:
+				sync = append(sync, update)
+				urgent = true
+			case cstructs.AllocUpdatePriorityTypical:
+				sync = append(sync, update)
+			case cstructs.AllocUpdatePriorityNone:
+				// update is dropped
+			}
+		} else {
+			// no allocrunner (typically a failed placement), so we need
+			// to send update
+			sync = append(sync, update)
+		}
+	}
+	return sync, urgent
 }

@@ -1,81 +1,83 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package stats
 
 import (
-	"context"
-	"fmt"
-	"math"
-	"sync"
+	"runtime"
 	"time"
-
-	multierror "github.com/hashicorp/go-multierror"
-	"github.com/shirou/gopsutil/v3/cpu"
-)
-
-const (
-	// cpuInfoTimeout is the timeout used when gathering CPU info. This is used
-	// to override the default timeout in gopsutil which has a tendency to
-	// timeout on Windows.
-	cpuInfoTimeout = 60 * time.Second
 )
 
 var (
-	cpuMhzPerCore float64
-	cpuModelName  string
-	cpuNumCores   int
-	cpuTotalTicks float64
-
-	initErr error
-	onceLer sync.Once
+	cpuTotalTicks uint64
 )
 
-func Init() error {
-	onceLer.Do(func() {
-		var merrs *multierror.Error
-		var err error
-		if cpuNumCores, err = cpu.Counts(true); err != nil {
-			merrs = multierror.Append(merrs, fmt.Errorf("Unable to determine the number of CPU cores available: %v", err))
-		}
+// CpuStats calculates cpu usage percentage
+type CpuStats struct {
+	prevCpuTime float64
+	prevTime    time.Time
 
-		var cpuInfo []cpu.InfoStat
-		ctx, cancel := context.WithTimeout(context.Background(), cpuInfoTimeout)
-		defer cancel()
-		if cpuInfo, err = cpu.InfoWithContext(ctx); err != nil {
-			merrs = multierror.Append(merrs, fmt.Errorf("Unable to obtain CPU information: %v", err))
-		}
-
-		for _, cpu := range cpuInfo {
-			cpuModelName = cpu.ModelName
-			cpuMhzPerCore = cpu.Mhz
-			break
-		}
-
-		// Floor all of the values such that small difference don't cause the
-		// node to fall into a unique computed node class
-		cpuMhzPerCore = math.Floor(cpuMhzPerCore)
-		cpuTotalTicks = math.Floor(float64(cpuNumCores) * cpuMhzPerCore)
-
-		// Set any errors that occurred
-		initErr = merrs.ErrorOrNil()
-	})
-	return initErr
+	totalCpus int
 }
 
-// CPUNumCores returns the number of CPU cores available
-func CPUNumCores() int {
-	return cpuNumCores
+// NewCpuStats returns a cpu stats calculator
+func NewCpuStats() *CpuStats {
+	numCpus := runtime.NumCPU()
+	cpuStats := &CpuStats{
+		totalCpus: numCpus,
+	}
+	return cpuStats
 }
 
-// CPUMHzPerCore returns the MHz per CPU core
-func CPUMHzPerCore() float64 {
-	return cpuMhzPerCore
+// Percent calculates the cpu usage percentage based on the current cpu usage
+// and the previous cpu usage where usage is given as time in nanoseconds spend
+// in the cpu
+func (c *CpuStats) Percent(cpuTime float64) float64 {
+	now := time.Now()
+
+	if c.prevCpuTime == 0.0 {
+		// invoked first time
+		c.prevCpuTime = cpuTime
+		c.prevTime = now
+		return 0.0
+	}
+
+	timeDelta := now.Sub(c.prevTime).Nanoseconds()
+	ret := c.calculatePercent(c.prevCpuTime, cpuTime, timeDelta)
+	c.prevCpuTime = cpuTime
+	c.prevTime = now
+	return ret
 }
 
-// CPUModelName returns the model name of the CPU
-func CPUModelName() string {
-	return cpuModelName
+// TicksConsumed calculates the total ticks consumes by the process across all
+// cpu cores
+func (c *CpuStats) TicksConsumed(percent float64) float64 {
+	return (percent / 100) * float64(CpuTotalTicks()) / float64(c.totalCpus)
 }
 
-// TotalTicksAvailable calculates the total Mhz available across all cores
-func TotalTicksAvailable() float64 {
+func (c *CpuStats) calculatePercent(t1, t2 float64, timeDelta int64) float64 {
+	vDelta := t2 - t1
+	if timeDelta <= 0 || vDelta <= 0.0 {
+		return 0.0
+	}
+
+	overall_percent := (vDelta / float64(timeDelta)) * 100.0
+	return overall_percent
+}
+
+// Set the total ticks available across all cores.
+func SetCpuTotalTicks(newCpuTotalTicks uint64) {
+	cpuTotalTicks = newCpuTotalTicks
+}
+
+// CpuTotalTicks calculates the total MHz available across all cores.
+//
+// Where asymetric cores are correctly detected, the total ticks is the sum of
+// the performance across both core types.
+//
+// Where asymetric cores are not correctly detected (such as Intel 13th gen),
+// the total ticks available is over-estimated, as we assume all cores are P
+// cores.
+func CpuTotalTicks() uint64 {
 	return cpuTotalTicks
 }

@@ -1,8 +1,10 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package escapingfs
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,7 +13,7 @@ import (
 )
 
 func write(t *testing.T, file, data string) {
-	err := ioutil.WriteFile(file, []byte(data), 0600)
+	err := os.WriteFile(file, []byte(data), 0600)
 	require.NoError(t, err)
 }
 

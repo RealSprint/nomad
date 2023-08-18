@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package nomad
 
 import (
@@ -159,6 +162,14 @@ func (c *consulACLsAPI) canWriteService(namespace, service string, token *api.AC
 	// if the namespace is not set in the job and the token is in the default namespace,
 	// treat that like an exact match to preserve backwards compatibility
 	matches := (namespace == token.Namespace) || (namespace == "" && token.Namespace == "default")
+
+	// check each service identity attached to the token -
+	// the virtual policy for service identities enables service:write
+	for _, si := range token.ServiceIdentities {
+		if si.ServiceName == service {
+			return true, nil
+		}
+	}
 
 	// check each policy directly attached to the token
 	for _, policyRef := range token.Policies {

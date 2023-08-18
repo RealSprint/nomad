@@ -1,3 +1,6 @@
+# Copyright (c) HashiCorp, Inc.
+# SPDX-License-Identifier: MPL-2.0
+
 # Nomad ECS Remote Task Driver E2E
 resource "aws_ecs_cluster" "nomad_rtd_e2e" {
   name = "nomad-rtd-e2e"
@@ -17,7 +20,7 @@ resource "aws_ecs_task_definition" "nomad_rtd_e2e" {
 
 data "template_file" "ecs_vars_hcl" {
   template = <<EOT
-security_groups = ["${aws_security_group.primary.id}"]
+security_groups = ["${aws_security_group.clients.id}"]
 subnets         = ["${data.aws_subnet.default.id}"]
 EOT
 }

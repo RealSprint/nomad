@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package taskrunner
 
 import (
@@ -224,6 +227,7 @@ func (h *serviceHook) getWorkloadServices() *serviceregistration.WorkloadService
 	info := structs.AllocInfo{
 		AllocID:   h.allocID,
 		JobID:     h.jobID,
+		Group:     h.groupName,
 		Task:      h.taskName,
 		Namespace: h.namespace,
 	}

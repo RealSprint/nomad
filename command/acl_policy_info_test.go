@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package command
 
 import (
@@ -20,7 +23,7 @@ func TestACLPolicyInfoCommand(t *testing.T) {
 
 	srv, _, url := testServer(t, true, config)
 	state := srv.Agent.Server().State()
-	defer stopTestAgent(srv)
+	defer srv.Shutdown()
 
 	// Bootstrap an initial ACL token
 	token := srv.RootToken

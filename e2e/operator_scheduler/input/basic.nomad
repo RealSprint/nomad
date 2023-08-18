@@ -1,3 +1,6 @@
+# Copyright (c) HashiCorp, Inc.
+# SPDX-License-Identifier: MPL-2.0
+
 job "operator_scheduler" {
   datacenters = ["dc1"]
   type        = "batch"
@@ -14,7 +17,7 @@ job "operator_scheduler" {
 
       config {
         command = "bash"
-        args    = ["-c", "sleep 1"]
+        args    = ["-c", "sleep 30"]
       }
     }
   }

@@ -1,3 +1,8 @@
+{{!
+  Copyright (c) HashiCorp, Inc.
+  SPDX-License-Identifier: MPL-2.0
+~}}
+
 <h1 class="title with-flex">
   <div data-test-job-name>
     {{or this.title this.job.name}}
@@ -7,7 +12,6 @@
         <span>Pack</span>
       </span>
     {{/if}}
-    <span class="bumper-left tag {{this.job.statusClass}}" data-test-job-status>{{this.job.status}}</span>
     {{yield}}
   </div>
   <div>
@@ -23,7 +27,12 @@
         @confirmText="Yes, Stop Job"
         @confirmationMessage="Are you sure you want to stop this job?"
         @awaitingConfirmation={{this.stopJob.isRunning}}
-        @onConfirm={{perform this.stopJob}} />
+        @onConfirm={{perform this.stopJob}}
+        {{keyboard-shortcut 
+          label="Stop"
+          pattern=(array "s" "t" "o" "p")
+          action=(perform this.stopJob true)
+        }} />
     {{else}}
       <TwoStepButton
         data-test-purge
@@ -33,7 +42,13 @@
         @confirmText="Yes, Purge Job"
         @confirmationMessage="Are you sure? You cannot undo this action."
         @awaitingConfirmation={{this.purgeJob.isRunning}}
-        @onConfirm={{perform this.purgeJob}} />
+        @onConfirm={{perform this.purgeJob}}
+        {{keyboard-shortcut 
+          label="Purge"
+          pattern=(array "p" "u" "r" "g" "e")
+          action=(perform this.purgeJob)
+        }}
+        />
       <TwoStepButton
         data-test-start
         @alignRight={{true}}
@@ -42,7 +57,13 @@
         @confirmText="Yes, Start Job"
         @confirmationMessage="Are you sure you want to start this job?"
         @awaitingConfirmation={{this.startJob.isRunning}}
-        @onConfirm={{perform this.startJob}} />
+        @onConfirm={{perform this.startJob}}
+        {{keyboard-shortcut 
+          label="Start"
+          pattern=(array "s" "t" "a" "r" "t")
+          action=(perform this.startJob true)
+        }}
+        />
     {{/if}}
   </div>
 </h1>

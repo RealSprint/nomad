@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package isolation
 
 import (
@@ -28,19 +31,15 @@ func testExecUsesChroot(t *testing.T) {
 	t.Cleanup(e2eutil.CleanupJobsAndGC(t, &jobIDs))
 
 	// start job
-	e2eutil.RegisterAndWaitForAllocs(t, nomad, "./input/chroot_exec.nomad", jobID, "")
-
-	// get allocation
-	allocations, err := e2eutil.AllocsForJob(jobID, "")
-	must.NoError(t, err)
-	must.Len(t, 1, allocations)
-	allocID := allocations[0]["ID"]
+	allocs := e2eutil.RegisterAndWaitForAllocs(t, nomad, "./input/chroot_exec.nomad", jobID, "")
+	must.Len(t, 1, allocs)
+	allocID := allocs[0].ID
 
 	// wait for allocation stopped
 	e2eutil.WaitForAllocsStopped(t, nomad, []string{allocID})
 
 	// assert log contents
-	logs, err := e2eutil.AllocLogs(allocID, e2eutil.LogsStdOut)
+	logs, err := e2eutil.AllocLogs(allocID, "", e2eutil.LogsStdOut)
 	must.NoError(t, err)
 	must.RegexMatch(t, regexp.MustCompile(`(?m:^/alloc\b)`), logs)
 	must.RegexMatch(t, regexp.MustCompile(`(?m:^/local\b)`), logs)
@@ -56,19 +55,15 @@ func testImageUsesChroot(t *testing.T) {
 	t.Cleanup(e2eutil.CleanupJobsAndGC(t, &jobIDs))
 
 	// start job
-	e2eutil.RegisterAndWaitForAllocs(t, nomad, "./input/chroot_docker.nomad", jobID, "")
-
-	// get allocation
-	allocations, err := e2eutil.AllocsForJob(jobID, "")
-	must.NoError(t, err)
-	must.Len(t, 1, allocations)
-	allocID := allocations[0]["ID"]
+	allocs := e2eutil.RegisterAndWaitForAllocs(t, nomad, "./input/chroot_docker.nomad", jobID, "")
+	must.Len(t, 1, allocs)
+	allocID := allocs[0].ID
 
 	// wait for allocation stopped
 	e2eutil.WaitForAllocsStopped(t, nomad, []string{allocID})
 
 	// assert log contents
-	logs, err := e2eutil.AllocLogs(allocID, e2eutil.LogsStdOut)
+	logs, err := e2eutil.AllocLogs(allocID, "", e2eutil.LogsStdOut)
 	must.NoError(t, err)
 	must.RegexMatch(t, regexp.MustCompile(`(?m:^/alloc\b)`), logs)
 	must.RegexMatch(t, regexp.MustCompile(`(?m:^/local\b)`), logs)
@@ -84,13 +79,9 @@ func testDownloadChrootExec(t *testing.T) {
 	t.Cleanup(e2eutil.CleanupJobsAndGC(t, &jobIDs))
 
 	// start job
-	e2eutil.RegisterAndWaitForAllocs(t, nomad, "./input/chroot_dl_exec.nomad", jobID, "")
-
-	// get allocation
-	allocations, err := e2eutil.AllocsForJob(jobID, "")
-	must.NoError(t, err)
-	must.Len(t, 1, allocations)
-	allocID := allocations[0]["ID"]
+	allocs := e2eutil.RegisterAndWaitForAllocs(t, nomad, "./input/chroot_dl_exec.nomad", jobID, "")
+	must.Len(t, 1, allocs)
+	allocID := allocs[0].ID
 
 	// wait for allocation stopped
 	e2eutil.WaitForAllocsStopped(t, nomad, []string{allocID})

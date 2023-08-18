@@ -1,10 +1,12 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package agent
 
 import (
 	"archive/tar"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -766,7 +768,7 @@ func TestHTTP_AllocSnapshot_Atomic(t *testing.T) {
 		os.RemoveAll(allocDir.TaskDirs["web"].LocalDir)
 
 		// require Snapshot fails
-		if err := allocDir.Snapshot(ioutil.Discard); err != nil {
+		if err := allocDir.Snapshot(io.Discard); err != nil {
 			t.Logf("[DEBUG] agent.test: snapshot returned error: %v", err)
 		} else {
 			t.Errorf("expected Snapshot() to fail but it did not")
@@ -1032,7 +1034,7 @@ func TestHTTP_AllocAllGC_ACL(t *testing.T) {
 			respW := httptest.NewRecorder()
 			_, err := s.Server.ClientGCRequest(respW, req)
 			require.NotNil(err)
-			require.Equal(err.Error(), structs.ErrPermissionDenied.Error())
+			require.ErrorContains(err, structs.ErrPermissionDenied.Error())
 		}
 
 		// Try request with an invalid token and expect failure

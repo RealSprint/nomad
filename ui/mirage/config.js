@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: MPL-2.0
+ */
+
 import Ember from 'ember';
 import Response from 'ember-cli-mirage/response';
 import { HOSTS } from './common';
@@ -105,6 +110,19 @@ export default function () {
 
     const job = server.create('job', { id: jobName });
     return new Response(200, {}, this.serialize(job));
+  });
+
+  this.get('/job/:id/submission', function (schema, req) {
+    return new Response(
+      200,
+      {},
+      JSON.stringify({
+        Source: 'the job source v0',
+        Format: 'hcl2',
+        VariableFlags: { X: 'x', Y: '42', Z: 'true' },
+        Variables: 'var file content',
+      })
+    );
   });
 
   this.post('/job/:id/plan', function (schema, req) {
@@ -320,6 +338,10 @@ export default function () {
     return this.serialize(nodes.find(params.id));
   });
 
+  this.get('/node/pools', function ({ nodePools }) {
+    return this.serialize(nodePools.all());
+  });
+
   this.get('/allocations');
 
   this.get('/allocation/:id');
@@ -443,8 +465,25 @@ export default function () {
     return JSON.stringify(findLeader(schema));
   });
 
-  this.get('/acl/tokens', function ({tokens}, req) {
+  this.get('/acl/tokens', function ({ tokens }, req) {
     return this.serialize(tokens.all());
+  });
+
+  this.delete('/acl/token/:id', function (schema, request) {
+    const { id } = request.params;
+    server.db.tokens.remove(id);
+    return '';
+  });
+
+  this.post('/acl/token', function (schema, request) {
+    const { Name, Policies, Type } = JSON.parse(request.requestBody);
+    return server.create('token', {
+      name: Name,
+      policyIds: Policies,
+      type: Type,
+      id: faker.random.uuid(),
+      createTime: new Date().toISOString(),
+    });
   });
 
   this.get('/acl/token/self', function ({ tokens }, req) {
@@ -458,6 +497,23 @@ export default function () {
 
     // Client error if it doesn't
     return new Response(400, {}, null);
+  });
+
+  this.post('/acl/login', function (schema, { requestBody }) {
+    const { LoginToken } = JSON.parse(requestBody);
+    const tokenType = LoginToken.endsWith('management')
+      ? 'management'
+      : 'client';
+    const isBad = LoginToken.endsWith('bad');
+
+    if (isBad) {
+      return new Response(403, {}, null);
+    } else {
+      const token = schema.tokens
+        .all()
+        .models.find((token) => token.type === tokenType);
+      return this.serialize(token);
+    }
   });
 
   this.get('/acl/token/:id', function ({ tokens }, req) {
@@ -531,9 +587,14 @@ export default function () {
 
   this.delete('/acl/policy/:id', function (schema, request) {
     const { id } = request.params;
-    schema.tokens.all().models.filter(token => token.policyIds.includes(id)).forEach(token => {
-      token.update({ policyIds: token.policyIds.filter(pid => pid !== id) });
-    });
+    schema.tokens
+      .all()
+      .models.filter((token) => token.policyIds.includes(id))
+      .forEach((token) => {
+        token.update({
+          policyIds: token.policyIds.filter((pid) => pid !== id),
+        });
+      });
     server.db.policies.remove(id);
     return '';
   });
@@ -549,7 +610,6 @@ export default function () {
       description: Description,
       rules: Rules,
     });
-
   });
 
   this.get('/regions', function ({ regions }) {
@@ -704,6 +764,22 @@ export default function () {
       return new Response(500, {}, null);
     }
   });
+
+  // Metadata
+  this.post(
+    '/client/metadata',
+    function (schema, { queryParams: { node_id }, requestBody }) {
+      const attrs = JSON.parse(requestBody);
+      const node = schema.nodes.find(node_id);
+      Object.entries(attrs.Meta).forEach(([key, value]) => {
+        if (value === null) {
+          delete node.meta[key];
+          delete attrs.Meta[key];
+        }
+      });
+      return { Meta: { ...node.meta, ...attrs.Meta } };
+    }
+  );
 
   // TODO: in the future, this hack may be replaceable with dynamic host name
   // support in pretender: https://github.com/pretenderjs/pretender/issues/210
@@ -870,7 +946,12 @@ export default function () {
 
   //#region Variables
 
-  this.get('/vars', function (schema, { queryParams: { namespace } }) {
+  this.get('/vars', function (schema, { queryParams: { namespace, prefix } }) {
+    if (prefix === 'nomad/job-templates') {
+      return schema.variables
+        .all()
+        .filter((v) => v.path.includes('nomad/job-templates'));
+    }
     if (namespace && namespace !== '*') {
       return schema.variables.all().filter((v) => v.namespace === namespace);
     } else {
@@ -962,26 +1043,37 @@ export default function () {
     return schema.authMethods.all();
   });
   this.post('/acl/oidc/auth-url', (schema, req) => {
-    const {AuthMethod, ClientNonce, RedirectUri, Meta} = JSON.parse(req.requestBody);
-    return new Response(200, {}, {
-      AuthURL: `/ui/oidc-mock?auth_method=${AuthMethod}&client_nonce=${ClientNonce}&redirect_uri=${RedirectUri}&meta=${Meta}`
-    });
+    const { AuthMethodName, ClientNonce, RedirectUri, Meta } = JSON.parse(
+      req.requestBody
+    );
+    return new Response(
+      200,
+      {},
+      {
+        AuthURL: `/ui/oidc-mock?auth_method=${AuthMethodName}&client_nonce=${ClientNonce}&redirect_uri=${RedirectUri}&meta=${Meta}`,
+      }
+    );
   });
 
   // Simulate an OIDC callback by assuming the code passed is the secret of an existing token, and return that token.
-  this.post('/acl/oidc/complete-auth', function (schema, req) {
-    const code = JSON.parse(req.requestBody).Code;
-    const token = schema.tokens.findBy({
-      id: code
-    });
+  this.post(
+    '/acl/oidc/complete-auth',
+    function (schema, req) {
+      const code = JSON.parse(req.requestBody).Code;
+      const token = schema.tokens.findBy({
+        id: code,
+      });
 
-    return new Response(200, {}, {
-      ACLToken: token.secretId
-    });
-  }, {timing: 1000});
-
-
-
+      return new Response(
+        200,
+        {},
+        {
+          SecretID: token.secretId,
+        }
+      );
+    },
+    { timing: 1000 }
+  );
 
   //#endregion SSO
 }

@@ -1,15 +1,18 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package scheduler
 
 import (
 	"encoding/binary"
 	"fmt"
 	"math/rand"
-	"reflect"
-	"time"
 
 	log "github.com/hashicorp/go-hclog"
 	memdb "github.com/hashicorp/go-memdb"
+	"github.com/hashicorp/nomad/helper"
 	"github.com/hashicorp/nomad/nomad/structs"
+	"golang.org/x/exp/maps"
 	"golang.org/x/exp/slices"
 )
 
@@ -18,23 +21,6 @@ type allocTuple struct {
 	Name      string
 	TaskGroup *structs.TaskGroup
 	Alloc     *structs.Allocation
-}
-
-// materializeTaskGroups is used to materialize all the task groups
-// a job requires. This is used to do the count expansion.
-func materializeTaskGroups(job *structs.Job) map[string]*structs.TaskGroup {
-	out := make(map[string]*structs.TaskGroup)
-	if job.Stopped() {
-		return out
-	}
-
-	for _, tg := range job.TaskGroups {
-		for i := 0; i < tg.Count; i++ {
-			name := fmt.Sprintf("%s.%s[%d]", job.Name, tg.Name, i)
-			out[name] = tg
-		}
-	}
-	return out
 }
 
 // diffResult is used to return the sets that result from the diff
@@ -58,319 +44,25 @@ func (d *diffResult) Append(other *diffResult) {
 	d.reconnecting = append(d.reconnecting, other.reconnecting...)
 }
 
-// diffSystemAllocsForNode is used to do a set difference between the target allocations
-// and the existing allocations for a particular node. This returns 8 sets of results,
-// the list of named task groups that need to be placed (no existing allocation), the
-// allocations that need to be updated (job definition is newer), allocs that
-// need to be migrated (node is draining), the allocs that need to be evicted
-// (no longer required), those that should be ignored, those that are lost
-// that need to be replaced (running on a lost node), those that are running on
-// a disconnected node but may resume, and those that may still be running on
-// a node that has resumed reconnected.
-func diffSystemAllocsForNode(
-	job *structs.Job, // job whose allocs are going to be diff-ed
-	nodeID string,
-	eligibleNodes map[string]*structs.Node,
-	notReadyNodes map[string]struct{}, // nodes that are not ready, e.g. draining
-	taintedNodes map[string]*structs.Node, // nodes which are down (by node id)
-	required map[string]*structs.TaskGroup, // set of allocations that must exist
-	allocs []*structs.Allocation, // non-terminal allocations that exist
-	terminal structs.TerminalByNodeByName, // latest terminal allocations (by node, id)
-	serverSupportsDisconnectedClients bool, // flag indicating whether to apply disconnected client logic
-) *diffResult {
-	result := new(diffResult)
-
-	// Scan the existing updates
-	existing := make(map[string]struct{}) // set of alloc names
-	for _, exist := range allocs {
-		// Index the existing node
-		name := exist.Name
-		existing[name] = struct{}{}
-
-		// Check for the definition in the required set
-		tg, ok := required[name]
-
-		// If not required, we stop the alloc
-		if !ok {
-			result.stop = append(result.stop, allocTuple{
-				Name:      name,
-				TaskGroup: tg,
-				Alloc:     exist,
-			})
-			continue
-		}
-
-		supportsDisconnectedClients := exist.SupportsDisconnectedClients(serverSupportsDisconnectedClients)
-
-		reconnect := false
-		expired := false
-
-		// Only compute reconnect for unknown and running since they need to go
-		// through the reconnect process.
-		if supportsDisconnectedClients &&
-			(exist.ClientStatus == structs.AllocClientStatusUnknown ||
-				exist.ClientStatus == structs.AllocClientStatusRunning) {
-			reconnect = exist.NeedsToReconnect()
-			if reconnect {
-				expired = exist.Expired(time.Now())
-			}
-		}
-
-		// If we have been marked for migration and aren't terminal, migrate
-		if !exist.TerminalStatus() && exist.DesiredTransition.ShouldMigrate() {
-			result.migrate = append(result.migrate, allocTuple{
-				Name:      name,
-				TaskGroup: tg,
-				Alloc:     exist,
-			})
-			continue
-		}
-
-		// If we are a sysbatch job and terminal, ignore (or stop?) the alloc
-		if job.Type == structs.JobTypeSysBatch && exist.TerminalStatus() {
-			result.ignore = append(result.ignore, allocTuple{
-				Name:      name,
-				TaskGroup: tg,
-				Alloc:     exist,
-			})
-			continue
-		}
-
-		// Expired unknown allocs are lost. Expired checks that status is unknown.
-		if supportsDisconnectedClients && expired {
-			result.lost = append(result.lost, allocTuple{
-				Name:      name,
-				TaskGroup: tg,
-				Alloc:     exist,
-			})
-			continue
-		}
-
-		// Ignore unknown allocs that we want to reconnect eventually.
-		if supportsDisconnectedClients &&
-			exist.ClientStatus == structs.AllocClientStatusUnknown &&
-			exist.DesiredStatus == structs.AllocDesiredStatusRun {
-			result.ignore = append(result.ignore, allocTuple{
-				Name:      name,
-				TaskGroup: tg,
-				Alloc:     exist,
-			})
-			continue
-		}
-
-		node, nodeIsTainted := taintedNodes[exist.NodeID]
-
-		// Filter allocs on a node that is now re-connected to reconnecting.
-		if supportsDisconnectedClients &&
-			!nodeIsTainted &&
-			reconnect {
-
-			// Record the new ClientStatus to indicate to future evals that the
-			// alloc has already reconnected.
-			reconnecting := exist.Copy()
-			reconnecting.AppendState(structs.AllocStateFieldClientStatus, exist.ClientStatus)
-			result.reconnecting = append(result.reconnecting, allocTuple{
-				Name:      name,
-				TaskGroup: tg,
-				Alloc:     reconnecting,
-			})
-			continue
-		}
-
-		// If we are on a tainted node, we must migrate if we are a service or
-		// if the batch allocation did not finish
-		if nodeIsTainted {
-			// If the job is batch and finished successfully, the fact that the
-			// node is tainted does not mean it should be migrated or marked as
-			// lost as the work was already successfully finished. However for
-			// service/system jobs, tasks should never complete. The check of
-			// batch type, defends against client bugs.
-			if exist.Job.Type == structs.JobTypeSysBatch && exist.RanSuccessfully() {
-				goto IGNORE
-			}
-
-			// Filter running allocs on a node that is disconnected to be marked as unknown.
-			if node != nil &&
-				supportsDisconnectedClients &&
-				node.Status == structs.NodeStatusDisconnected &&
-				exist.ClientStatus == structs.AllocClientStatusRunning {
-
-				disconnect := exist.Copy()
-				disconnect.ClientStatus = structs.AllocClientStatusUnknown
-				disconnect.AppendState(structs.AllocStateFieldClientStatus, structs.AllocClientStatusUnknown)
-				disconnect.ClientDescription = allocUnknown
-				result.disconnecting = append(result.disconnecting, allocTuple{
-					Name:      name,
-					TaskGroup: tg,
-					Alloc:     disconnect,
-				})
-				continue
-			}
-
-			if !exist.TerminalStatus() && (node == nil || node.TerminalStatus()) {
-				result.lost = append(result.lost, allocTuple{
-					Name:      name,
-					TaskGroup: tg,
-					Alloc:     exist,
-				})
-			} else {
-				goto IGNORE
-			}
-
-			continue
-		}
-
-		// For an existing allocation, if the nodeID is no longer
-		// eligible, the diff should be ignored
-		if _, ineligible := notReadyNodes[nodeID]; ineligible {
-			goto IGNORE
-		}
-
-		// Existing allocations on nodes that are no longer targeted
-		// should be stopped
-		if _, eligible := eligibleNodes[nodeID]; !eligible {
-			result.stop = append(result.stop, allocTuple{
-				Name:      name,
-				TaskGroup: tg,
-				Alloc:     exist,
-			})
-			continue
-		}
-
-		// If the definition is updated we need to update
-		if job.JobModifyIndex != exist.Job.JobModifyIndex {
-			result.update = append(result.update, allocTuple{
-				Name:      name,
-				TaskGroup: tg,
-				Alloc:     exist,
-			})
-			continue
-		}
-
-		// Everything is up-to-date
-	IGNORE:
-		result.ignore = append(result.ignore, allocTuple{
-			Name:      name,
-			TaskGroup: tg,
-			Alloc:     exist,
-		})
-	}
-
-	// Scan the required groups
-	for name, tg := range required {
-
-		// Check for an existing allocation
-		if _, ok := existing[name]; !ok {
-
-			// Check for a terminal sysbatch allocation, which should be not placed
-			// again unless the job has been updated.
-			if job.Type == structs.JobTypeSysBatch {
-				if alloc, termExists := terminal.Get(nodeID, name); termExists {
-					// the alloc is terminal, but now the job has been updated
-					if job.JobModifyIndex != alloc.Job.JobModifyIndex {
-						result.update = append(result.update, allocTuple{
-							Name:      name,
-							TaskGroup: tg,
-							Alloc:     alloc,
-						})
-					} else {
-						// alloc is terminal and job unchanged, leave it alone
-						result.ignore = append(result.ignore, allocTuple{
-							Name:      name,
-							TaskGroup: tg,
-							Alloc:     alloc,
-						})
-					}
-					continue
-				}
-			}
-
-			// Require a placement if no existing allocation. If there
-			// is an existing allocation, we would have checked for a potential
-			// update or ignore above. Ignore placements for tainted or
-			// ineligible nodes
-
-			// Tainted and ineligible nodes for a non existing alloc
-			// should be filtered out and not count towards ignore or place
-			if _, tainted := taintedNodes[nodeID]; tainted {
-				continue
-			}
-			if _, eligible := eligibleNodes[nodeID]; !eligible {
-				continue
-			}
-
-			termOnNode, _ := terminal.Get(nodeID, name)
-			allocTuple := allocTuple{
-				Name:      name,
-				TaskGroup: tg,
-				Alloc:     termOnNode,
-			}
-
-			// If the new allocation isn't annotated with a previous allocation
-			// or if the previous allocation isn't from the same node then we
-			// annotate the allocTuple with a new Allocation
-			if allocTuple.Alloc == nil || allocTuple.Alloc.NodeID != nodeID {
-				allocTuple.Alloc = &structs.Allocation{NodeID: nodeID}
-			}
-
-			result.place = append(result.place, allocTuple)
-		}
-	}
-	return result
-}
-
-// diffSystemAllocs is like diffSystemAllocsForNode however, the allocations in the
-// diffResult contain the specific nodeID they should be allocated on.
-func diffSystemAllocs(
-	job *structs.Job, // jobs whose allocations are going to be diff-ed
-	readyNodes []*structs.Node, // list of nodes in the ready state
-	notReadyNodes map[string]struct{}, // list of nodes in DC but not ready, e.g. draining
-	taintedNodes map[string]*structs.Node, // nodes which are down or drain mode (by node id)
-	allocs []*structs.Allocation, // non-terminal allocations
-	terminal structs.TerminalByNodeByName, // latest terminal allocations (by node id)
-	serverSupportsDisconnectedClients bool, // flag indicating whether to apply disconnected client logic
-) *diffResult {
-
-	// Build a mapping of nodes to all their allocs.
-	nodeAllocs := make(map[string][]*structs.Allocation, len(allocs))
-	for _, alloc := range allocs {
-		nodeAllocs[alloc.NodeID] = append(nodeAllocs[alloc.NodeID], alloc)
-	}
-
-	eligibleNodes := make(map[string]*structs.Node)
-	for _, node := range readyNodes {
-		if _, ok := nodeAllocs[node.ID]; !ok {
-			nodeAllocs[node.ID] = nil
-		}
-		eligibleNodes[node.ID] = node
-	}
-
-	// Create the required task groups.
-	required := materializeTaskGroups(job)
-
-	result := new(diffResult)
-	for nodeID, allocs := range nodeAllocs {
-		diff := diffSystemAllocsForNode(job, nodeID, eligibleNodes, notReadyNodes, taintedNodes, required, allocs, terminal, serverSupportsDisconnectedClients)
-		result.Append(diff)
-	}
-
-	return result
-}
-
-// readyNodesInDCs returns all the ready nodes in the given datacenters and a
-// mapping of each data center to the count of ready nodes.
-func readyNodesInDCs(state State, dcs []string) ([]*structs.Node, map[string]struct{}, map[string]int, error) {
+// readyNodesInDCsAndPool returns all the ready nodes in the given datacenters
+// and pool, and a mapping of each data center to the count of ready nodes.
+func readyNodesInDCsAndPool(state State, dcs []string, pool string) ([]*structs.Node, map[string]struct{}, map[string]int, error) {
 	// Index the DCs
-	dcMap := make(map[string]int, len(dcs))
-	for _, dc := range dcs {
-		dcMap[dc] = 0
-	}
+	dcMap := make(map[string]int)
 
 	// Scan the nodes
 	ws := memdb.NewWatchSet()
 	var out []*structs.Node
 	notReady := map[string]struct{}{}
-	iter, err := state.Nodes(ws)
+
+	var iter memdb.ResultIterator
+	var err error
+
+	if pool == structs.NodePoolAll || pool == "" {
+		iter, err = state.Nodes(ws)
+	} else {
+		iter, err = state.NodesByNodePool(ws, pool)
+	}
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -386,11 +78,10 @@ func readyNodesInDCs(state State, dcs []string) ([]*structs.Node, map[string]str
 			notReady[node.ID] = struct{}{}
 			continue
 		}
-		if _, ok := dcMap[node.Datacenter]; !ok {
-			continue
+		if node.IsInAnyDC(dcs) {
+			out = append(out, node)
+			dcMap[node.Datacenter]++
 		}
-		out = append(out, node)
-		dcMap[node.Datacenter]++
 	}
 	return out, notReady, dcMap, nil
 }
@@ -491,116 +182,165 @@ func shuffleNodes(plan *structs.Plan, index uint64, nodes []*structs.Node) {
 	}
 }
 
-// tasksUpdated does a diff between task groups to see if the
-// tasks, their drivers, environment variables or config have updated. The
-// inputs are the task group name to diff and two jobs to diff.
-// taskUpdated and functions called within assume that the given
-// taskGroup has already been checked to not be nil
-func tasksUpdated(jobA, jobB *structs.Job, taskGroup string) bool {
+// comparison records the _first_ detected difference between two groups during
+// a comparison in tasksUpdated
+//
+// This is useful to provide context when debugging the result of tasksUpdated.
+type comparison struct {
+	modified bool
+	label    string
+	before   any
+	after    any
+}
+
+func difference(label string, before, after any) comparison {
+	// push string formatting into String(), so that we never call it in the
+	// hot path unless someone adds a log line to debug with this result
+	return comparison{
+		modified: true,
+		label:    label,
+		before:   before,
+		after:    after,
+	}
+}
+
+func (c comparison) String() string {
+	return fmt.Sprintf("%s changed; before: %#v, after: %#v", c.label, c.before, c.after)
+}
+
+// same indicates no destructive difference between two task groups
+var same = comparison{modified: false}
+
+// tasksUpdated creates a comparison between task groups to see if the tasks, their
+// drivers, environment variables or config have been modified.
+func tasksUpdated(jobA, jobB *structs.Job, taskGroup string) comparison {
 	a := jobA.LookupTaskGroup(taskGroup)
 	b := jobB.LookupTaskGroup(taskGroup)
 
 	// If the number of tasks do not match, clearly there is an update
-	if len(a.Tasks) != len(b.Tasks) {
-		return true
+	if lenA, lenB := len(a.Tasks), len(b.Tasks); lenA != lenB {
+		return difference("number of tasks", lenA, lenB)
 	}
 
 	// Check ephemeral disk
-	if !reflect.DeepEqual(a.EphemeralDisk, b.EphemeralDisk) {
-		return true
+	if !a.EphemeralDisk.Equal(b.EphemeralDisk) {
+		return difference("ephemeral disk", a.EphemeralDisk, b.EphemeralDisk)
 	}
 
 	// Check that the network resources haven't changed
-	if networkUpdated(a.Networks, b.Networks) {
-		return true
+	if c := networkUpdated(a.Networks, b.Networks); c.modified {
+		return c
 	}
 
 	// Check Affinities
-	if affinitiesUpdated(jobA, jobB, taskGroup) {
-		return true
+	if c := affinitiesUpdated(jobA, jobB, taskGroup); c.modified {
+		return c
 	}
 
 	// Check Spreads
-	if spreadsUpdated(jobA, jobB, taskGroup) {
-		return true
+	if c := spreadsUpdated(jobA, jobB, taskGroup); c.modified {
+		return c
 	}
 
 	// Check consul namespace updated
-	if consulNamespaceUpdated(a, b) {
-		return true
+	if c := consulNamespaceUpdated(a, b); c.modified {
+		return c
 	}
 
 	// Check connect service(s) updated
-	if connectServiceUpdated(a.Services, b.Services) {
-		return true
+	if c := connectServiceUpdated(a.Services, b.Services); c.modified {
+		return c
 	}
 
 	// Check if volumes are updated (no task driver can support
 	// altering mounts in-place)
-	if !reflect.DeepEqual(a.Volumes, b.Volumes) {
-		return true
+	if !maps.EqualFunc(a.Volumes, b.Volumes, func(a, b *structs.VolumeRequest) bool { return a.Equal(b) }) {
+		return difference("volume request", a.Volumes, b.Volumes)
 	}
 
 	// Check each task
 	for _, at := range a.Tasks {
 		bt := b.LookupTask(at.Name)
 		if bt == nil {
-			return true
+			return difference("task deleted", at.Name, "(nil)")
 		}
 		if at.Driver != bt.Driver {
-			return true
+			return difference("task driver", at.Driver, bt.Driver)
 		}
 		if at.User != bt.User {
-			return true
+			return difference("task user", at.User, bt.User)
 		}
-		if !reflect.DeepEqual(at.Config, bt.Config) {
-			return true
+		if !helper.OpaqueMapsEqual(at.Config, bt.Config) {
+			return difference("task config", at.Config, bt.Config)
 		}
-		if !reflect.DeepEqual(at.Env, bt.Env) {
-			return true
+		if !maps.Equal(at.Env, bt.Env) {
+			return difference("task env", at.Env, bt.Env)
 		}
-		if !reflect.DeepEqual(at.Artifacts, bt.Artifacts) {
-			return true
+		if !slices.EqualFunc(at.Artifacts, bt.Artifacts, func(a, b *structs.TaskArtifact) bool { return a.Equal(b) }) {
+			return difference("task artifacts", at.Artifacts, bt.Artifacts)
 		}
-		if !reflect.DeepEqual(at.Vault, bt.Vault) {
-			return true
+		if !at.Vault.Equal(bt.Vault) {
+			return difference("task vault", at.Vault, bt.Vault)
 		}
-		if !reflect.DeepEqual(at.Templates, bt.Templates) {
-			return true
+		if !slices.EqualFunc(at.Templates, bt.Templates, func(a, b *structs.Template) bool { return a.Equal(b) }) {
+			return difference("task templates", at.Templates, bt.Templates)
 		}
-		if !reflect.DeepEqual(at.CSIPluginConfig, bt.CSIPluginConfig) {
-			return true
+		if !at.CSIPluginConfig.Equal(bt.CSIPluginConfig) {
+			return difference("task csi config", at.CSIPluginConfig, bt.CSIPluginConfig)
 		}
-		if !reflect.DeepEqual(at.VolumeMounts, bt.VolumeMounts) {
-			return true
+		if !slices.EqualFunc(at.VolumeMounts, bt.VolumeMounts, func(a, b *structs.VolumeMount) bool { return a.Equal(b) }) {
+			return difference("task volume mount", at.VolumeMounts, bt.VolumeMounts)
 		}
 
 		// Check the metadata
-		if !reflect.DeepEqual(
-			jobA.CombinedTaskMeta(taskGroup, at.Name),
-			jobB.CombinedTaskMeta(taskGroup, bt.Name)) {
-			return true
+		metaA := jobA.CombinedTaskMeta(taskGroup, at.Name)
+		metaB := jobB.CombinedTaskMeta(taskGroup, bt.Name)
+		if !maps.Equal(metaA, metaB) {
+			return difference("task meta", metaA, metaB)
 		}
 
 		// Inspect the network to see if the dynamic ports are different
-		if networkUpdated(at.Resources.Networks, bt.Resources.Networks) {
-			return true
+		if c := networkUpdated(at.Resources.Networks, bt.Resources.Networks); c.modified {
+			return c
 		}
 
-		// Inspect the non-network resources
-		if ar, br := at.Resources, bt.Resources; ar.CPU != br.CPU {
-			return true
-		} else if ar.Cores != br.Cores {
-			return true
-		} else if ar.MemoryMB != br.MemoryMB {
-			return true
-		} else if ar.MemoryMaxMB != br.MemoryMaxMB {
-			return true
-		} else if !ar.Devices.Equal(&br.Devices) {
-			return true
+		if c := nonNetworkResourcesUpdated(at.Resources, bt.Resources); c.modified {
+			return c
+		}
+
+		// Inspect Identity being exposed
+		if !at.Identity.Equal(bt.Identity) {
+			return difference("task identity", at.Identity, bt.Identity)
+		}
+
+		// Most LogConfig updates are in-place but if we change Disabled we need
+		// to recreate the task to stop/start log collection and change the
+		// stdout/stderr of the task
+		if at.LogConfig.Disabled != bt.LogConfig.Disabled {
+			return difference("task log disabled", at.LogConfig.Disabled, bt.LogConfig.Disabled)
 		}
 	}
-	return false
+
+	// none of the fields that trigger a destructive update were modified,
+	// indicating this group can be updated in-place or ignored
+	return same
+}
+
+func nonNetworkResourcesUpdated(a, b *structs.Resources) comparison {
+	// Inspect the non-network resources
+	switch {
+	case a.CPU != b.CPU:
+		return difference("task cpu", a.CPU, b.CPU)
+	case a.Cores != b.Cores:
+		return difference("task cores", a.Cores, b.Cores)
+	case a.MemoryMB != b.MemoryMB:
+		return difference("task memory", a.MemoryMB, b.MemoryMB)
+	case a.MemoryMaxMB != b.MemoryMaxMB:
+		return difference("task memory max", a.MemoryMaxMB, b.MemoryMaxMB)
+	case !a.Devices.Equal(&b.Devices):
+		return difference("task devices", a.Devices, b.Devices)
+	}
+	return same
 }
 
 // consulNamespaceUpdated returns true if the Consul namespace in the task group
@@ -610,35 +350,38 @@ func tasksUpdated(jobA, jobB *structs.Job, taskGroup string) bool {
 // because Namespaces directly impact networking validity among Consul intentions.
 // Forcing the task through a reschedule is a sure way of breaking no-longer valid
 // network connections.
-func consulNamespaceUpdated(tgA, tgB *structs.TaskGroup) bool {
+func consulNamespaceUpdated(tgA, tgB *structs.TaskGroup) comparison {
 	// job.ConsulNamespace is pushed down to the TGs, just check those
-	return tgA.Consul.GetNamespace() != tgB.Consul.GetNamespace()
+	if a, b := tgA.Consul.GetNamespace(), tgB.Consul.GetNamespace(); a != b {
+		return difference("consul namespace", a, b)
+	}
+	return same
 }
 
-// connectServiceUpdated returns true if any services with a connect stanza have
+// connectServiceUpdated returns true if any services with a connect block have
 // been changed in such a way that requires a destructive update.
 //
 // Ordinary services can be updated in-place by updating the service definition
 // in Consul. Connect service changes mostly require destroying the task.
-func connectServiceUpdated(servicesA, servicesB []*structs.Service) bool {
+func connectServiceUpdated(servicesA, servicesB []*structs.Service) comparison {
 	for _, serviceA := range servicesA {
 		if serviceA.Connect != nil {
 			for _, serviceB := range servicesB {
 				if serviceA.Name == serviceB.Name {
-					if connectUpdated(serviceA.Connect, serviceB.Connect) {
-						return true
+					if c := connectUpdated(serviceA.Connect, serviceB.Connect); c.modified {
+						return c
 					}
 					// Part of the Connect plumbing is derived from port label,
 					// if that changes we need to destroy the task.
 					if serviceA.PortLabel != serviceB.PortLabel {
-						return true
+						return difference("connect service port label", serviceA.PortLabel, serviceB.PortLabel)
 					}
 					break
 				}
 			}
 		}
 	}
-	return false
+	return same
 }
 
 // connectUpdated returns true if the connect block has been updated in a manner
@@ -646,77 +389,93 @@ func connectServiceUpdated(servicesA, servicesB []*structs.Service) bool {
 //
 // Fields that can be updated through consul-sync do not need a destructive
 // update.
-func connectUpdated(connectA, connectB *structs.ConsulConnect) bool {
-	if connectA == nil || connectB == nil {
-		return connectA != connectB
+func connectUpdated(connectA, connectB *structs.ConsulConnect) comparison {
+	if connectA == nil && connectB == nil {
+		return same
+	}
+
+	if connectA == nil && connectB != nil {
+		return difference("connect added", connectA, connectB)
+	}
+
+	if connectA != nil && connectB == nil {
+		return difference("connect removed", connectA, connectB)
 	}
 
 	if connectA.Native != connectB.Native {
-		return true
+		return difference("connect native", connectA.Native, connectB.Native)
 	}
 
 	if !connectA.Gateway.Equal(connectB.Gateway) {
-		return true
+		return difference("connect gateway", connectA.Gateway, connectB.Gateway)
 	}
 
 	if !connectA.SidecarTask.Equal(connectB.SidecarTask) {
-		return true
+		return difference("connect sidecar task", connectA.SidecarTask, connectB.SidecarTask)
 	}
 
 	// not everything in sidecar_service needs task destruction
-	if connectSidecarServiceUpdated(connectA.SidecarService, connectB.SidecarService) {
-		return true
+	if c := connectSidecarServiceUpdated(connectA.SidecarService, connectB.SidecarService); c.modified {
+		return c
 	}
 
-	return false
+	return same
 }
 
-func connectSidecarServiceUpdated(ssA, ssB *structs.ConsulSidecarService) bool {
-	if ssA == nil || ssB == nil {
-		return ssA != ssB
+func connectSidecarServiceUpdated(ssA, ssB *structs.ConsulSidecarService) comparison {
+	if ssA == nil && ssB == nil {
+		return same
+	}
+
+	if ssA == nil && ssB != nil {
+		return difference("connect service add", ssA, ssB)
+	}
+
+	if ssA != nil && ssB == nil {
+		return difference("connect service delete", ssA, ssB)
 	}
 
 	if ssA.Port != ssB.Port {
-		return true
+		return difference("connect port", ssA.Port, ssB.Port)
 	}
 
-	// sidecar_service.tags handled in-place (registration)
+	// sidecar_service.tags (handled in-place via registration)
 
-	// sidecar_service.proxy handled in-place (registration + xDS)
+	// sidecar_service.proxy (handled in-place via registration + xDS)
 
-	return false
+	return same
 }
 
-func networkUpdated(netA, netB []*structs.NetworkResource) bool {
-	if len(netA) != len(netB) {
-		return true
+func networkUpdated(netA, netB []*structs.NetworkResource) comparison {
+	if lenNetA, lenNetB := len(netA), len(netB); lenNetA != lenNetB {
+		return difference("network lengths", lenNetA, lenNetB)
 	}
 	for idx := range netA {
 		an := netA[idx]
 		bn := netB[idx]
 
 		if an.Mode != bn.Mode {
-			return true
+			return difference("network mode", an.Mode, bn.Mode)
 		}
 
 		if an.MBits != bn.MBits {
-			return true
+			return difference("network mbits", an.MBits, bn.MBits)
 		}
 
 		if an.Hostname != bn.Hostname {
-			return true
+			return difference("network hostname", an.Hostname, bn.Hostname)
 		}
 
-		if !reflect.DeepEqual(an.DNS, bn.DNS) {
-			return true
+		if !an.DNS.Equal(bn.DNS) {
+			return difference("network dns", an.DNS, bn.DNS)
 		}
 
 		aPorts, bPorts := networkPortMap(an), networkPortMap(bn)
-		if !reflect.DeepEqual(aPorts, bPorts) {
-			return true
+		if !aPorts.Equal(bPorts) {
+			return difference("network port map", aPorts, bPorts)
 		}
 	}
-	return false
+	return same
 }
 
 // networkPortMap takes a network resource and returns a AllocatedPorts.
@@ -743,59 +502,65 @@ func networkPortMap(n *structs.NetworkResource) structs.AllocatedPorts {
 	return m
 }
 
-func affinitiesUpdated(jobA, jobB *structs.Job, taskGroup string) bool {
-	var aAffinities []*structs.Affinity
-	var bAffinities []*structs.Affinity
+func affinitiesUpdated(jobA, jobB *structs.Job, taskGroup string) comparison {
+	var affinitiesA structs.Affinities
+	var affinitiesB structs.Affinities
+
+	// accumulate job affinities
+
+	affinitiesA = append(affinitiesA, jobA.Affinities...)
+	affinitiesB = append(affinitiesB, jobB.Affinities...)
 
 	tgA := jobA.LookupTaskGroup(taskGroup)
 	tgB := jobB.LookupTaskGroup(taskGroup)
 
-	// Append jobA job and task group level affinities
-	aAffinities = append(aAffinities, jobA.Affinities...)
-	aAffinities = append(aAffinities, tgA.Affinities...)
+	// append group level affinities
 
-	// Append jobB job and task group level affinities
-	bAffinities = append(bAffinities, jobB.Affinities...)
-	bAffinities = append(bAffinities, tgB.Affinities...)
+	affinitiesA = append(affinitiesA, tgA.Affinities...)
+	affinitiesB = append(affinitiesB, tgB.Affinities...)
 
-	// append task affinities
+	// append task level affinities for A
+
 	for _, task := range tgA.Tasks {
-		aAffinities = append(aAffinities, task.Affinities...)
+		affinitiesA = append(affinitiesA, task.Affinities...)
 	}
 
+	// append task level affinities for B
 	for _, task := range tgB.Tasks {
-		bAffinities = append(bAffinities, task.Affinities...)
+		affinitiesB = append(affinitiesB, task.Affinities...)
 	}
 
-	// Check for equality
-	if len(aAffinities) != len(bAffinities) {
-		return true
+	// finally check if all the affinities from both jobs match
+	if !affinitiesA.Equal(&affinitiesB) {
+		return difference("affinities", affinitiesA, affinitiesB)
 	}
 
-	return !reflect.DeepEqual(aAffinities, bAffinities)
+	return same
 }
 
-func spreadsUpdated(jobA, jobB *structs.Job, taskGroup string) bool {
-	var aSpreads []*structs.Spread
-	var bSpreads []*structs.Spread
+func spreadsUpdated(jobA, jobB *structs.Job, taskGroup string) comparison {
+	var spreadsA []*structs.Spread
+	var spreadsB []*structs.Spread
+
+	// accumulate job spreads
+
+	spreadsA = append(spreadsA, jobA.Spreads...)
+	spreadsB = append(spreadsB, jobB.Spreads...)
 
 	tgA := jobA.LookupTaskGroup(taskGroup)
 	tgB := jobB.LookupTaskGroup(taskGroup)
 
-	// append jobA and task group level spreads
-	aSpreads = append(aSpreads, jobA.Spreads...)
-	aSpreads = append(aSpreads, tgA.Spreads...)
+	// append group spreads
+	spreadsA = append(spreadsA, tgA.Spreads...)
+	spreadsB = append(spreadsB, tgB.Spreads...)
 
-	// append jobB and task group level spreads
-	bSpreads = append(bSpreads, jobB.Spreads...)
-	bSpreads = append(bSpreads, tgB.Spreads...)
-
-	// Check for equality
-	if len(aSpreads) != len(bSpreads) {
-		return true
+	if !slices.EqualFunc(spreadsA, spreadsB, func(a, b *structs.Spread) bool {
+		return a.Equal(b)
+	}) {
+		return difference("spreads", spreadsA, spreadsB)
 	}
 
-	return !reflect.DeepEqual(aSpreads, bSpreads)
+	return same
 }
 
 // setStatus is used to update the status of the evaluation
@@ -847,7 +612,7 @@ func inplaceUpdate(ctx Context, eval *structs.Evaluation, job *structs.Job,
 		// Check if the task drivers or config has changed, requires
 		// a rolling upgrade since that cannot be done in-place.
 		existing := update.Alloc.Job
-		if tasksUpdated(job, existing, update.TaskGroup.Name) {
+		if c := tasksUpdated(job, existing, update.TaskGroup.Name); c.modified {
 			continue
 		}
 
@@ -871,7 +636,11 @@ func inplaceUpdate(ctx Context, eval *structs.Evaluation, job *structs.Job,
 		}
 
 		// The alloc is on a node that's now in an ineligible DC
-		if !slices.Contains(job.Datacenters, node.Datacenter) {
+		if !node.IsInAnyDC(job.Datacenters) {
+			continue
+		}
+		// The alloc is on a node that's now in an ineligible node pool
+		if !node.IsInPool(job.NodePool) {
 			continue
 		}
 
@@ -945,50 +714,6 @@ func inplaceUpdate(ctx Context, eval *structs.Evaluation, job *structs.Job,
 		ctx.Logger().Debug("made in-place updates", "in-place", inplaceCount, "total_updates", len(updates))
 	}
 	return updates[:n], updates[n:]
-}
-
-// evictAndPlace is used to mark allocations for evicts and add them to the
-// placement queue. evictAndPlace modifies both the diffResult and the
-// limit. It returns true if the limit has been reached.
-func evictAndPlace(ctx Context, diff *diffResult, allocs []allocTuple, desc string, limit *int) bool {
-	n := len(allocs)
-	for i := 0; i < n && i < *limit; i++ {
-		a := allocs[i]
-		ctx.Plan().AppendStoppedAlloc(a.Alloc, desc, "", "")
-		diff.place = append(diff.place, a)
-	}
-	if n <= *limit {
-		*limit -= n
-		return false
-	}
-	*limit = 0
-	return true
-}
-
-// tgConstrainTuple is used to store the total constraints of a task group.
-type tgConstrainTuple struct {
-	// Holds the combined constraints of the task group and all it's sub-tasks.
-	constraints []*structs.Constraint
-
-	// The set of required drivers within the task group.
-	drivers map[string]struct{}
-}
-
-// taskGroupConstraints collects the constraints, drivers and resources required by each
-// sub-task to aggregate the TaskGroup totals
-func taskGroupConstraints(tg *structs.TaskGroup) tgConstrainTuple {
-	c := tgConstrainTuple{
-		constraints: make([]*structs.Constraint, 0, len(tg.Constraints)),
-		drivers:     make(map[string]struct{}),
-	}
-
-	c.constraints = append(c.constraints, tg.Constraints...)
-	for _, task := range tg.Tasks {
-		c.drivers[task.Driver] = struct{}{}
-		c.constraints = append(c.constraints, task.Constraints...)
-	}
-
-	return c
 }
 
 // desiredUpdates takes the diffResult as well as the set of inplace and
@@ -1135,7 +860,7 @@ func genericAllocUpdateFn(ctx Context, stack Stack, evalID string) allocUpdateTy
 
 		// Check if the task drivers or config has changed, requires
 		// a destructive upgrade since that cannot be done in-place.
-		if tasksUpdated(newJob, existing.Job, newTG.Name) {
+		if c := tasksUpdated(newJob, existing.Job, newTG.Name); c.modified {
 			return false, true, nil
 		}
 
@@ -1159,7 +884,10 @@ func genericAllocUpdateFn(ctx Context, stack Stack, evalID string) allocUpdateTy
 		}
 
 		// The alloc is on a node that's now in an ineligible DC
-		if !slices.Contains(newJob.Datacenters, node.Datacenter) {
+		if !node.IsInAnyDC(newJob.Datacenters) {
+			return false, true, nil
+		}
+		if !node.IsInPool(newJob.NodePool) {
 			return false, true, nil
 		}
 

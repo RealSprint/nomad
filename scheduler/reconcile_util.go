@@ -1,4 +1,12 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package scheduler
+
+// The structs and helpers in this file are split out of reconciler.go for code
+// manageability and should not be shared to the system schedulers! If you need
+// something here for system/sysbatch jobs, double-check it's safe to use for
+// all scheduler types before moving it into util.go
 
 import (
 	"fmt"
@@ -513,19 +521,6 @@ func (a allocSet) filterByDeployment(id string) (match, nonmatch allocSet) {
 		}
 	}
 	return
-}
-
-// filterByFailedReconnect filters allocation into a set that have failed on the
-// client but do not have a terminal status at the server so that they can be
-// marked as stop at the server.
-func (a allocSet) filterByFailedReconnect() allocSet {
-	failed := make(allocSet)
-	for _, alloc := range a {
-		if !alloc.ServerTerminalStatus() && alloc.ClientStatus == structs.AllocClientStatusFailed {
-			failed[alloc.ID] = alloc
-		}
-	}
-	return failed
 }
 
 // delayByStopAfterClientDisconnect returns a delay for any lost allocation that's got a

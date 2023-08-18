@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package jobspec
 
 import (
@@ -53,7 +56,7 @@ func ParseNetwork(o *ast.ObjectList) (*api.NetworkResource, error) {
 	// Filter dns
 	if dns := networkObj.Filter("dns"); len(dns.Items) > 0 {
 		if len(dns.Items) > 1 {
-			return nil, multierror.Prefix(fmt.Errorf("cannot have more than 1 dns stanza"), "network ->")
+			return nil, multierror.Prefix(fmt.Errorf("cannot have more than 1 dns block"), "network ->")
 		}
 
 		d, err := parseDNS(dns.Items[0])

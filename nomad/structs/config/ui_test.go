@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package config
 
 import (
@@ -17,6 +20,11 @@ func TestUIConfig_Merge(t *testing.T) {
 		},
 		Vault: &VaultUIConfig{
 			BaseUIURL: "http://vault.example.com:8200",
+		},
+		Label: &LabelUIConfig{
+			Text:            "Example Cluster",
+			BackgroundColor: "blue",
+			TextColor:       "#fff",
 		},
 	}
 
@@ -64,6 +72,7 @@ func TestUIConfig_Merge(t *testing.T) {
 					BaseUIURL: "http://consul-other.example.com:8500",
 				},
 				Vault: &VaultUIConfig{},
+				Label: &LabelUIConfig{},
 			},
 		},
 	}

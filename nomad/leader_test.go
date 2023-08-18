@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package nomad
 
 import (
@@ -8,11 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hashicorp/consul/sdk/testutil/retry"
 	"github.com/hashicorp/go-hclog"
 	memdb "github.com/hashicorp/go-memdb"
 	"github.com/hashicorp/go-version"
+	"github.com/shoenig/test"
 	"github.com/shoenig/test/must"
+	"github.com/shoenig/test/wait"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -411,7 +415,7 @@ func TestLeader_PeriodicDispatcher_Restore_NoEvals(t *testing.T) {
 	now := time.Now()
 
 	// Sleep till after the job should have been launched.
-	time.Sleep(3 * time.Second)
+	time.Sleep(5 * time.Second)
 
 	// Restore the periodic dispatcher.
 	s1.periodicDispatcher.SetEnabled(true)
@@ -438,6 +442,27 @@ func TestLeader_PeriodicDispatcher_Restore_NoEvals(t *testing.T) {
 	}
 }
 
+type mockJobEvalDispatcher struct {
+	forceEvalCalled, children bool
+	evalToReturn              *structs.Evaluation
+	JobEvalDispatcher
+}
+
+func (mjed *mockJobEvalDispatcher) DispatchJob(_ *structs.Job) (*structs.Evaluation, error) {
+	mjed.forceEvalCalled = true
+	return mjed.evalToReturn, nil
+}
+
+func (mjed *mockJobEvalDispatcher) RunningChildren(_ *structs.Job) (bool, error) {
+	return mjed.children, nil
+}
+
+func testPeriodicJob_OverlapEnabled(times ...time.Time) *structs.Job {
+	job := testPeriodicJob(times...)
+	job.Periodic.ProhibitOverlap = true
+	return job
+}
+
 func TestLeader_PeriodicDispatcher_Restore_Evals(t *testing.T) {
 	ci.Parallel(t)
 
@@ -445,6 +470,7 @@ func TestLeader_PeriodicDispatcher_Restore_Evals(t *testing.T) {
 		c.NumSchedulers = 0
 	})
 	defer cleanupS1()
+
 	testutil.WaitForLeader(t, s1.RPC)
 
 	// Inject a periodic job that triggered once in the past, should trigger now
@@ -465,7 +491,16 @@ func TestLeader_PeriodicDispatcher_Restore_Evals(t *testing.T) {
 	}
 
 	// Create an eval for the past launch.
-	s1.periodicDispatcher.createEval(job, past)
+	eval, err := s1.periodicDispatcher.createEval(job, past)
+	must.NoError(t, err)
+
+	md := &mockJobEvalDispatcher{
+		children:          false,
+		evalToReturn:      eval,
+		JobEvalDispatcher: s1,
+	}
+
+	s1.periodicDispatcher.dispatcher = md
 
 	// Flush the periodic dispatcher, ensuring that no evals will be created.
 	s1.periodicDispatcher.SetEnabled(false)
@@ -475,6 +510,7 @@ func TestLeader_PeriodicDispatcher_Restore_Evals(t *testing.T) {
 
 	// Restore the periodic dispatcher.
 	s1.periodicDispatcher.SetEnabled(true)
+
 	s1.restorePeriodicDispatcher()
 
 	// Ensure the job is tracked.
@@ -495,6 +531,128 @@ func TestLeader_PeriodicDispatcher_Restore_Evals(t *testing.T) {
 	if last.Launch == past {
 		t.Fatalf("restorePeriodicDispatcher did not force launch")
 	}
+
+	must.True(t, md.forceEvalCalled, must.Sprint("failed to force job evaluation"))
+}
+
+func TestLeader_PeriodicDispatcher_No_Overlaps_No_Running_Job(t *testing.T) {
+	ci.Parallel(t)
+
+	s1, cleanupS1 := TestServer(t, func(c *Config) {
+		c.NumSchedulers = 0
+	})
+	defer cleanupS1()
+	testutil.WaitForLeader(t, s1.RPC)
+
+	// Inject a periodic job that triggered once in the past, should trigger now
+	// and once in the future.
+	now := time.Now()
+	past := now.Add(-1 * time.Second)
+	future := now.Add(10 * time.Second)
+
+	job := testPeriodicJob_OverlapEnabled(past, now, future)
+	req := structs.JobRegisterRequest{
+		Job: job,
+		WriteRequest: structs.WriteRequest{
+			Namespace: job.Namespace,
+		},
+	}
+	_, _, err := s1.raftApply(structs.JobRegisterRequestType, req)
+	must.NoError(t, err)
+
+	// Create an eval for the past launch.
+	eval, err := s1.periodicDispatcher.createEval(job, past)
+	must.NoError(t, err)
+
+	md := &mockJobEvalDispatcher{
+		children:     false,
+		evalToReturn: eval,
+	}
+
+	s1.periodicDispatcher.dispatcher = md
+
+	// Flush the periodic dispatcher, ensuring that no evals will be created.
+	s1.periodicDispatcher.SetEnabled(false)
+
+	// Sleep till after the job should have been launched.
+	time.Sleep(3 * time.Second)
+
+	// Restore the periodic dispatcher.
+	s1.periodicDispatcher.SetEnabled(true)
+	must.NoError(t, s1.restorePeriodicDispatcher())
+
+	// Ensure the job is tracked.
+	tuple := structs.NamespacedID{
+		ID:        job.ID,
+		Namespace: job.Namespace,
+	}
+	must.MapContainsKey(t, s1.periodicDispatcher.tracked, tuple, must.Sprint("periodic job not restored"))
+
+	// Check that an eval was made.
+	ws := memdb.NewWatchSet()
+	last, err := s1.fsm.State().PeriodicLaunchByID(ws, job.Namespace, job.ID)
+	must.NoError(t, err)
+	must.NotNil(t, last)
+
+	must.NotEq(t, last.Launch, past, must.Sprint("restorePeriodicDispatcher did not force launch"))
+
+	must.True(t, md.forceEvalCalled, must.Sprint("failed to force job evaluation"))
+}
+
+func TestLeader_PeriodicDispatcher_No_Overlaps_Running_Job(t *testing.T) {
+	ci.Parallel(t)
+
+	s1, cleanupS1 := TestServer(t, func(c *Config) {
+		c.NumSchedulers = 0
+	})
+	defer cleanupS1()
+	testutil.WaitForLeader(t, s1.RPC)
+
+	// Inject a periodic job that triggered once in the past, should trigger now
+	// and once in the future.
+	now := time.Now()
+	past := now.Add(-1 * time.Second)
+	future := now.Add(10 * time.Second)
+
+	job := testPeriodicJob_OverlapEnabled(past, now, future)
+	req := structs.JobRegisterRequest{
+		Job: job,
+		WriteRequest: structs.WriteRequest{
+			Namespace: job.Namespace,
+		},
+	}
+	_, _, err := s1.raftApply(structs.JobRegisterRequestType, req)
+	must.NoError(t, err)
+
+	// Create an eval for the past launch.
+	eval, err := s1.periodicDispatcher.createEval(job, past)
+	must.NoError(t, err)
+
+	md := &mockJobEvalDispatcher{
+		children:     true,
+		evalToReturn: eval,
+	}
+
+	s1.periodicDispatcher.dispatcher = md
+
+	// Flush the periodic dispatcher, ensuring that no evals will be created.
+	s1.periodicDispatcher.SetEnabled(false)
+
+	// Sleep till after the job should have been launched.
+	time.Sleep(3 * time.Second)
+
+	// Restore the periodic dispatcher.
+	s1.periodicDispatcher.SetEnabled(true)
+	must.NoError(t, s1.restorePeriodicDispatcher())
+
+	// Ensure the job is tracked.
+	tuple := structs.NamespacedID{
+		ID:        job.ID,
+		Namespace: job.Namespace,
+	}
+	must.MapContainsKey(t, s1.periodicDispatcher.tracked, tuple, must.Sprint("periodic job not restored"))
+
+	must.False(t, md.forceEvalCalled, must.Sprint("evaluation forced with job already running"))
 }
 
 func TestLeader_PeriodicDispatch(t *testing.T) {
@@ -768,11 +926,8 @@ func TestLeader_ClusterID_upgradePath(t *testing.T) {
 	// A check that ClusterID is not available yet
 	noIDYet := func() {
 		for _, s := range servers {
-			retry.Run(t, func(r *retry.R) {
-				if _, err := s.s.ClusterID(); err == nil {
-					r.Error("expected error")
-				}
-			})
+			_, err := s.s.ClusterID()
+			must.Error(t, err)
 		}
 	}
 
@@ -863,23 +1018,32 @@ func TestLeader_ClusterID_noUpgrade(t *testing.T) {
 }
 
 func agreeClusterID(t *testing.T, servers []*Server) {
-	retries := &retry.Timer{Timeout: 60 * time.Second, Wait: 1 * time.Second}
-	ids := make([]string, 3)
-	for i, s := range servers {
-		retry.RunWith(retries, t, func(r *retry.R) {
-			id, err := s.ClusterID()
-			if err != nil {
-				r.Error(err.Error())
-				return
-			}
-			if !helper.IsUUID(id) {
-				r.Error("not a UUID")
-				return
-			}
-			ids[i] = id
-		})
+	must.Len(t, 3, servers)
+
+	f := func() error {
+		id1, err1 := servers[0].ClusterID()
+		if err1 != nil {
+			return err1
+		}
+		id2, err2 := servers[1].ClusterID()
+		if err2 != nil {
+			return err2
+		}
+		id3, err3 := servers[2].ClusterID()
+		if err3 != nil {
+			return err3
+		}
+		if id1 != id2 || id2 != id3 {
+			return fmt.Errorf("ids do not match, id1: %s, id2: %s, id3: %s", id1, id2, id3)
+		}
+		return nil
 	}
-	require.True(t, ids[0] == ids[1] && ids[1] == ids[2], "ids[0] %s, ids[1] %s, ids[2] %s", ids[0], ids[1], ids[2])
+
+	must.Wait(t, wait.InitialSuccess(
+		wait.ErrorFunc(f),
+		wait.Timeout(60*time.Second),
+		wait.Gap(1*time.Second),
+	))
 }
 
 func TestLeader_ReplicateACLPolicies(t *testing.T) {
@@ -1141,10 +1305,10 @@ func Test_diffACLAuthMethods(t *testing.T) {
 	stateStore := state.TestStateStore(t)
 
 	// Build an initial baseline of ACL auth-methods.
-	aclAuthMethod0 := mock.ACLAuthMethod()
-	aclAuthMethod1 := mock.ACLAuthMethod()
-	aclAuthMethod2 := mock.ACLAuthMethod()
-	aclAuthMethod3 := mock.ACLAuthMethod()
+	aclAuthMethod0 := mock.ACLOIDCAuthMethod()
+	aclAuthMethod1 := mock.ACLOIDCAuthMethod()
+	aclAuthMethod2 := mock.ACLOIDCAuthMethod()
+	aclAuthMethod3 := mock.ACLOIDCAuthMethod()
 
 	// Upsert these into our local state. Use copies, so we can alter the
 	// auth-methods directly and use within the diff func.
@@ -1158,13 +1322,45 @@ func Test_diffACLAuthMethods(t *testing.T) {
 	aclAuthMethod2.ModifyIndex = 50
 	aclAuthMethod3.ModifyIndex = 200
 	aclAuthMethod3.Hash = []byte{0, 1, 2, 3}
-	aclAuthMethod4 := mock.ACLAuthMethod()
+	aclAuthMethod4 := mock.ACLOIDCAuthMethod()
 
 	// Run the diff function and test the output.
 	toDelete, toUpdate := diffACLAuthMethods(stateStore, 50, []*structs.ACLAuthMethodStub{
 		aclAuthMethod2.Stub(), aclAuthMethod3.Stub(), aclAuthMethod4.Stub()})
 	require.ElementsMatch(t, []string{aclAuthMethod0.Name, aclAuthMethod1.Name}, toDelete)
 	require.ElementsMatch(t, []string{aclAuthMethod3.Name, aclAuthMethod4.Name}, toUpdate)
+}
+
+func Test_diffACLBindingRules(t *testing.T) {
+	ci.Parallel(t)
+
+	stateStore := state.TestStateStore(t)
+
+	// Build an initial baseline of ACL binding rules.
+	aclBindingRule0 := mock.ACLBindingRule()
+	aclBindingRule1 := mock.ACLBindingRule()
+	aclBindingRule2 := mock.ACLBindingRule()
+	aclBindingRule3 := mock.ACLBindingRule()
+
+	// Upsert these into our local state. Use copies, so we can alter the
+	// binding rules directly and use within the diff func.
+	err := stateStore.UpsertACLBindingRules(50,
+		[]*structs.ACLBindingRule{aclBindingRule0.Copy(), aclBindingRule1.Copy(),
+			aclBindingRule2.Copy(), aclBindingRule3.Copy()}, true)
+	must.NoError(t, err)
+
+	// Modify the ACL auth-methods to create a number of differences. These
+	// methods represent the state of the authoritative region.
+	aclBindingRule2.ModifyIndex = 50
+	aclBindingRule3.ModifyIndex = 200
+	aclBindingRule3.Hash = []byte{0, 1, 2, 3}
+	aclBindingRule4 := mock.ACLBindingRule()
+
+	// Run the diff function and test the output.
+	toDelete, toUpdate := diffACLBindingRules(stateStore, 50, []*structs.ACLBindingRuleListStub{
+		aclBindingRule2.Stub(), aclBindingRule3.Stub(), aclBindingRule4.Stub()})
+	must.SliceContainsAll(t, []string{aclBindingRule0.ID, aclBindingRule1.ID}, toDelete)
+	must.SliceContainsAll(t, []string{aclBindingRule3.ID, aclBindingRule4.ID}, toUpdate)
 }
 
 func TestLeader_Reelection(t *testing.T) {
@@ -1609,6 +1805,87 @@ func TestLeader_DiffNamespaces(t *testing.T) {
 
 	// ns2 is un-modified - ignore. ns3 modified, ns4 new.
 	assert.Equal(t, []string{ns3.Name, ns4.Name}, update)
+}
+
+func TestLeader_ReplicateNodePools(t *testing.T) {
+	ci.Parallel(t)
+
+	s1, root, cleanupS1 := TestACLServer(t, func(c *Config) {
+		c.Region = "region1"
+		c.AuthoritativeRegion = "region1"
+		c.ACLEnabled = true
+	})
+	defer cleanupS1()
+	s2, _, cleanupS2 := TestACLServer(t, func(c *Config) {
+		c.Region = "region2"
+		c.AuthoritativeRegion = "region1"
+		c.ACLEnabled = true
+		c.ReplicationBackoff = 20 * time.Millisecond
+		c.ReplicationToken = root.SecretID
+	})
+	defer cleanupS2()
+	TestJoin(t, s1, s2)
+	testutil.WaitForLeader(t, s1.RPC)
+	testutil.WaitForLeader(t, s2.RPC)
+
+	// Write a node pool to the authoritative region
+	np1 := mock.NodePool()
+	must.NoError(t, s1.State().UpsertNodePools(
+		structs.MsgTypeTestSetup, 100, []*structs.NodePool{np1}))
+
+	// Wait for the node pool to replicate
+	testutil.WaitForResult(func() (bool, error) {
+		store := s2.State()
+		out, err := store.NodePoolByName(nil, np1.Name)
+		return out != nil, err
+	}, func(err error) {
+		t.Fatalf("should replicate node pool")
+	})
+
+	// Delete the node pool at the authoritative region
+	must.NoError(t, s1.State().DeleteNodePools(structs.MsgTypeTestSetup, 200, []string{np1.Name}))
+
+	// Wait for the namespace deletion to replicate
+	testutil.WaitForResult(func() (bool, error) {
+		store := s2.State()
+		out, err := store.NodePoolByName(nil, np1.Name)
+		return out == nil, err
+	}, func(err error) {
+		t.Fatalf("should replicate node pool deletion")
+	})
+}
+
+func TestLeader_DiffNodePools(t *testing.T) {
+	ci.Parallel(t)
+
+	state := state.TestStateStore(t)
+
+	// Populate the local state
+	np1, np2, np3 := mock.NodePool(), mock.NodePool(), mock.NodePool()
+	must.NoError(t, state.UpsertNodePools(
+		structs.MsgTypeTestSetup, 100, []*structs.NodePool{np1, np2, np3}))
+
+	// Simulate a remote list
+	rnp2 := np2.Copy()
+	rnp2.ModifyIndex = 50 // Ignored, same index
+	rnp3 := np3.Copy()
+	rnp3.ModifyIndex = 100 // Updated, higher index
+	rnp3.Description = "force a hash update"
+	rnp3.SetHash()
+	rnp4 := mock.NodePool()
+	remoteList := []*structs.NodePool{
+		rnp2,
+		rnp3,
+		rnp4,
+	}
+	delete, update := diffNodePools(state, 50, remoteList)
+	sort.Strings(delete)
+
+	// np1 does not exist on the remote side, should delete
+	test.Eq(t, []string{structs.NodePoolAll, structs.NodePoolDefault, np1.Name}, delete)
+
+	// np2 is un-modified - ignore. np3 modified, np4 new.
+	test.Eq(t, []*structs.NodePool{rnp3, rnp4}, update)
 }
 
 // waitForStableLeadership waits until a leader is elected and all servers

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package testutil
 
 import (
@@ -12,6 +15,14 @@ import (
 func RequireRoot(t *testing.T) {
 	if syscall.Geteuid() != 0 {
 		t.Skip("Test requires root")
+	}
+}
+
+// RequireNonRoot skips tests unless:
+// - running as non-root
+func RequireNonRoot(t *testing.T) {
+	if syscall.Geteuid() == 0 {
+		t.Skip("Test requires non-root")
 	}
 }
 

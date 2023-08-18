@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 //go:build linux
 
 package cgutil
@@ -244,6 +247,11 @@ func (c *cpusetManagerV2) cleanup() {
 	}
 
 	if err := filepath.WalkDir(c.parentAbs, func(path string, entry os.DirEntry, err error) error {
+		// skip anything we cannot read
+		if err != nil {
+			return nil
+		}
+
 		// a cgroup is a directory
 		if !entry.IsDir() {
 			return nil
@@ -322,7 +330,8 @@ func (c *cpusetManagerV2) write(id identity, set cpuset.CPUSet) {
 
 	// set the cpuset value for the cgroup
 	if err = m.Set(&configs.Resources{
-		CpusetCpus: set.String(),
+		CpusetCpus:  set.String(),
+		SkipDevices: true,
 	}); err != nil {
 		c.logger.Error("failed to set cgroup", "path", path, "error", err)
 		return

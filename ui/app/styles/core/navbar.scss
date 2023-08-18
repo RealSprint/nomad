@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: MPL-2.0
+ */
+
 .navbar {
   display: flex;
   align-items: center;
@@ -173,5 +178,14 @@
     .ember-power-select-status-icon {
       border-top-color: white;
     }
+  }
+
+  .custom-label {
+    border-radius: 1rem;
+    padding: 0.25rem 1rem;
+    background: black;
+    color: white;
+    display: grid;
+    align-self: center;
   }
 }

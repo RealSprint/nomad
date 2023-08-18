@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package agent
 
 import (
@@ -90,7 +93,7 @@ func TestClientStatsRequest_ACL(t *testing.T) {
 			respW := httptest.NewRecorder()
 			_, err := s.Server.ClientStatsRequest(respW, req)
 			assert.NotNil(err)
-			assert.Equal(err.Error(), structs.ErrPermissionDenied.Error())
+			assert.ErrorContains(err, structs.ErrPermissionDenied.Error())
 		}
 
 		// Try request with an invalid token and expect failure

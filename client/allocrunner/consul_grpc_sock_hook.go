@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package allocrunner
 
 import (
@@ -39,7 +42,7 @@ var (
 // consulGRPCSocketHook creates Unix sockets to allow communication from inside a
 // netns to Consul gRPC endpoint.
 //
-// Noop for allocations without a group Connect stanza using bridge networking.
+// Noop for allocations without a group Connect block using bridge networking.
 type consulGRPCSocketHook struct {
 	logger hclog.Logger
 
@@ -195,7 +198,6 @@ func (p *grpcSocketProxy) run(alloc *structs.Allocation) error {
 			return fmt.Errorf("error parsing Consul address %q: %v",
 				p.config.Addr, err)
 		}
-
 		destAddr = net.JoinHostPort(host, p.consulGRPCFallbackPort)
 	}
 

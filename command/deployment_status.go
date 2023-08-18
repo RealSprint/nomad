@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package command
 
 import (
@@ -252,7 +255,7 @@ UPDATE:
 		deploy, meta, err = client.Deployments().Info(deployID, &q)
 		if err != nil {
 			d.Append(glint.Layout(glint.Style(
-				glint.Text(fmt.Sprintf("%s: Error fetching deployment", formatTime(time.Now()))),
+				glint.Text(fmt.Sprintf("%s: Error fetching deployment: %v", formatTime(time.Now()), err)),
 				glint.Color("red"),
 			)).MarginLeft(4), glint.Text(""))
 			d.RenderFrame()
@@ -278,7 +281,7 @@ UPDATE:
 				allocComponent = glint.Layout(
 					allocComponent,
 					glint.Style(
-						glint.Text("Error fetching allocations"),
+						glint.Text(fmt.Sprintf("Error fetching allocations: %v", err)),
 						glint.Color("red"),
 					),
 				)
@@ -321,7 +324,7 @@ UPDATE:
 
 				if err != nil {
 					d.Append(glint.Layout(glint.Style(
-						glint.Text(fmt.Sprintf("%s: Error fetching rollback deployment", formatTime(time.Now()))),
+						glint.Text(fmt.Sprintf("%s: Error fetching rollback deployment: %v", formatTime(time.Now()), err)),
 						glint.Color("red"),
 					)).MarginLeft(4), glint.Text(""))
 					d.RenderFrame()
@@ -332,7 +335,7 @@ UPDATE:
 				// TODO We may want to find a more robust way of waiting for rollbacks to launch instead of
 				// just sleeping for 1 sec. If scheduling is slow, this will break update here instead of
 				// waiting for the (eventual) rollback
-				if rollback.ID == deploy.ID {
+				if rollback == nil || rollback.ID == deploy.ID {
 					break UPDATE
 				}
 
@@ -390,7 +393,7 @@ func (c *DeploymentStatusCommand) defaultMonitor(client *api.Client, deployID st
 		var meta *api.QueryMeta
 		deploy, meta, err = client.Deployments().Info(deployID, &q)
 		if err != nil {
-			c.Ui.Error(c.Colorize().Color(fmt.Sprintf("%s: Error fetching deployment", formatTime(time.Now()))))
+			c.Ui.Error(c.Colorize().Color(fmt.Sprintf("%s: Error fetching deployment: %v", formatTime(time.Now()), err)))
 			return
 		}
 
@@ -402,7 +405,7 @@ func (c *DeploymentStatusCommand) defaultMonitor(client *api.Client, deployID st
 			info += "\n\n[bold]Allocations[reset]\n"
 			allocs, _, err := client.Deployments().Allocations(deployID, nil)
 			if err != nil {
-				info += "Error fetching allocations"
+				info += fmt.Sprintf("Error fetching allocations: %v", err)
 			} else {
 				info += formatAllocListStubs(allocs, verbose, length)
 			}
@@ -432,7 +435,7 @@ func (c *DeploymentStatusCommand) defaultMonitor(client *api.Client, deployID st
 				c.Ui.Output("")
 				if err != nil {
 					c.Ui.Error(c.Colorize().Color(
-						fmt.Sprintf("%s: Error fetching deployment of previous job version", formatTime(time.Now())),
+						fmt.Sprintf("%s: Error fetching deployment of previous job version: %v", formatTime(time.Now()), err),
 					))
 					return
 				}
@@ -441,7 +444,7 @@ func (c *DeploymentStatusCommand) defaultMonitor(client *api.Client, deployID st
 				// TODO We may want to find a more robust way of waiting for rollbacks to launch instead of
 				// just sleeping for 1 sec. If scheduling is slow, this will break update here instead of
 				// waiting for the (eventual) rollback
-				if rollback.ID == deploy.ID {
+				if rollback == nil || rollback.ID == deploy.ID {
 					return
 				}
 				c.defaultMonitor(client, rollback.ID, index, wait, verbose)

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package main
 
 import (
@@ -13,6 +16,7 @@ import (
 	// into their command logic. This is because they are run as separate
 	// processes along side of a task. By early importing them we can avoid
 	// additional code being imported and thus reserving memory.
+	_ "github.com/hashicorp/nomad/client/allocrunner/taskrunner/getter"
 	_ "github.com/hashicorp/nomad/client/logmon"
 	_ "github.com/hashicorp/nomad/drivers/docker/docklog"
 	_ "github.com/hashicorp/nomad/drivers/shared/executor"
@@ -21,7 +25,6 @@ import (
 	"github.com/hashicorp/nomad/command"
 	"github.com/hashicorp/nomad/version"
 	"github.com/mitchellh/cli"
-	"github.com/sean-/seed"
 )
 
 var (
@@ -36,8 +39,6 @@ var (
 		"debug",
 		"eval-status",
 		"executor",
-		"keygen",
-		"keyring",
 		"logmon",
 		"node-drain",
 		"node-status",
@@ -75,19 +76,11 @@ var (
 	}
 )
 
-func init() {
-	seed.Init()
-}
-
 func main() {
 	os.Exit(Run(os.Args[1:]))
 }
 
 func Run(args []string) int {
-	return RunCustom(args)
-}
-
-func RunCustom(args []string) int {
 	// Create the meta object
 	metaPtr := new(command.Meta)
 	metaPtr.SetupUi(args)

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package structs
 
 import (
@@ -20,11 +23,11 @@ const CSISocketName = "csi.sock"
 // where Nomad will expect plugins to create intermediary mounts for volumes.
 const CSIIntermediaryDirname = "volumes"
 
-// VolumeTypeCSI is the type in the volume stanza of a TaskGroup
+// VolumeTypeCSI is the type in the volume block of a TaskGroup
 const VolumeTypeCSI = "csi"
 
 // CSIPluginType is an enum string that encapsulates the valid options for a
-// CSIPlugin stanza's Type. These modes will allow the plugin to be used in
+// CSIPlugin block's Type. These modes will allow the plugin to be used in
 // different ways by the client.
 type CSIPluginType string
 
@@ -78,6 +81,25 @@ type TaskCSIPluginConfig struct {
 	// HealthTimeout is the time after which the CSI plugin tasks will be killed
 	// if the CSI Plugin is not healthy.
 	HealthTimeout time.Duration `mapstructure:"health_timeout" hcl:"health_timeout,optional"`
+}
+
+func (t *TaskCSIPluginConfig) Equal(o *TaskCSIPluginConfig) bool {
+	if t == nil || o == nil {
+		return t == o
+	}
+	switch {
+	case t.ID != o.ID:
+		return false
+	case t.Type != o.Type:
+		return false
+	case t.MountDir != o.MountDir:
+		return false
+	case t.StagePublishBaseDir != o.StagePublishBaseDir:
+		return false
+	case t.HealthTimeout != o.HealthTimeout:
+		return false
+	}
+	return true
 }
 
 func (t *TaskCSIPluginConfig) Copy() *TaskCSIPluginConfig {

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package command
 
 import (
@@ -29,7 +32,7 @@ Usage: nomad deployment <subcommand> [options] [args]
       $ nomad deployment promote <deployment-id>
 
   Mark a deployment as failed. This will stop new allocations from being placed
-  and if the job's upgrade stanza specifies auto_revert, causes the job to
+  and if the job's upgrade block specifies auto_revert, causes the job to
   revert back to the last stable version of the job:
 
       $ nomad deployment fail <deployment-id>

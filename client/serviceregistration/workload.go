@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package serviceregistration
 
 import (
@@ -20,13 +23,13 @@ type WorkloadServices struct {
 	ProviderNamespace string
 
 	// Restarter allows restarting the task or task group depending on the
-	// check_restart stanzas.
+	// check_restart blocks.
 	Restarter WorkloadRestarter
 
 	// Services and checks to register for the task.
 	Services []*structs.Service
 
-	// Networks from the task's resources stanza.
+	// Networks from the task's resources block.
 	// TODO: remove and use Ports
 	Networks structs.Networks
 

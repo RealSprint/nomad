@@ -1,8 +1,10 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package command
 
 import (
 	"io"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -23,7 +25,7 @@ func TestRunCommand_Output_Json(t *testing.T) {
 	ui := cli.NewMockUi()
 	cmd := &JobRunCommand{Meta: Meta{Ui: ui}}
 
-	fh, err := ioutil.TempFile("", "nomad")
+	fh, err := os.CreateTemp("", "nomad")
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -66,7 +68,7 @@ func TestRunCommand_hcl1_hcl2_strict(t *testing.T) {
 			"-hcl1", "-hcl2-strict",
 			"-address", addr,
 			"-detach",
-			"assets/example-short.nomad",
+			"asset/example-short.nomad.hcl",
 		})
 		require.Equal(t, 0, got, ui.ErrorWriter.String())
 	})
@@ -101,7 +103,7 @@ func TestRunCommand_Fails(t *testing.T) {
 	ui.ErrorWriter.Reset()
 
 	// Fails on invalid HCL
-	fh1, err := ioutil.TempFile("", "nomad")
+	fh1, err := os.CreateTemp("", "nomad")
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -118,7 +120,7 @@ func TestRunCommand_Fails(t *testing.T) {
 	ui.ErrorWriter.Reset()
 
 	// Fails on invalid job spec
-	fh2, err := ioutil.TempFile("", "nomad")
+	fh2, err := os.CreateTemp("", "nomad")
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -135,7 +137,7 @@ func TestRunCommand_Fails(t *testing.T) {
 	ui.ErrorWriter.Reset()
 
 	// Fails on connection failure (requires a valid job)
-	fh3, err := ioutil.TempFile("", "nomad")
+	fh3, err := os.CreateTemp("", "nomad")
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -258,7 +260,7 @@ func TestRunCommand_JSON(t *testing.T) {
 	}()
 
 	// First convert HCL -> JSON with -output
-	stdout, stderr, code := run("-output", "assets/example-short.nomad")
+	stdout, stderr, code := run("-output", "asset/example-short.nomad.hcl")
 	require.Zero(t, code, stderr)
 	require.Empty(t, stderr)
 	require.NotEmpty(t, stdout)

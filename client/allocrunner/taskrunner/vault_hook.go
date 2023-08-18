@@ -1,10 +1,13 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package taskrunner
 
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
+	"path"
 	"path/filepath"
 	"sync"
 	"time"
@@ -45,19 +48,19 @@ func (tr *TaskRunner) updatedVaultToken(token string) {
 }
 
 type vaultHookConfig struct {
-	vaultStanza *structs.Vault
-	client      vaultclient.VaultClient
-	events      ti.EventEmitter
-	lifecycle   ti.TaskLifecycle
-	updater     vaultTokenUpdateHandler
-	logger      log.Logger
-	alloc       *structs.Allocation
-	task        string
+	vaultBlock *structs.Vault
+	client     vaultclient.VaultClient
+	events     ti.EventEmitter
+	lifecycle  ti.TaskLifecycle
+	updater    vaultTokenUpdateHandler
+	logger     log.Logger
+	alloc      *structs.Allocation
+	task       string
 }
 
 type vaultHook struct {
-	// vaultStanza is the vault stanza for the task
-	vaultStanza *structs.Vault
+	// vaultBlock is the vault block for the task
+	vaultBlock *structs.Vault
 
 	// eventEmitter is used to emit events to the task
 	eventEmitter ti.EventEmitter
@@ -78,8 +81,13 @@ type vaultHook struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	// tokenPath is the path in which to read and write the token
-	tokenPath string
+	// privateDirTokenPath is the path inside the task's private directory where
+	// the Vault token is read and written.
+	privateDirTokenPath string
+
+	// secretsDirTokenPath is the path inside the task's secret directory where the
+	// Vault token is written unless disabled by the task.
+	secretsDirTokenPath string
 
 	// alloc is the allocation
 	alloc *structs.Allocation
@@ -97,7 +105,7 @@ type vaultHook struct {
 func newVaultHook(config *vaultHookConfig) *vaultHook {
 	ctx, cancel := context.WithCancel(context.Background())
 	h := &vaultHook{
-		vaultStanza:  config.vaultStanza,
+		vaultBlock:   config.vaultBlock,
 		client:       config.client,
 		eventEmitter: config.events,
 		lifecycle:    config.lifecycle,
@@ -129,17 +137,24 @@ func (h *vaultHook) Prestart(ctx context.Context, req *interfaces.TaskPrestartRe
 	// Try to recover a token if it was previously written in the secrets
 	// directory
 	recoveredToken := ""
-	h.tokenPath = filepath.Join(req.TaskDir.SecretsDir, vaultTokenFile)
-	data, err := ioutil.ReadFile(h.tokenPath)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("failed to recover vault token: %v", err)
-		}
+	h.privateDirTokenPath = filepath.Join(req.TaskDir.PrivateDir, vaultTokenFile)
+	h.secretsDirTokenPath = filepath.Join(req.TaskDir.SecretsDir, vaultTokenFile)
 
-		// Token file doesn't exist
-	} else {
-		// Store the recovered token
-		recoveredToken = string(data)
+	// Handle upgrade path by searching for the previous token in all possible
+	// paths where the token may be.
+	for _, path := range []string{h.privateDirTokenPath, h.secretsDirTokenPath} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				return fmt.Errorf("failed to recover vault token from %s: %v", path, err)
+			}
+
+			// Token file doesn't exist in this path.
+		} else {
+			// Store the recovered token
+			recoveredToken = string(data)
+			break
+		}
 	}
 
 	// Launch the token manager
@@ -239,9 +254,9 @@ OUTER:
 		h.future.Set(token)
 
 		if updatedToken {
-			switch h.vaultStanza.ChangeMode {
+			switch h.vaultBlock.ChangeMode {
 			case structs.VaultChangeModeSignal:
-				s, err := signals.Parse(h.vaultStanza.ChangeSignal)
+				s, err := signals.Parse(h.vaultBlock.ChangeSignal)
 				if err != nil {
 					h.logger.Error("failed to parse signal", "error", err)
 					h.lifecycle.Kill(h.ctx,
@@ -252,7 +267,7 @@ OUTER:
 				}
 
 				event := structs.NewTaskEvent(structs.TaskSignaling).SetTaskSignal(s).SetDisplayMessage("Vault: new Vault token acquired")
-				if err := h.lifecycle.Signal(event, h.vaultStanza.ChangeSignal); err != nil {
+				if err := h.lifecycle.Signal(event, h.vaultBlock.ChangeSignal); err != nil {
 					h.logger.Error("failed to send signal", "error", err)
 					h.lifecycle.Kill(h.ctx,
 						structs.NewTaskEvent(structs.TaskKilling).
@@ -268,7 +283,7 @@ OUTER:
 			case structs.VaultChangeModeNoop:
 				fallthrough
 			default:
-				h.logger.Error("invalid Vault change mode", "mode", h.vaultStanza.ChangeMode)
+				h.logger.Error("invalid Vault change mode", "mode", h.vaultBlock.ChangeMode)
 			}
 
 			// We have handled it
@@ -343,8 +358,24 @@ func (h *vaultHook) deriveVaultToken() (token string, exit bool) {
 
 // writeToken writes the given token to disk
 func (h *vaultHook) writeToken(token string) error {
-	if err := ioutil.WriteFile(h.tokenPath, []byte(token), 0666); err != nil {
+	// Handle upgrade path by first checking if the tasks private directory
+	// exists. If it doesn't, this allocation probably existed before the
+	// private directory was introduced, so keep using the secret directory to
+	// prevent unnecessary errors during task recovery.
+	if _, err := os.Stat(path.Dir(h.privateDirTokenPath)); os.IsNotExist(err) {
+		if err := os.WriteFile(h.secretsDirTokenPath, []byte(token), 0666); err != nil {
+			return fmt.Errorf("failed to write vault token to secrets dir: %v", err)
+		}
+		return nil
+	}
+
+	if err := os.WriteFile(h.privateDirTokenPath, []byte(token), 0600); err != nil {
 		return fmt.Errorf("failed to write vault token: %v", err)
+	}
+	if !h.vaultBlock.DisableFile {
+		if err := os.WriteFile(h.secretsDirTokenPath, []byte(token), 0666); err != nil {
+			return fmt.Errorf("failed to write vault token to secrets dir: %v", err)
+		}
 	}
 
 	return nil

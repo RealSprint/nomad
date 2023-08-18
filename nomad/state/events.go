@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package state
 
 import (
@@ -9,6 +12,8 @@ var MsgTypeEvents = map[structs.MessageType]string{
 	structs.NodeRegisterRequestType:                      structs.TypeNodeRegistration,
 	structs.NodeDeregisterRequestType:                    structs.TypeNodeDeregistration,
 	structs.UpsertNodeEventsType:                         structs.TypeNodeEvent,
+	structs.NodePoolUpsertRequestType:                    structs.TypeNodePoolUpserted,
+	structs.NodePoolDeleteRequestType:                    structs.TypeNodePoolDeleted,
 	structs.EvalUpdateRequestType:                        structs.TypeEvalUpdated,
 	structs.AllocClientUpdateRequestType:                 structs.TypeAllocationUpdated,
 	structs.JobRegisterRequestType:                       structs.TypeJobRegistered,
@@ -31,6 +36,8 @@ var MsgTypeEvents = map[structs.MessageType]string{
 	structs.ACLRolesUpsertRequestType:                    structs.TypeACLRoleUpserted,
 	structs.ACLAuthMethodsUpsertRequestType:              structs.TypeACLAuthMethodUpserted,
 	structs.ACLAuthMethodsDeleteRequestType:              structs.TypeACLAuthMethodDeleted,
+	structs.ACLBindingRulesUpsertRequestType:             structs.TypeACLBindingRuleUpserted,
+	structs.ACLBindingRulesDeleteRequestType:             structs.TypeACLBindingRuleDeleted,
 	structs.ServiceRegistrationUpsertRequestType:         structs.TypeServiceRegistration,
 	structs.ServiceRegistrationDeleteByIDRequestType:     structs.TypeServiceDeregistration,
 	structs.ServiceRegistrationDeleteByNodeIDRequestType: structs.TypeServiceDeregistration,
@@ -105,6 +112,19 @@ func eventFromChange(change memdb.Change) (structs.Event, bool) {
 					AuthMethod: before,
 				},
 			}, true
+		case TableACLBindingRules:
+			before, ok := change.Before.(*structs.ACLBindingRule)
+			if !ok {
+				return structs.Event{}, false
+			}
+			return structs.Event{
+				Topic:      structs.TopicACLBindingRule,
+				Key:        before.ID,
+				FilterKeys: []string{before.AuthMethod},
+				Payload: &structs.ACLBindingRuleEvent{
+					ACLBindingRule: before,
+				},
+			}, true
 		case "nodes":
 			before, ok := change.Before.(*structs.Node)
 			if !ok {
@@ -117,6 +137,18 @@ func eventFromChange(change memdb.Change) (structs.Event, bool) {
 				Key:   before.ID,
 				Payload: &structs.NodeStreamEvent{
 					Node: before,
+				},
+			}, true
+		case TableNodePools:
+			before, ok := change.Before.(*structs.NodePool)
+			if !ok {
+				return structs.Event{}, false
+			}
+			return structs.Event{
+				Topic: structs.TopicNodePool,
+				Key:   before.Name,
+				Payload: &structs.NodePoolEvent{
+					NodePool: before,
 				},
 			}, true
 		case TableServiceRegistrations:
@@ -189,6 +221,19 @@ func eventFromChange(change memdb.Change) (structs.Event, bool) {
 				AuthMethod: after,
 			},
 		}, true
+	case TableACLBindingRules:
+		after, ok := change.After.(*structs.ACLBindingRule)
+		if !ok {
+			return structs.Event{}, false
+		}
+		return structs.Event{
+			Topic:      structs.TopicACLBindingRule,
+			Key:        after.ID,
+			FilterKeys: []string{after.AuthMethod},
+			Payload: &structs.ACLBindingRuleEvent{
+				ACLBindingRule: after,
+			},
+		}, true
 	case "evals":
 		after, ok := change.After.(*structs.Evaluation)
 		if !ok {
@@ -255,6 +300,18 @@ func eventFromChange(change memdb.Change) (structs.Event, bool) {
 			Key:   after.ID,
 			Payload: &structs.NodeStreamEvent{
 				Node: after,
+			},
+		}, true
+	case TableNodePools:
+		after, ok := change.After.(*structs.NodePool)
+		if !ok {
+			return structs.Event{}, false
+		}
+		return structs.Event{
+			Topic: structs.TopicNodePool,
+			Key:   after.Name,
+			Payload: &structs.NodePoolEvent{
+				NodePool: after,
 			},
 		}, true
 	case "deployment":

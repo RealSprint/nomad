@@ -1,3 +1,6 @@
+# Copyright (c) HashiCorp, Inc.
+# SPDX-License-Identifier: MPL-2.0
+
 variable "cn_network" {
   default     = "dc1"
   description = "Data Ceneter that the job needs to be run in"
@@ -134,7 +137,7 @@ job "kadalu-csi-controller" {
         }
 
         mount {
-          # If you are not using gluster native quota comment out this stanza
+          # If you are not using gluster native quota comment out this block
           type     = "bind"
           source   = "./${NOMAD_SECRETS_DIR}/ssh-privatekey"
           target   = "/etc/secret-volume/ssh-privatekey"

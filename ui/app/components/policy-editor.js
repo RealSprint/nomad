@@ -1,11 +1,15 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: MPL-2.0
+ */
+
 import Component from '@glimmer/component';
 import { action } from '@ember/object';
 import { inject as service } from '@ember/service';
 import { alias } from '@ember/object/computed';
-import messageForError from 'nomad-ui/utils/message-from-adapter-error';
 
 export default class PolicyEditorComponent extends Component {
-  @service flashMessages;
+  @service notifications;
   @service router;
   @service store;
 
@@ -23,9 +27,11 @@ export default class PolicyEditorComponent extends Component {
       const nameRegex = '^[a-zA-Z0-9-]{1,128}$';
       if (!this.policy.name?.match(nameRegex)) {
         throw new Error(
-          'Policy name must be 1-128 characters long and can only contain letters, numbers, and dashes.'
+          `Policy name must be 1-128 characters long and can only contain letters, numbers, and dashes.`
         );
       }
+
+      const shouldRedirectAfterSave = this.policy.isNew;
 
       if (
         this.policy.isNew &&
@@ -40,21 +46,19 @@ export default class PolicyEditorComponent extends Component {
 
       await this.policy.save();
 
-      this.flashMessages.add({
+      this.notifications.add({
         title: 'Policy Saved',
-        type: 'success',
-        destroyOnClick: false,
-        timeout: 5000,
+        color: 'success',
       });
 
-      this.router.transitionTo('policies');
+      if (shouldRedirectAfterSave) {
+        this.router.transitionTo('policies.policy', this.policy.id);
+      }
     } catch (error) {
-      console.log('error and its', error);
-      this.flashMessages.add({
+      this.notifications.add({
         title: `Error creating Policy ${this.policy.name}`,
-        message: messageForError(error),
-        type: 'error',
-        destroyOnClick: false,
+        message: error,
+        color: 'critical',
         sticky: true,
       });
     }

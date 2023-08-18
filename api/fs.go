@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package api
 
 import (
@@ -8,6 +11,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/hashicorp/go-multierror"
 )
 
 const (
@@ -16,6 +21,14 @@ const (
 	// and end of a file.
 	OriginStart = "start"
 	OriginEnd   = "end"
+
+	// FSLogNameStdout is the name given to the stdout log stream of a task. It
+	// can be used when calling AllocFS.Logs as the logType parameter.
+	FSLogNameStdout = "stdout"
+
+	// FSLogNameStderr is the name given to the stderr log stream of a task. It
+	// can be used when calling AllocFS.Logs as the logType parameter.
+	FSLogNameStderr = "stderr"
 )
 
 // AllocFileInfo holds information about a file inside the AllocDir
@@ -288,7 +301,12 @@ func (a *AllocFS) Logs(alloc *Allocation, follow bool, task, logType, origin str
 				if err == io.EOF || err == io.ErrClosedPipe {
 					close(frames)
 				} else {
-					errCh <- err
+					buf, err2 := io.ReadAll(dec.Buffered())
+					if err2 != nil {
+						errCh <- fmt.Errorf("failed to decode and failed to read buffered data: %w", multierror.Append(err, err2))
+					} else {
+						errCh <- fmt.Errorf("failed to decode log endpoint response as JSON: %q", buf)
+					}
 				}
 				return
 			}

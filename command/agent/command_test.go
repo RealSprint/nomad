@@ -1,8 +1,11 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package agent
 
 import (
-	"io/ioutil"
 	"math"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -68,6 +71,10 @@ func TestCommand_Args(t *testing.T) {
 			[]string{"-client", "-data-dir=" + tmpDir, "-meta=invalid.=inaccessible-value"},
 			"Invalid Client.Meta key: invalid.",
 		},
+		{
+			[]string{"-client", "-node-pool=not@valid"},
+			"Invalid node pool",
+		},
 	}
 	for _, tc := range tcases {
 		// Make a new command. We preemptively close the shutdownCh
@@ -109,7 +116,7 @@ func TestCommand_MetaConfigValidation(t *testing.T) {
 	}
 	for _, tc := range tcases {
 		configFile := filepath.Join(tmpDir, "conf1.hcl")
-		err := ioutil.WriteFile(configFile, []byte(`client{
+		err := os.WriteFile(configFile, []byte(`client{
 			enabled = true
 			meta = {
 				"valid" = "yes"
@@ -148,7 +155,7 @@ func TestCommand_MetaConfigValidation(t *testing.T) {
 	}
 }
 
-func TestCommand_NullCharInDatacenter(t *testing.T) {
+func TestCommand_InvalidCharInDatacenter(t *testing.T) {
 	ci.Parallel(t)
 
 	tmpDir := t.TempDir()
@@ -157,10 +164,13 @@ func TestCommand_NullCharInDatacenter(t *testing.T) {
 		"char-\\000-in-the-middle",
 		"ends-with-\\000",
 		"\\000-at-the-beginning",
+		"char-*-in-the-middle",
+		"ends-with-*",
+		"*-at-the-beginning",
 	}
 	for _, tc := range tcases {
 		configFile := filepath.Join(tmpDir, "conf1.hcl")
-		err := ioutil.WriteFile(configFile, []byte(`
+		err := os.WriteFile(configFile, []byte(`
         datacenter = "`+tc+`"
         client{
 			enabled = true
@@ -188,7 +198,7 @@ func TestCommand_NullCharInDatacenter(t *testing.T) {
 		}
 
 		out := ui.ErrorWriter.String()
-		exp := "Datacenter contains invalid characters"
+		exp := "Datacenter contains invalid characters (null or '*')"
 		if !strings.Contains(out, exp) {
 			t.Fatalf("expect to find %q\n\n%s", exp, out)
 		}
@@ -207,7 +217,7 @@ func TestCommand_NullCharInRegion(t *testing.T) {
 	}
 	for _, tc := range tcases {
 		configFile := filepath.Join(tmpDir, "conf1.hcl")
-		err := ioutil.WriteFile(configFile, []byte(`
+		err := os.WriteFile(configFile, []byte(`
         region = "`+tc+`"
         client{
 			enabled = true
@@ -298,6 +308,26 @@ func TestIsValidConfig(t *testing.T) {
 				DataDir: "foo/bar",
 			},
 			err: "must be given as an absolute",
+		},
+		{
+			name: "InvalidNodePoolChar",
+			conf: Config{
+				Client: &ClientConfig{
+					Enabled:  true,
+					NodePool: "not@valid",
+				},
+			},
+			err: "Invalid node pool",
+		},
+		{
+			name: "InvalidNodePoolName",
+			conf: Config{
+				Client: &ClientConfig{
+					Enabled:  true,
+					NodePool: structs.NodePoolAll,
+				},
+			},
+			err: "not allowed",
 		},
 		{
 			name: "NegativeMinDynamicPort",
@@ -398,7 +428,49 @@ func TestIsValidConfig(t *testing.T) {
 					},
 				},
 			},
-			err: "client.artifact stanza invalid: http_read_timeout must be > 0",
+			err: "client.artifact block invalid: http_read_timeout must be > 0",
+		},
+		{
+			name: "BadHostVolumeConfig",
+			conf: Config{
+				DataDir: "/tmp",
+				Client: &ClientConfig{
+					Enabled: true,
+					HostVolumes: []*structs.ClientHostVolumeConfig{
+						{
+							Name:     "test",
+							ReadOnly: true,
+						},
+						{
+							Name:     "test",
+							ReadOnly: true,
+							Path:     "/random/path",
+						},
+					},
+				},
+			},
+			err: "Missing path in host_volume config",
+		},
+		{
+			name: "ValidHostVolumeConfig",
+			conf: Config{
+				DataDir: "/tmp",
+				Client: &ClientConfig{
+					Enabled: true,
+					HostVolumes: []*structs.ClientHostVolumeConfig{
+						{
+							Name:     "test",
+							ReadOnly: true,
+							Path:     "/random/path1",
+						},
+						{
+							Name:     "test",
+							ReadOnly: true,
+							Path:     "/random/path2",
+						},
+					},
+				},
+			},
 		},
 	}
 

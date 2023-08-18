@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package consul
 
 import (
@@ -87,7 +90,7 @@ const (
 
 // Additional Consul ACLs required
 // - Consul Template: key:read
-//   Used in tasks with template stanza that use Consul keys.
+//   Used in tasks with template block that use Consul keys.
 
 // CatalogAPI is the consul/api.Catalog API used by Nomad.
 //
@@ -1120,8 +1123,8 @@ func (c *ServiceClient) serviceRegs(
 		Port:              port,
 		Meta:              meta,
 		TaggedAddresses:   taggedAddresses,
-		Connect:           connect, // will be nil if no Connect stanza
-		Proxy:             gateway, // will be nil if no Connect Gateway stanza
+		Connect:           connect, // will be nil if no Connect block
+		Proxy:             gateway, // will be nil if no Connect Gateway block
 		Checks:            make([]*api.AgentServiceCheck, 0, len(service.Checks)),
 	}
 	ops.regServices = append(ops.regServices, serviceReg)
@@ -1161,6 +1164,7 @@ func apiCheckRegistrationToCheck(r *api.AgentCheckRegistration) *api.AgentServic
 		Body:                   r.Body,
 		TCP:                    r.TCP,
 		Status:                 r.Status,
+		TLSServerName:          r.TLSServerName,
 		TLSSkipVerify:          r.TLSSkipVerify,
 		GRPC:                   r.GRPC,
 		GRPCUseTLS:             r.GRPCUseTLS,
@@ -1650,6 +1654,7 @@ func createCheckReg(serviceID, checkID string, check *structs.ServiceCheck, host
 		if check.TLSSkipVerify {
 			chkReg.TLSSkipVerify = true
 		}
+		chkReg.TLSServerName = check.TLSServerName
 		base := url.URL{
 			Scheme: proto,
 			Host:   net.JoinHostPort(host, strconv.Itoa(port)),
@@ -1678,6 +1683,7 @@ func createCheckReg(serviceID, checkID string, check *structs.ServiceCheck, host
 		if check.TLSSkipVerify {
 			chkReg.TLSSkipVerify = true
 		}
+		chkReg.TLSServerName = check.TLSServerName
 
 	default:
 		return nil, fmt.Errorf("check type %+q not valid", check.Type)

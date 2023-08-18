@@ -1,12 +1,15 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package command
 
 import (
 	"bytes"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -14,10 +17,12 @@ import (
 
 	"github.com/hashicorp/nomad/api"
 	"github.com/hashicorp/nomad/ci"
+	"github.com/hashicorp/nomad/client/testutil"
 	"github.com/hashicorp/nomad/helper/flatmap"
 	"github.com/hashicorp/nomad/helper/pointer"
 	"github.com/kr/pretty"
 	"github.com/mitchellh/cli"
+	"github.com/shoenig/test/must"
 	"github.com/stretchr/testify/require"
 )
 
@@ -130,9 +135,9 @@ test`,
 	}
 
 	for i, c := range cases {
-		in := ioutil.NopCloser(strings.NewReader(c.Input))
+		in := io.NopCloser(strings.NewReader(c.Input))
 		limit := NewLineLimitReader(in, c.Lines, c.SearchLimit, 0)
-		outBytes, err := ioutil.ReadAll(limit)
+		outBytes, err := io.ReadAll(limit)
 		if err != nil {
 			t.Fatalf("case %d failed: %v", i, err)
 		}
@@ -182,7 +187,7 @@ func TestHelpers_LineLimitReader_TimeLimit(t *testing.T) {
 	go func() {
 		defer close(resultCh)
 		defer close(errCh)
-		outBytes, err := ioutil.ReadAll(limit)
+		outBytes, err := io.ReadAll(limit)
 		if err != nil {
 			errCh <- fmt.Errorf("ReadAll failed: %v", err)
 			return
@@ -209,7 +214,7 @@ func TestHelpers_LineLimitReader_TimeLimit(t *testing.T) {
 }
 
 const (
-	job = `job "job1" {
+	job1 = `job "job1" {
   type        = "service"
   datacenters = ["dc1"]
   group "group1" {
@@ -258,18 +263,18 @@ var (
 // Test APIJob with local jobfile
 func TestJobGetter_LocalFile(t *testing.T) {
 	ci.Parallel(t)
-	fh, err := ioutil.TempFile("", "nomad")
+	fh, err := os.CreateTemp("", "nomad")
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
 	defer os.Remove(fh.Name())
-	_, err = fh.WriteString(job)
+	_, err = fh.WriteString(job1)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
 
 	j := &JobGetter{}
-	aj, err := j.ApiJob(fh.Name())
+	_, aj, err := j.ApiJob(fh.Name())
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -307,7 +312,7 @@ func TestJobGetter_LocalFile_InvalidHCL2(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			fh, err := ioutil.TempFile("", "nomad")
+			fh, err := os.CreateTemp("", "nomad")
 			require.NoError(t, err)
 			defer os.Remove(fh.Name())
 			defer fh.Close()
@@ -316,7 +321,7 @@ func TestJobGetter_LocalFile_InvalidHCL2(t *testing.T) {
 			require.NoError(t, err)
 
 			j := &JobGetter{}
-			_, err = j.ApiJob(fh.Name())
+			_, _, err = j.ApiJob(fh.Name())
 			require.Error(t, err)
 
 			exptMessage := "Failed to parse using HCL 2. Use the HCL 1"
@@ -351,7 +356,7 @@ job "example" {
 	fileVars := `var3 = "from-varfile"`
 	expected := []string{"default-val", "from-cli", "from-varfile", "from-envvar"}
 
-	hclf, err := ioutil.TempFile("", "hcl")
+	hclf, err := os.CreateTemp("", "hcl")
 	require.NoError(t, err)
 	defer os.Remove(hclf.Name())
 	defer hclf.Close()
@@ -359,7 +364,7 @@ job "example" {
 	_, err = hclf.WriteString(hcl)
 	require.NoError(t, err)
 
-	vf, err := ioutil.TempFile("", "var.hcl")
+	vf, err := os.CreateTemp("", "var.hcl")
 	require.NoError(t, err)
 	defer os.Remove(vf.Name())
 	defer vf.Close()
@@ -367,7 +372,13 @@ job "example" {
 	_, err = vf.WriteString(fileVars + "\n")
 	require.NoError(t, err)
 
-	j, err := (&JobGetter{}).ApiJobWithArgs(hclf.Name(), cliArgs, []string{vf.Name()}, true)
+	jg := &JobGetter{
+		Vars:     cliArgs,
+		VarFiles: []string{vf.Name()},
+		Strict:   true,
+	}
+
+	_, j, err := jg.Get(hclf.Name())
 	require.NoError(t, err)
 
 	require.NotNil(t, j)
@@ -400,7 +411,7 @@ unsedVar2 = "from-varfile"
 `
 	expected := []string{"default-val", "from-cli", "from-varfile", "from-envvar"}
 
-	hclf, err := ioutil.TempFile("", "hcl")
+	hclf, err := os.CreateTemp("", "hcl")
 	require.NoError(t, err)
 	defer os.Remove(hclf.Name())
 	defer hclf.Close()
@@ -408,7 +419,7 @@ unsedVar2 = "from-varfile"
 	_, err = hclf.WriteString(hcl)
 	require.NoError(t, err)
 
-	vf, err := ioutil.TempFile("", "var.hcl")
+	vf, err := os.CreateTemp("", "var.hcl")
 	require.NoError(t, err)
 	defer os.Remove(vf.Name())
 	defer vf.Close()
@@ -416,7 +427,13 @@ unsedVar2 = "from-varfile"
 	_, err = vf.WriteString(fileVars + "\n")
 	require.NoError(t, err)
 
-	j, err := (&JobGetter{}).ApiJobWithArgs(hclf.Name(), cliArgs, []string{vf.Name()}, false)
+	jg := &JobGetter{
+		Vars:     cliArgs,
+		VarFiles: []string{vf.Name()},
+		Strict:   false,
+	}
+
+	_, j, err := jg.Get(hclf.Name())
 	require.NoError(t, err)
 
 	require.NotNil(t, j)
@@ -427,7 +444,7 @@ unsedVar2 = "from-varfile"
 func TestJobGetter_HTTPServer(t *testing.T) {
 	ci.Parallel(t)
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, job)
+		fmt.Fprintf(w, job1)
 	})
 	go http.ListenAndServe("127.0.0.1:12345", nil)
 
@@ -435,7 +452,7 @@ func TestJobGetter_HTTPServer(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	j := &JobGetter{}
-	aj, err := j.ApiJob("http://127.0.0.1:12345/")
+	_, aj, err := j.ApiJob("http://127.0.0.1:12345/")
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -612,4 +629,57 @@ func TestUiErrorWriter(t *testing.T) {
 
 	expectedErr += "and thensome more\n"
 	require.Equal(t, expectedErr, errBuf.String())
+}
+
+func Test_extractVarFiles(t *testing.T) {
+	ci.Parallel(t)
+
+	t.Run("none", func(t *testing.T) {
+		result, err := extractVarFiles(nil)
+		must.NoError(t, err)
+		must.Eq(t, "", result)
+	})
+
+	t.Run("files", func(t *testing.T) {
+		d := t.TempDir()
+		fileOne := filepath.Join(d, "one.hcl")
+		fileTwo := filepath.Join(d, "two.hcl")
+
+		must.NoError(t, os.WriteFile(fileOne, []byte(`foo = "bar"`), 0o644))
+		must.NoError(t, os.WriteFile(fileTwo, []byte(`baz = 42`), 0o644))
+
+		result, err := extractVarFiles([]string{fileOne, fileTwo})
+		must.NoError(t, err)
+		must.Eq(t, "foo = \"bar\"\nbaz = 42\n", result)
+	})
+
+	t.Run("unreadble", func(t *testing.T) {
+		testutil.RequireNonRoot(t)
+
+		d := t.TempDir()
+		fileOne := filepath.Join(d, "one.hcl")
+
+		must.NoError(t, os.WriteFile(fileOne, []byte(`foo = "bar"`), 0o200))
+
+		_, err := extractVarFiles([]string{fileOne})
+		must.ErrorContains(t, err, "permission denied")
+	})
+}
+
+func Test_extractVarFlags(t *testing.T) {
+	ci.Parallel(t)
+
+	t.Run("nil", func(t *testing.T) {
+		result := extractVarFlags(nil)
+		must.MapEmpty(t, result)
+	})
+
+	t.Run("complete", func(t *testing.T) {
+		result := extractVarFlags([]string{"one=1", "two=2", "three"})
+		must.Eq(t, map[string]string{
+			"one":   "1",
+			"two":   "2",
+			"three": "",
+		}, result)
+	})
 }

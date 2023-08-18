@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 //go:build darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris
 
 package exec
@@ -88,6 +91,7 @@ func TestExecDriver_StartWaitStop(t *testing.T) {
 }
 
 func TestExec_ExecTaskStreaming(t *testing.T) {
+	ci.SkipTestWithoutRootAccess(t)
 	ci.Parallel(t)
 
 	ctx, cancel := context.WithCancel(context.Background())

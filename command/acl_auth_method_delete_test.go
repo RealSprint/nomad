@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package command
 
 import (
@@ -19,7 +22,7 @@ func TestACLAuthMethodDeleteCommand(t *testing.T) {
 	}
 
 	srv, _, url := testServer(t, true, config)
-	defer stopTestAgent(srv)
+	defer srv.Shutdown()
 
 	state := srv.Agent.Server().State()
 

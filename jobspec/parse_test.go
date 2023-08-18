@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package jobspec
 
 import (
@@ -347,6 +350,7 @@ func TestParse(t *testing.T) {
 								LogConfig: &api.LogConfig{
 									MaxFiles:      intToPtr(14),
 									MaxFileSizeMB: intToPtr(101),
+									Disabled:      boolToPtr(false),
 								},
 								Artifacts: []*api.TaskArtifact{
 									{
@@ -365,10 +369,11 @@ func TestParse(t *testing.T) {
 									},
 								},
 								Vault: &api.Vault{
-									Namespace:  stringToPtr("ns1"),
-									Policies:   []string{"foo", "bar"},
-									Env:        boolToPtr(true),
-									ChangeMode: stringToPtr(vaultChangeModeRestart),
+									Namespace:   stringToPtr("ns1"),
+									Policies:    []string{"foo", "bar"},
+									Env:         boolToPtr(true),
+									DisableFile: boolToPtr(false),
+									ChangeMode:  stringToPtr(vaultChangeModeRestart),
 								},
 								Templates: []*api.Template{
 									{
@@ -431,6 +436,7 @@ func TestParse(t *testing.T) {
 								Vault: &api.Vault{
 									Policies:     []string{"foo", "bar"},
 									Env:          boolToPtr(false),
+									DisableFile:  boolToPtr(false),
 									ChangeMode:   stringToPtr(vaultChangeModeSignal),
 									ChangeSignal: stringToPtr("SIGUSR1"),
 								},
@@ -797,17 +803,19 @@ func TestParse(t *testing.T) {
 							{
 								Name: "redis",
 								Vault: &api.Vault{
-									Policies:   []string{"group"},
-									Env:        boolToPtr(true),
-									ChangeMode: stringToPtr(vaultChangeModeRestart),
+									Policies:    []string{"group"},
+									Env:         boolToPtr(true),
+									DisableFile: boolToPtr(false),
+									ChangeMode:  stringToPtr(vaultChangeModeRestart),
 								},
 							},
 							{
 								Name: "redis2",
 								Vault: &api.Vault{
-									Policies:   []string{"task"},
-									Env:        boolToPtr(false),
-									ChangeMode: stringToPtr(vaultChangeModeRestart),
+									Policies:    []string{"task"},
+									Env:         boolToPtr(false),
+									DisableFile: boolToPtr(true),
+									ChangeMode:  stringToPtr(vaultChangeModeRestart),
 								},
 							},
 						},
@@ -818,9 +826,10 @@ func TestParse(t *testing.T) {
 							{
 								Name: "redis",
 								Vault: &api.Vault{
-									Policies:   []string{"job"},
-									Env:        boolToPtr(true),
-									ChangeMode: stringToPtr(vaultChangeModeRestart),
+									Policies:    []string{"job"},
+									Env:         boolToPtr(true),
+									DisableFile: boolToPtr(false),
+									ChangeMode:  stringToPtr(vaultChangeModeRestart),
 								},
 							},
 						},
@@ -1282,8 +1291,8 @@ func TestParse(t *testing.T) {
 						Connect: &api.ConsulConnect{
 							SidecarService: &api.ConsulSidecarService{
 								Proxy: &api.ConsulProxy{
-									ExposeConfig: &api.ConsulExposeConfig{
-										Path: []*api.ConsulExposePath{{
+									Expose: &api.ConsulExposeConfig{
+										Paths: []*api.ConsulExposePath{{
 											Path:          "/health",
 											Protocol:      "http",
 											LocalPathPort: 2222,
@@ -1347,6 +1356,31 @@ func TestParse(t *testing.T) {
 			false,
 		},
 		{
+			"tg-service-connect-sidecar_meta.hcl",
+			&api.Job{
+				ID:   stringToPtr("sidecar_meta"),
+				Name: stringToPtr("sidecar_meta"),
+				Type: stringToPtr("service"),
+				TaskGroups: []*api.TaskGroup{{
+					Name: stringToPtr("group"),
+					Services: []*api.Service{{
+						Name: "example",
+						Connect: &api.ConsulConnect{
+							Native: false,
+							SidecarService: &api.ConsulSidecarService{
+								Meta: map[string]string{
+									"test-key":  "test-value",
+									"test-key1": "test-value1",
+									"test-key2": "test-value2",
+								},
+							},
+						},
+					}},
+				}},
+			},
+			false,
+		},
+		{
 			"tg-service-connect-resources.hcl",
 			&api.Job{
 				ID:   stringToPtr("sidecar_task_resources"),
@@ -1386,8 +1420,8 @@ func TestParse(t *testing.T) {
 								Proxy: &api.ConsulProxy{
 									LocalServiceAddress: "10.0.1.2",
 									LocalServicePort:    8080,
-									ExposeConfig: &api.ConsulExposeConfig{
-										Path: []*api.ConsulExposePath{{
+									Expose: &api.ConsulExposeConfig{
+										Paths: []*api.ConsulExposePath{{
 											Path:          "/metrics",
 											Protocol:      "http",
 											LocalPathPort: 9001,

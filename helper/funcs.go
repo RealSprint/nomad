@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package helper
 
 import (
@@ -409,6 +412,17 @@ func ConvertSlice[A, B any](original []A, conversion func(a A) B) []B {
 	return result
 }
 
+// ConvertMap takes the input map and generates a new one using the supplied
+// conversion function to convert the values. This is useful when converting one
+// map to another using the same keys.
+func ConvertMap[K comparable, A, B any](original map[K]A, conversion func(a A) B) map[K]B {
+	result := make(map[K]B, len(original))
+	for k, a := range original {
+		result[k] = conversion(a)
+	}
+	return result
+}
+
 // IsMethodHTTP returns whether s is a known HTTP method, ignoring case.
 func IsMethodHTTP(s string) bool {
 	switch strings.ToUpper(s) {
@@ -484,4 +498,14 @@ func WithLock(lock sync.Locker, f func()) {
 	lock.Lock()
 	defer lock.Unlock()
 	f()
+}
+
+// Merge takes two variables and returns variable b in case a has zero value.
+// For pointer values please use pointer.Merge.
+func Merge[T comparable](a, b T) T {
+	var zero T
+	if a == zero {
+		return b
+	}
+	return a
 }

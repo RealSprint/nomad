@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package agent
 
 import (
@@ -5,13 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -155,7 +159,7 @@ func TestHTTP_AgentJoin(t *testing.T) {
 	httpTest(t, nil, func(s *TestAgent) {
 		// Determine the join address
 		member := s.Agent.Server().LocalMember()
-		addr := fmt.Sprintf("%s:%d", member.Addr, member.Port)
+		addr := net.JoinHostPort(member.Addr.String(), strconv.Itoa(int(member.Port)))
 
 		// Make the HTTP request
 		req, err := http.NewRequest("PUT",
@@ -379,7 +383,7 @@ func TestHTTP_AgentMonitor(t *testing.T) {
 					s.Server.logger.Warn("log that should be sent")
 					tried++
 				}
-				output, err := ioutil.ReadAll(resp.Body)
+				output, err := io.ReadAll(resp.Body)
 				if err != nil {
 					return false, err
 				}
@@ -420,7 +424,7 @@ func TestHTTP_AgentMonitor(t *testing.T) {
 					s.Agent.logger.Warn("log that should be sent")
 					tried++
 				}
-				output, err := ioutil.ReadAll(resp.Body)
+				output, err := io.ReadAll(resp.Body)
 				if err != nil {
 					return false, err
 				}
@@ -806,7 +810,7 @@ func TestHTTP_AgentSetServers_ACL(t *testing.T) {
 			respW := httptest.NewRecorder()
 			_, err := s.Server.AgentServersRequest(respW, req)
 			require.NotNil(err)
-			require.Equal(err.Error(), structs.ErrPermissionDenied.Error())
+			require.ErrorContains(err, structs.ErrPermissionDenied.Error())
 		}
 
 		// Try request with an invalid token and expect failure
@@ -860,7 +864,7 @@ func TestHTTP_AgentListServers_ACL(t *testing.T) {
 			respW := httptest.NewRecorder()
 			_, err := s.Server.AgentServersRequest(respW, req)
 			require.NotNil(err)
-			require.Equal(err.Error(), structs.ErrPermissionDenied.Error())
+			require.ErrorContains(err, structs.ErrPermissionDenied.Error())
 		}
 
 		// Try request with an invalid token and expect failure

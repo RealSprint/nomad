@@ -82,6 +82,10 @@
         "path": "concepts"
       },
       {
+        "title": "ACL",
+        "path": "concepts/acl"
+      },
+      {
         "title": "Architecture",
         "path": "concepts/architecture"
       },
@@ -107,6 +111,10 @@
           {
             "title": "Storage",
             "path": "concepts/plugins/csi"
+          },
+          {
+            "title": "Networking",
+            "path": "concepts/plugins/cni"
           }
         ]
       },
@@ -237,6 +245,56 @@
             "path": "commands/acl/bootstrap"
           },
           {
+            "title": "auth-method",
+            "routes": [
+              {
+                "title": "create",
+                "path": "commands/acl/auth-method/create"
+              },
+              {
+                "title": "delete",
+                "path": "commands/acl/auth-method/delete"
+              },
+              {
+                "title": "info",
+                "path": "commands/acl/auth-method/info"
+              },
+              {
+                "title": "list",
+                "path": "commands/acl/auth-method/list"
+              },
+              {
+                "title": "update",
+                "path": "commands/acl/auth-method/update"
+              }
+            ]
+          },
+          {
+            "title": "binding-rule",
+            "routes": [
+              {
+                "title": "create",
+                "path": "commands/acl/binding-rule/create"
+              },
+              {
+                "title": "delete",
+                "path": "commands/acl/binding-rule/delete"
+              },
+              {
+                "title": "info",
+                "path": "commands/acl/binding-rule/info"
+              },
+              {
+                "title": "list",
+                "path": "commands/acl/binding-rule/list"
+              },
+              {
+                "title": "update",
+                "path": "commands/acl/binding-rule/update"
+              }
+            ]
+          },
+          {
             "title": "policy",
             "routes": [
               {
@@ -327,6 +385,10 @@
           {
             "title": "Overview",
             "path": "commands/alloc"
+          },
+          {
+            "title": "checks",
+            "path": "commands/alloc/checks"
           },
           {
             "title": "exec",
@@ -481,6 +543,10 @@
             "path": "commands/job/promote"
           },
           {
+            "title": "restart",
+            "path": "commands/job/restart"
+          },
+          {
             "title": "revert",
             "path": "commands/job/revert"
           },
@@ -520,8 +586,16 @@
           {
             "title": "get",
             "path": "commands/license/get"
+          },
+          {
+            "title": "inspect",
+            "path": "commands/license/inspect"
           }
         ]
+      },
+      {
+        "title": "login",
+        "path": "commands/login"
       },
       {
         "title": "monitor",
@@ -576,8 +650,62 @@
             "path": "commands/node/eligibility"
           },
           {
+            "title": "meta",
+            "routes": [
+              {
+                "title": "Overview",
+                "path": "commands/node/meta"
+              },
+              {
+                "title": "apply",
+                "path": "commands/node/meta/apply"
+              },
+              {
+                "title": "read",
+                "path": "commands/node/meta/read"
+              }
+            ]
+          },
+          {
             "title": "status",
             "path": "commands/node/status"
+          }
+        ]
+      },
+      {
+        "title": "node pool",
+        "routes": [
+          {
+            "title": "Overview",
+            "path": "commands/node-pool"
+          },
+          {
+            "title": "apply",
+            "path": "commands/node-pool/apply"
+          },
+          {
+            "title": "delete",
+            "path": "commands/node-pool/delete"
+          },
+          {
+            "title": "info",
+            "path": "commands/node-pool/info"
+          },
+          {
+            "title": "init",
+            "path": "commands/node-pool/init"
+          },
+          {
+            "title": "jobs",
+            "path": "commands/node-pool/jobs"
+          },
+          {
+            "title": "list",
+            "path": "commands/node-pool/list"
+          },
+          {
+            "title": "nodes",
+            "path": "commands/node-pool/nodes"
           }
         ]
       },
@@ -604,6 +732,10 @@
                 "path": "commands/operator/autopilot/set-config"
               }
             ]
+          },
+          {
+            "title": "client-state",
+            "path": "commands/operator/client-state"
           },
           {
             "title": "debug",
@@ -633,14 +765,6 @@
                 "path": "commands/operator/gossip/keyring-use"
               }
             ]
-          },
-          {
-            "title": "keygen",
-            "path": "commands/operator/keygen"
-          },
-          {
-            "title": "keyring",
-            "path": "commands/operator/keyring"
           },
           {
             "title": "metrics",
@@ -1504,6 +1628,10 @@
         "path": "job-specification/group"
       },
       {
+        "title": "identity",
+        "path": "job-specification/identity"
+      },
+      {
         "title": "job",
         "path": "job-specification/job"
       },
@@ -1617,6 +1745,18 @@
         "path": "other-specifications/acl-policy"
       },
       {
+        "title": "Namespace",
+        "path": "other-specifications/namespace"
+      },
+      {
+        "title": "Node Pool",
+        "path": "other-specifications/node-pool"
+      },
+      {
+        "title": "Variables",
+        "path": "other-specifications/variables"
+      },
+      {
         "title": "Volume",
         "routes": [
           {
@@ -1680,6 +1820,10 @@
           {
             "title": "containerd",
             "href": "/plugins/drivers/community/containerd"
+          },
+          {
+            "title": "Pledge",
+            "href": "/plugins/drivers/community/pledge"
           },
           {
             "title": "Firecracker driver",
@@ -1792,6 +1936,27 @@
       {
         "title": "Variable Interpolation",
         "path": "runtime/interpolation"
+      }
+    ]
+  },
+  {
+    "title": "Networking",
+    "routes": [
+      {
+        "title": "Overview",
+        "path": "networking"
+      },
+      {
+        "title": "Service Discovery",
+        "path": "networking/service-discovery"
+      },
+      {
+        "title": "Service Mesh",
+        "path": "networking/service-mesh"
+      },
+      {
+        "title": "CNI",
+        "path": "networking/cni"
       }
     ]
   },

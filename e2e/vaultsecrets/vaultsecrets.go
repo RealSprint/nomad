@@ -1,10 +1,12 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package vaultsecrets
 
 import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"regexp"
@@ -220,7 +222,7 @@ func (tc *VaultSecretsTest) TestVaultSecrets(f *framework.F) {
 // We need to namespace the keys in the policy, so read it in and replace the
 // values of the policy names
 func writePolicy(policyID, policyPath, testID string) (string, error) {
-	raw, err := ioutil.ReadFile(policyPath)
+	raw, err := os.ReadFile(policyPath)
 	if err != nil {
 		return "", err
 	}
@@ -248,7 +250,7 @@ func writePolicy(policyID, policyPath, testID string) (string, error) {
 // and replace the values of the template and vault fields
 func runJob(jobID, testID string, index int) error {
 
-	raw, err := ioutil.ReadFile("./vaultsecrets/input/secrets.nomad")
+	raw, err := os.ReadFile("./vaultsecrets/input/secrets.nomad")
 	if err != nil {
 		return err
 	}

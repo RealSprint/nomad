@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package structs
 
 import (
@@ -350,6 +353,17 @@ func TestServiceCheck_validateNomad(t *testing.T) {
 				Body:     "this is a request payload!",
 			},
 		},
+		{
+			name: "http with tls_server_name",
+			sc: &ServiceCheck{
+				Type:          ServiceCheckHTTP,
+				Interval:      3 * time.Second,
+				Timeout:       1 * time.Second,
+				Path:          "/health",
+				TLSServerName: "foo",
+			},
+			exp: `tls_server_name may only be set for Consul service checks`,
+		},
 	}
 
 	for _, testCase := range testCases {
@@ -382,12 +396,16 @@ func TestService_Hash(t *testing.T) {
 				Proxy: &ConsulProxy{
 					LocalServiceAddress: "127.0.0.1",
 					LocalServicePort:    24000,
-					Config:              map[string]interface{}{"foo": "bar"},
+					Config:              map[string]any{"foo": "bar"},
 					Upstreams: []ConsulUpstream{{
 						DestinationName:      "upstream1",
 						DestinationNamespace: "ns2",
 						LocalBindPort:        29000,
+						Config:               map[string]any{"foo": "bar"},
 					}},
+				},
+				Meta: map[string]string{
+					"test-key": "test-value",
 				},
 			},
 			// SidecarTask: nil // not hashed
@@ -478,6 +496,10 @@ func TestService_Hash(t *testing.T) {
 	t.Run("mod connect sidecar proxy upstream destination local bind port", func(t *testing.T) {
 		try(t, func(s *svc) { s.Connect.SidecarService.Proxy.Upstreams[0].LocalBindPort = 29999 })
 	})
+
+	t.Run("mod connect sidecar proxy upstream config", func(t *testing.T) {
+		try(t, func(s *svc) { s.Connect.SidecarService.Proxy.Upstreams[0].Config = map[string]any{"foo": "baz"} })
+	})
 }
 
 func TestConsulConnect_Validate(t *testing.T) {
@@ -485,7 +507,7 @@ func TestConsulConnect_Validate(t *testing.T) {
 
 	c := &ConsulConnect{}
 
-	// An empty Connect stanza is invalid
+	// An empty Connect block is invalid
 	require.Error(t, c.Validate())
 
 	c.Native = true
@@ -524,6 +546,9 @@ func TestConsulConnect_CopyEqual(t *testing.T) {
 				Config: map[string]interface{}{
 					"foo": 1,
 				},
+			},
+			Meta: map[string]string{
+				"test-key": "test-value",
 			},
 		},
 	}
@@ -703,13 +728,13 @@ func TestConsulUpstream_upstreamEqual(t *testing.T) {
 	t.Run("size mismatch", func(t *testing.T) {
 		a := []ConsulUpstream{up("foo", 8000)}
 		b := []ConsulUpstream{up("foo", 8000), up("bar", 9000)}
-		require.False(t, upstreamsEquals(a, b))
+		must.False(t, upstreamsEquals(a, b))
 	})
 
 	t.Run("different", func(t *testing.T) {
 		a := []ConsulUpstream{up("bar", 9000)}
 		b := []ConsulUpstream{up("foo", 8000)}
-		require.False(t, upstreamsEquals(a, b))
+		must.False(t, upstreamsEquals(a, b))
 	})
 
 	t.Run("different namespace", func(t *testing.T) {
@@ -719,25 +744,31 @@ func TestConsulUpstream_upstreamEqual(t *testing.T) {
 		b := []ConsulUpstream{up("foo", 8000)}
 		b[0].DestinationNamespace = "ns2"
 
-		require.False(t, upstreamsEquals(a, b))
+		must.False(t, upstreamsEquals(a, b))
 	})
 
 	t.Run("different mesh_gateway", func(t *testing.T) {
 		a := []ConsulUpstream{{DestinationName: "foo", MeshGateway: ConsulMeshGateway{Mode: "local"}}}
 		b := []ConsulUpstream{{DestinationName: "foo", MeshGateway: ConsulMeshGateway{Mode: "remote"}}}
-		require.False(t, upstreamsEquals(a, b))
+		must.False(t, upstreamsEquals(a, b))
+	})
+
+	t.Run("different opaque config", func(t *testing.T) {
+		a := []ConsulUpstream{{Config: map[string]any{"foo": 1}}}
+		b := []ConsulUpstream{{Config: map[string]any{"foo": 2}}}
+		must.False(t, upstreamsEquals(a, b))
 	})
 
 	t.Run("identical", func(t *testing.T) {
 		a := []ConsulUpstream{up("foo", 8000), up("bar", 9000)}
 		b := []ConsulUpstream{up("foo", 8000), up("bar", 9000)}
-		require.True(t, upstreamsEquals(a, b))
+		must.True(t, upstreamsEquals(a, b))
 	})
 
 	t.Run("unsorted", func(t *testing.T) {
 		a := []ConsulUpstream{up("foo", 8000), up("bar", 9000)}
 		b := []ConsulUpstream{up("bar", 9000), up("foo", 8000)}
-		require.True(t, upstreamsEquals(a, b))
+		must.True(t, upstreamsEquals(a, b))
 	})
 }
 
@@ -822,12 +853,18 @@ func TestConsulSidecarService_Copy(t *testing.T) {
 			Tags:  []string{"foo", "bar"},
 			Port:  "port1",
 			Proxy: &ConsulProxy{LocalServiceAddress: "10.0.0.1"},
+			Meta: map[string]string{
+				"test-key": "test-value",
+			},
 		}
 		result := s.Copy()
 		require.Equal(t, &ConsulSidecarService{
 			Tags:  []string{"foo", "bar"},
 			Port:  "port1",
 			Proxy: &ConsulProxy{LocalServiceAddress: "10.0.0.1"},
+			Meta: map[string]string{
+				"test-key": "test-value",
+			},
 		}, result)
 	})
 }
@@ -993,7 +1030,7 @@ func TestConsulGateway_Equal_ingress(t *testing.T) {
 		require.True(t, modifiable.Equal(modifiable))
 	}
 
-	// proxy stanza equality checks
+	// proxy block equality checks
 
 	t.Run("mod gateway timeout", func(t *testing.T) {
 		try(t, func(g *cg) { g.Proxy.ConnectTimeout = pointer.Of(9 * time.Second) })
@@ -1079,7 +1116,7 @@ func TestConsulGateway_Equal_terminating(t *testing.T) {
 		require.True(t, modifiable.Equal(modifiable))
 	}
 
-	// proxy stanza equality checks
+	// proxy block equality checks
 
 	t.Run("mod dns discovery type", func(t *testing.T) {
 		try(t, func(g *cg) { g.Proxy.EnvoyDNSDiscoveryType = "LOGICAL_DNS" })
@@ -1325,14 +1362,7 @@ func TestConsulIngressService_Validate(t *testing.T) {
 		err := (&ConsulIngressService{
 			Name: "",
 		}).Validate("http")
-		require.EqualError(t, err, "Consul Ingress Service requires a name")
-	})
-
-	t.Run("http missing hosts", func(t *testing.T) {
-		err := (&ConsulIngressService{
-			Name: "service1",
-		}).Validate("http")
-		require.EqualError(t, err, `Consul Ingress Service requires one or more hosts when using "http" protocol`)
+		must.EqError(t, err, "Consul Ingress Service requires a name")
 	})
 
 	t.Run("tcp extraneous hosts", func(t *testing.T) {
@@ -1340,37 +1370,55 @@ func TestConsulIngressService_Validate(t *testing.T) {
 			Name:  "service1",
 			Hosts: []string{"host1"},
 		}).Validate("tcp")
-		require.EqualError(t, err, `Consul Ingress Service doesn't support associating hosts to a service for the "tcp" protocol`)
+		must.EqError(t, err, `Consul Ingress Service doesn't support associating hosts to a service for the "tcp" protocol`)
 	})
 
-	t.Run("ok tcp", func(t *testing.T) {
+	t.Run("tcp ok", func(t *testing.T) {
 		err := (&ConsulIngressService{
 			Name: "service1",
 		}).Validate("tcp")
-		require.NoError(t, err)
-	})
-
-	t.Run("ok http", func(t *testing.T) {
-		err := (&ConsulIngressService{
-			Name:  "service1",
-			Hosts: []string{"host1"},
-		}).Validate("http")
-		require.NoError(t, err)
-	})
-
-	t.Run("http with wildcard service", func(t *testing.T) {
-		err := (&ConsulIngressService{
-			Name: "*",
-		}).Validate("http")
-		require.NoError(t, err)
+		must.NoError(t, err)
 	})
 
 	t.Run("tcp with wildcard service", func(t *testing.T) {
 		err := (&ConsulIngressService{
 			Name: "*",
 		}).Validate("tcp")
-		require.EqualError(t, err, `Consul Ingress Service doesn't support wildcard name for "tcp" protocol`)
+		must.EqError(t, err, `Consul Ingress Service doesn't support wildcard name for "tcp" protocol`)
 	})
+
+	// non-"tcp" protocols should be all treated the same.
+	for _, proto := range []string{"http", "http2", "grpc"} {
+		t.Run(proto+" ok", func(t *testing.T) {
+			err := (&ConsulIngressService{
+				Name:  "service1",
+				Hosts: []string{"host1"},
+			}).Validate(proto)
+			must.NoError(t, err)
+		})
+
+		t.Run(proto+" without hosts", func(t *testing.T) {
+			err := (&ConsulIngressService{
+				Name: "service1",
+			}).Validate(proto)
+			must.NoError(t, err, must.Sprintf(`"%s" protocol should not require hosts`, proto))
+		})
+
+		t.Run(proto+" wildcard service", func(t *testing.T) {
+			err := (&ConsulIngressService{
+				Name: "*",
+			}).Validate(proto)
+			must.NoError(t, err, must.Sprintf(`"%s" protocol should allow wildcard service`, proto))
+		})
+
+		t.Run(proto+" wildcard service and host", func(t *testing.T) {
+			err := (&ConsulIngressService{
+				Name:  "*",
+				Hosts: []string{"any"},
+			}).Validate(proto)
+			must.EqError(t, err, `Consul Ingress Service with a wildcard "*" service name can not also specify hosts`)
+		})
+	}
 }
 
 func TestConsulIngressListener_Validate(t *testing.T) {

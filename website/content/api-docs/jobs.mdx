@@ -17,8 +17,8 @@ This endpoint lists all known jobs in the system registered with Nomad.
 | `GET`  | `/v1/jobs` | `application/json` |
 
 The table below shows this endpoint's support for
-[blocking queries](/api-docs#blocking-queries) and
-[required ACLs](/api-docs#acls).
+[blocking queries](/nomad/api-docs#blocking-queries) and
+[required ACLs](/nomad/api-docs#acls).
 
 | Blocking Queries | ACL Required          |
 | ---------------- | --------------------- |
@@ -39,14 +39,14 @@ The table below shows this endpoint's support for
   `X-Nomad-NextToken` header of the last response can be used as the
   `next_token` of the next request to fetch additional pages.
 
-- `filter` `(string: "")` - Specifies the [expression](/api-docs#filtering)
+- `filter` `(string: "")` - Specifies the [expression](/nomad/api-docs#filtering)
   used to filter the results. Consider using pagination or a query parameter to
   reduce resource used to serve the request.
 
 - `namespace` `(string: "default")` - Specifies the target namespace. Specifying
   `*` would return all jobs across all the authorized namespaces.
 
-- `meta` `(bool: false)` - If set, jobs returned will include a [meta](/docs/job-specification/meta) field containing key-value pairs provided in the job specification's `meta` block.
+- `meta` `(bool: false)` - If set, jobs returned will include a [meta](/nomad/docs/job-specification/meta) field containing key-value pairs provided in the job specification's `meta` block.
 
 ### Sample Request
 
@@ -111,8 +111,8 @@ This endpoint creates (aka "registers") a new job in the system.
 | `POST` | `/v1/jobs` | `application/json` |
 
 The table below shows this endpoint's support for
-[blocking queries](/api-docs#blocking-queries) and
-[required ACLs](/api-docs#acls).
+[blocking queries](/nomad/api-docs#blocking-queries) and
+[required ACLs](/nomad/api-docs#acls).
 
 | Blocking Queries | ACL Required                                                                      |
 | ---------------- | --------------------------------------------------------------------------------- |
@@ -121,6 +121,10 @@ The table below shows this endpoint's support for
 ### Parameters
 
 - `Job` `(Job: <required>)` - Specifies the JSON definition of the job.
+
+- `Submission` `(JobSubmission: <optional>)` - Specifies the original HCL/HCL2/JSON
+  definition of the job. This data is useful for reference only, it is not considered
+  for the actual scheduling of `Job`.
 
 - `EnforceIndex` `(bool: false)` - If set, the job will only be registered if the
   passed `JobModifyIndex` matches the current job's index. If the index is zero,
@@ -148,6 +152,7 @@ The table below shows this endpoint's support for
   "Job": {
     "Datacenters": ["dc1"],
     "ID": "cache",
+    "NodePool": "prod",
     "TaskGroups": [
       {
         "Name": "cache",
@@ -216,8 +221,8 @@ job.
 | `POST` | `/v1/jobs/parse` | `application/json` |
 
 The table below shows this endpoint's support for
-[blocking queries](/api-docs#blocking-queries) and
-[required ACLs](/api-docs#acls).
+[blocking queries](/nomad/api-docs#blocking-queries) and
+[required ACLs](/nomad/api-docs#acls).
 
 | Blocking Queries | ACL Required                                      |
 | ---------------- | ------------------------------------------------- |
@@ -235,9 +240,15 @@ The table below shows this endpoint's support for
 - `Canonicalize` `(bool: false)` - Flag to enable setting any unset fields to
   their default values.
 
+- `Variables` `(string: "")` - Specifies HCL2 variables to use during parsing of
+  the job in the var file format.
+
+- `VariableFlags` `(map[string]string: nil)` - Specifies HCL2 variables to use
+  during parsing of the job in key = value format.
+
 - `HCLv1` `(bool: false)` - Use the legacy v1 HCL parser.
 
-## Sample Payload
+### Sample Payload
 
 ```json
 {
@@ -250,7 +261,7 @@ You can use a tool such as [`jq`](https://stedolan.github.io/jq/) to generate
 the payload from a local HCL file:
 
 ```shell-session
-$ jq -Rsc '{ JobHCL: ., Canonicalize: true }' example.nomad > payload.json
+$ jq -Rsc '{ JobHCL: ., Canonicalize: true }' example.nomad.hcl > payload.json
 ```
 
 ### Sample Request
@@ -278,6 +289,7 @@ $ curl \
   "ModifyIndex": 0,
   "Name": "my-job",
   "Namespace": "default",
+  "NodePool": "prod",
   "ParameterizedJob": null,
   "ParentID": "",
   "Payload": null,
@@ -308,8 +320,8 @@ status.
 | `GET`  | `/v1/job/:job_id` | `application/json` |
 
 The table below shows this endpoint's support for
-[blocking queries](/api-docs#blocking-queries) and
-[required ACLs](/api-docs#acls).
+[blocking queries](/nomad/api-docs#blocking-queries) and
+[required ACLs](/nomad/api-docs#acls).
 
 | Blocking Queries | ACL Required         |
 | ---------------- | -------------------- |
@@ -347,6 +359,7 @@ $ curl \
   "Priority": 50,
   "AllAtOnce": false,
   "Datacenters": ["dc1"],
+  "NodePool": "prod",
   "Constraints": [
     {
       "LTarget": "${attr.kernel.name}",
@@ -481,6 +494,7 @@ $ curl \
           },
           "KillTimeout": 5000000000,
           "LogConfig": {
+            "Disabled": false,
             "MaxFiles": 10,
             "MaxFileSizeMB": 10
           },
@@ -547,6 +561,63 @@ $ curl \
   - `batch`: Allocations are intended to exit.
   - `system`: Each client gets an allocation.
 
+## Read Job Submission
+
+This endpoint reads original source information about a specific version of a single
+job. The data this endpoint provides is only available if it was provided with the
+original job during job registration. Only the most recent 6 job source files are
+retained.
+
+| Method | Path                           | Produces           |
+| ------ | ------------------------------ | ------------------ |
+|`GET`   | `/v1/job/:job_id/submission`   | `application/json` |
+
+### Parameters
+
+- `:job_id` `(string: <required>)` - Specifies the ID of the job. This is
+   specified as part of the path.
+- `version` `(int: <required>)` - Specifies the version number of the job for which
+  to retrieve the original source information. This is specified as a query string
+  parameter.
+- `namespace` `(string: "default")` - Specifies the target namespace. If ACL is
+  enabled, this value must match a namespace that the token is allowed to access.
+  This is specified as a query string parameter.
+
+### Sample Request
+
+```shell-session
+nomad operator api /v1/job/my-job/submission?version=42
+```
+
+### Sample Response
+
+```json
+{
+  "Format": "hcl2",
+  "JobIndex": 11,
+  "JobID": "myjob",
+  "Namespace": "default",
+  "Source": "variable \"X\" {\n  type = string\n}\n\nvariable \"Y\" {\n  type = number\n}\n\nvariable \"Z\" {\n  type = bool\n}\n  \njob \"myjob\" {\n  type = \"sysbatch\"\n  \n  meta {\n    nomad_discard_job_source = false\n  }\n\n  group \"group\" {\n    task \"task\" {\n      driver = \"raw_exec\"\n\n      config {\n        command = \"echo\"\n        args = [\"X ${var.X}, Y ${var.Y}, Z ${var.Z}\"]\n      }\n\n      resources {\n        cpu    = 10\n        memory = 16\n      }\n    }\n  }\n}\n",
+  "VariableFlags": {
+    "Z": "true",
+    "X": "x",
+    "Y": "2"
+  },
+  "Variables": "",
+  "Version": 0
+}
+```
+
+#### Field Reference
+
+- `JobID`: The ID of the job associated with the original job file.
+- `Format`: The file format of the original job file. One of `hcl2`, `hcl1`, or `json`.
+- `Source`: The literal content of the original job file.
+- `VariableFlags`: The key-value pairs of HCL variables as submitted via `-var` command
+  line arguments when submitting the job via CLI.
+- `Variables`: The content of the variables form when submitting the job via the WebUI.
+- `Version`: The version of the job this submission source is associated with.
+
 ## List Job Versions
 
 This endpoint reads information about all versions of a job.
@@ -556,8 +627,8 @@ This endpoint reads information about all versions of a job.
 | `GET`  | `/v1/job/:job_id/versions` | `application/json` |
 
 The table below shows this endpoint's support for
-[blocking queries](/api-docs#blocking-queries) and
-[required ACLs](/api-docs#acls).
+[blocking queries](/nomad/api-docs#blocking-queries) and
+[required ACLs](/nomad/api-docs#acls).
 
 | Blocking Queries | ACL Required         |
 | ---------------- | -------------------- |
@@ -570,6 +641,10 @@ The table below shows this endpoint's support for
 
 - `:job_id` `(string: <required>)` - Specifies the ID of the job (as specified in
   the job file during submission). This is specified as part of the path.
+
+- `namespace` `(string: "default")` - Specifies the target namespace. If ACL is
+enabled, this value must match a namespace that the token is allowed to
+access. This is specified as a query string parameter.
 
 ### Sample Request
 
@@ -603,6 +678,7 @@ $ curl \
       "Name": "example",
       "Namespace": "default",
       "NomadTokenID": "",
+      "NodePool": "prod",
       "ParameterizedJob": null,
       "ParentID": "",
       "Payload": null,
@@ -691,6 +767,7 @@ $ curl \
               "Leader": false,
               "Lifecycle": null,
               "LogConfig": {
+                "Disabled": false,
                 "MaxFileSizeMB": 10,
                 "MaxFiles": 10
               },
@@ -758,8 +835,7 @@ $ curl \
     https://localhost:4646/v1/job/my-job/versions?diffs=true
 ```
 
-```
-
+```json
 {
   "Diffs": [
     {
@@ -816,6 +892,7 @@ $ curl \
       "Multiregion": null,
       "Name": "example",
       "Namespace": "default",
+      "NodePool": "prod",
       "NomadTokenID": "",
       "ParameterizedJob": null,
       "ParentID": "",
@@ -909,6 +986,7 @@ $ curl \
               "Leader": false,
               "Lifecycle": null,
               "LogConfig": {
+                "Disabled": false,
                 "MaxFileSizeMB": 10,
                 "MaxFiles": 10
               },
@@ -984,6 +1062,7 @@ $ curl \
       "Multiregion": null,
       "Name": "example",
       "Namespace": "default",
+      "NodePool": "prod",
       "NomadTokenID": "",
       "ParameterizedJob": null,
       "ParentID": "",
@@ -1075,6 +1154,7 @@ $ curl \
               "Leader": false,
               "Lifecycle": null,
               "LogConfig": {
+                "Disabled": false,
                 "MaxFileSizeMB": 10,
                 "MaxFiles": 10
               },
@@ -1146,8 +1226,8 @@ This endpoint reads information about a single job's allocations.
 | `GET`  | `/v1/job/:job_id/allocations` | `application/json` |
 
 The table below shows this endpoint's support for
-[blocking queries](/api-docs#blocking-queries) and
-[required ACLs](/api-docs#acls).
+[blocking queries](/nomad/api-docs#blocking-queries) and
+[required ACLs](/nomad/api-docs#acls).
 
 | Blocking Queries | ACL Required         |
 | ---------------- | -------------------- |
@@ -1160,7 +1240,11 @@ The table below shows this endpoint's support for
 
 - `all` `(bool: false)` - Specifies whether the list of allocations should
   include allocations from a previously registered job with the same ID. This is
-  possible if the job is deregistered and reregistered.
+  possible if the job is deregistered and re-registered.
+
+- `namespace` `(string: "default")` - Specifies the target namespace. If ACL is
+enabled, this value must match a namespace that the token is allowed to
+access. This is specified as a query string parameter.
 
 ### Sample Request
 
@@ -1315,8 +1399,8 @@ This endpoint reads information about a single job's evaluations
 | `GET`  | `/v1/job/:job_id/evaluations` | `application/json` |
 
 The table below shows this endpoint's support for
-[blocking queries](/api-docs#blocking-queries) and
-[required ACLs](/api-docs#acls).
+[blocking queries](/nomad/api-docs#blocking-queries) and
+[required ACLs](/nomad/api-docs#acls).
 
 | Blocking Queries | ACL Required         |
 | ---------------- | -------------------- |
@@ -1326,6 +1410,10 @@ The table below shows this endpoint's support for
 
 - `:job_id` `(string: <required>)` - Specifies the ID of the job (as specified in
   the job file during submission). This is specified as part of the path.
+
+- `namespace` `(string: "default")` - Specifies the target namespace. If ACL is
+enabled, this value must match a namespace that the token is allowed to
+access. This is specified as a query string parameter.
 
 ### Sample Request
 
@@ -1376,8 +1464,8 @@ This endpoint lists a single job's deployments
 | `GET`  | `/v1/job/:job_id/deployments` | `application/json` |
 
 The table below shows this endpoint's support for
-[blocking queries](/api-docs#blocking-queries) and
-[required ACLs](/api-docs#acls).
+[blocking queries](/nomad/api-docs#blocking-queries) and
+[required ACLs](/nomad/api-docs#acls).
 
 | Blocking Queries | ACL Required         |
 | ---------------- | -------------------- |
@@ -1390,7 +1478,11 @@ The table below shows this endpoint's support for
 
 - `all` `(bool: false)` - Specifies whether the list of deployments should
   include deployments from a previously registered job with the same ID. This is
-  possible if the job is deregistered and reregistered.
+  possible if the job is deregistered and re-registered.
+
+- `namespace` `(string: "default")` - Specifies the target namespace. If ACL is
+enabled, this value must match a namespace that the token is allowed to
+access. This is specified as a query string parameter.
 
 ### Sample Request
 
@@ -1464,8 +1556,8 @@ This endpoint returns a single job's most recent deployment.
 | `GET`  | `/v1/job/:job_id/deployment` | `application/json` |
 
 The table below shows this endpoint's support for
-[blocking queries](/api-docs#blocking-queries) and
-[required ACLs](/api-docs#acls).
+[blocking queries](/nomad/api-docs#blocking-queries) and
+[required ACLs](/nomad/api-docs#acls).
 
 | Blocking Queries | ACL Required         |
 | ---------------- | -------------------- |
@@ -1475,6 +1567,10 @@ The table below shows this endpoint's support for
 
 - `:job_id` `(string: <required>)` - Specifies the ID of the job (as specified in
   the job file during submission). This is specified as part of the path.
+
+- `namespace` `(string: "default")` - Specifies the target namespace. If ACL is
+enabled, this value must match a namespace that the token is allowed to
+access. This is specified as a query string parameter.
 
 ### Sample Request
 
@@ -1523,8 +1619,8 @@ This endpoint reads summary information about a job.
 | `GET`  | `/v1/job/:job_id/summary` | `application/json` |
 
 The table below shows this endpoint's support for
-[blocking queries](/api-docs#blocking-queries) and
-[required ACLs](/api-docs#acls).
+[blocking queries](/nomad/api-docs#blocking-queries) and
+[required ACLs](/nomad/api-docs#acls).
 
 | Blocking Queries | ACL Required         |
 | ---------------- | -------------------- |
@@ -1534,6 +1630,10 @@ The table below shows this endpoint's support for
 
 - `:job_id` `(string: <required>)` - Specifies the ID of the job (as specified in
   the job file during submission). This is specified as part of the path.
+
+- `namespace` `(string: "default")` - Specifies the target namespace. If ACL is
+enabled, this value must match a namespace that the token is allowed to
+access. This is specified as a query string parameter.
 
 ### Sample Request
 
@@ -1576,8 +1676,8 @@ This endpoint registers a new job or updates an existing job.
 | `POST` | `/v1/job/:job_id` | `application/json` |
 
 The table below shows this endpoint's support for
-[blocking queries](/api-docs#blocking-queries) and
-[required ACLs](/api-docs#acls).
+[blocking queries](/nomad/api-docs#blocking-queries) and
+[required ACLs](/nomad/api-docs#acls).
 
 | Blocking Queries | ACL Required                                                                      |
 | ---------------- | --------------------------------------------------------------------------------- |
@@ -1605,6 +1705,10 @@ The table below shows this endpoint's support for
 - `PolicyOverride` `(bool: false)` - If set, any soft mandatory Sentinel policies
   will be overridden. This allows a job to be registered when it would be denied
   by policy.
+
+- `namespace` `(string: "default")` - Specifies the target namespace. If ACL is
+enabled, this value must match a namespace that the token is allowed to
+access. This is specified as a query string parameter.
 
 ### Sample Payload
 
@@ -1646,8 +1750,8 @@ This endpoint dispatches a new instance of a parameterized job.
 | `POST` | `/v1/job/:job_id/dispatch` | `application/json` |
 
 The table below shows this endpoint's support for
-[blocking queries](/api-docs#blocking-queries) and
-[required ACLs](/api-docs#acls).
+[blocking queries](/nomad/api-docs#blocking-queries) and
+[required ACLs](/nomad/api-docs#acls).
 
 | Blocking Queries | ACL Required             |
 | ---------------- | ------------------------ |
@@ -1663,10 +1767,14 @@ The table below shows this endpoint's support for
   URL query parameter.
 
 - `Payload` `(string: "")` - Specifies a base64 encoded string containing the
-  payload. This is limited to 16384 bytes (16KiB).
+  payload. This is limited to 65536 bytes (64KiB).
 
 - `Meta` `(meta<string|string>: nil)` - Specifies arbitrary metadata to pass to
   the job.
+
+- `namespace` `(string: "default")` - Specifies the target namespace. If ACL is
+enabled, this value must match a namespace that the token is allowed to
+access. This is specified as a query string parameter.
 
 ### Sample Payload
 
@@ -1709,8 +1817,8 @@ This endpoint reverts the job to an older version.
 | `POST` | `/v1/job/:job_id/revert` | `application/json` |
 
 The table below shows this endpoint's support for
-[blocking queries](/api-docs#blocking-queries) and
-[required ACLs](/api-docs#acls).
+[blocking queries](/nomad/api-docs#blocking-queries) and
+[required ACLs](/nomad/api-docs#acls).
 
 | Blocking Queries | ACL Required           |
 | ---------------- | ---------------------- |
@@ -1727,11 +1835,15 @@ The table below shows this endpoint's support for
   job's version. This is checked and acts as a check-and-set value before
   reverting to the specified job.
 
-- `ConsulToken` `(string:"")` - Optional value specifying the [consul token](/docs/commands/job/revert)
-  used for Consul [service identity polity authentication checking](/docs/configuration/consul#allow_unauthenticated).
+- `ConsulToken` `(string:"")` - Optional value specifying the [consul token](/nomad/docs/commands/job/revert)
+  used for Consul [service identity polity authentication checking](/nomad/docs/configuration/consul#allow_unauthenticated).
 
-- `VaultToken` `(string: "")` - Optional value specifying the [vault token](/docs/commands/job/revert)
-  used for Vault [policy authentication checking](/docs/configuration/vault#allow_unauthenticated).
+- `VaultToken` `(string: "")` - Optional value specifying the [vault token](/nomad/docs/commands/job/revert)
+  used for Vault [policy authentication checking](/nomad/docs/configuration/vault#allow_unauthenticated).
+
+- `namespace` `(string: "default")` - Specifies the target namespace. If ACL is
+enabled, this value must match a namespace that the token is allowed to
+access. This is specified as a query string parameter.
 
 ### Sample Payload
 
@@ -1770,8 +1882,8 @@ This endpoint sets the job's stability.
 | `POST` | `/v1/job/:job_id/stable` | `application/json` |
 
 The table below shows this endpoint's support for
-[blocking queries](/api-docs#blocking-queries) and
-[required ACLs](/api-docs#acls).
+[blocking queries](/nomad/api-docs#blocking-queries) and
+[required ACLs](/nomad/api-docs#acls).
 
 | Blocking Queries | ACL Required           |
 | ---------------- | ---------------------- |
@@ -1786,6 +1898,10 @@ The table below shows this endpoint's support for
 
 - `Stable` `(bool: false)` - Specifies whether the job should be marked as
   stable or not.
+
+- `namespace` `(string: "default")` - Specifies the target namespace. If ACL is
+enabled, this value must match a namespace that the token is allowed to
+access. This is specified as a query string parameter.
 
 ### Sample Payload
 
@@ -1826,12 +1942,12 @@ without a JSON payload will be removed in Nomad 0.9.
 | `POST` | `/v1/job/:job_id/evaluate` | `application/json` |
 
 The table below shows this endpoint's support for
-[blocking queries](/api-docs#blocking-queries) and
-[required ACLs](/api-docs#acls).
+[blocking queries](/nomad/api-docs#blocking-queries) and
+[required ACLs](/nomad/api-docs#acls).
 
-| Blocking Queries | ACL Required         |
-| ---------------- | -------------------- |
-| `NO`             | `namespace:read-job` |
+| Blocking Queries | ACL Required           |
+| ---------------- | ---------------------- |
+| `NO`             | `namespace:submit-job` |
 
 ### Parameters
 
@@ -1843,7 +1959,11 @@ The table below shows this endpoint's support for
 - `EvalOptions` `(<optional>)` - Specify additional options to be used during the forced evaluation.
   - `ForceReschedule` `(bool: false)` - If set, failed allocations of the job are rescheduled
     immediately. This is useful for operators to force immediate placement even if the failed allocations are past
-    their reschedule limit, or are delayed by several hours because the allocation's reschedule policy has exponential delay.
+    their rescheduling limit, or are delayed by several hours because the allocation's reschedule policy has exponential delay.
+
+- `namespace` `(string: "default")` - Specifies the target namespace. If ACL is
+enabled, this value must match a namespace that the token is allowed to
+access. This is specified as a query string parameter.
 
 ### Sample Payload
 
@@ -1884,8 +2004,8 @@ This endpoint invokes a dry-run of the scheduler for the job.
 | `POST` | `/v1/job/:job_id/plan` | `application/json` |
 
 The table below shows this endpoint's support for
-[blocking queries](/api-docs#blocking-queries) and
-[required ACLs](/api-docs#acls).
+[blocking queries](/nomad/api-docs#blocking-queries) and
+[required ACLs](/nomad/api-docs#acls).
 
 | Blocking Queries | ACL Required                                                                      |
 | ---------------- | --------------------------------------------------------------------------------- |
@@ -1905,6 +2025,10 @@ The table below shows this endpoint's support for
 - `PolicyOverride` `(bool: false)` - If set, any soft mandatory Sentinel policies
   will be overridden. This allows a job to be registered when it would be denied
   by policy.
+
+- `namespace` `(string: "default")` - Specifies the target namespace. If ACL is
+enabled, this value must match a namespace that the token is allowed to
+access. This is specified as a query string parameter.
 
 ### Sample Payload
 
@@ -2032,6 +2156,7 @@ $ curl \
       "NodesAvailable": {
         "dc1": 1
       },
+      "NodesInPool": 1,
       "ClassFiltered": null,
       "ConstraintFiltered": null,
       "NodesExhausted": 1,
@@ -2082,7 +2207,7 @@ $ curl \
 
 This endpoint forces a new instance of the periodic job. A new instance will be
 created even if it violates the job's
-[`prohibit_overlap`](/docs/job-specification/periodic#prohibit_overlap)
+[`prohibit_overlap`](/nomad/docs/job-specification/periodic#prohibit_overlap)
 settings. As such, this should be only used to immediately run a periodic job.
 
 | Method | Path                             | Produces           |
@@ -2090,8 +2215,8 @@ settings. As such, this should be only used to immediately run a periodic job.
 | `POST` | `/v1/job/:job_id/periodic/force` | `application/json` |
 
 The table below shows this endpoint's support for
-[blocking queries](/api-docs#blocking-queries) and
-[required ACLs](/api-docs#acls).
+[blocking queries](/nomad/api-docs#blocking-queries) and
+[required ACLs](/nomad/api-docs#acls).
 
 | Blocking Queries | ACL Required                                       |
 | ---------------- | -------------------------------------------------- |
@@ -2128,8 +2253,8 @@ This endpoint deregisters a job, and stops all allocations part of it.
 | `DELETE` | `/v1/job/:job_id` | `application/json` |
 
 The table below shows this endpoint's support for
-[blocking queries](/api-docs#blocking-queries) and
-[required ACLs](/api-docs#acls).
+[blocking queries](/nomad/api-docs#blocking-queries) and
+[required ACLs](/nomad/api-docs#acls).
 
 | Blocking Queries | ACL Required           |
 | ---------------- | ---------------------- |
@@ -2150,6 +2275,10 @@ The table below shows this endpoint's support for
 - `purge` `(bool: false)` - Specifies that the job should be stopped and purged
   immediately. This means the job will not be queryable after being stopped. If
   not set, the job will be purged by the garbage collector.
+
+- `namespace` `(string: "default")` - Specifies the target namespace. If ACL is
+enabled, this value must match a namespace that the token is allowed to
+access. This is specified as a query string parameter.
 
 ### Sample Request
 
@@ -2178,8 +2307,8 @@ This endpoint reads scale information about a job.
 | `GET`  | `/v1/job/:job_id/scale` | `application/json` |
 
 The table below shows this endpoint's support for
-[blocking queries](/api-docs#blocking-queries) and
-[required ACLs](/api-docs#acls).
+[blocking queries](/nomad/api-docs#blocking-queries) and
+[required ACLs](/nomad/api-docs#acls).
 
 | Blocking Queries | ACL Required                                         |
 | ---------------- | ---------------------------------------------------- |
@@ -2189,6 +2318,10 @@ The table below shows this endpoint's support for
 
 - `:job_id` `(string: <required>)` - Specifies the ID of the job (as specified in
   the job file during submission). This is specified as part of the path.
+
+- `namespace` `(string: "default")` - Specifies the target namespace. If ACL is
+enabled, this value must match a namespace that the token is allowed to
+access. This is specified as a query string parameter.
 
 ### Sample Request
 
@@ -2230,8 +2363,8 @@ This will return a 400 error if the job has an active deployment.
 | `POST` | `/v1/job/:job_id/scale` | `application/json` |
 
 The table below shows this endpoint's support for
-[blocking queries](/api-docs#blocking-queries) and
-[required ACLs](/api-docs#acls).
+[blocking queries](/nomad/api-docs#blocking-queries) and
+[required ACLs](/nomad/api-docs#acls).
 
 | Blocking Queries | ACL Required                                                                                               |
 | ---------------- | ---------------------------------------------------------------------------------------------------------- |
@@ -2258,6 +2391,10 @@ The table below shows this endpoint's support for
 - `PolicyOverride` `(bool: false)` - If set, any soft mandatory Sentinel policies
   will be overridden. This allows a job to be scaled when it would be denied
   by policy.
+
+- `namespace` `(string: "default")` - Specifies the target namespace. If ACL is
+enabled, this value must match a namespace that the token is allowed to
+access. This is specified as a query string parameter.
 
 ### Sample Payload
 
@@ -2312,8 +2449,8 @@ The endpoint is used to read all services registered within Nomad belonging to t
 | `GET`  | `/job/:job_id/services` | `application/json` |
 
 The table below shows this endpoint's support for
-[blocking queries](/api-docs#blocking-queries), [consistency modes](/api-docs#consistency-modes) and
-[required ACLs](/api-docs#acls).
+[blocking queries](/nomad/api-docs#blocking-queries), [consistency modes](/nomad/api-docs#consistency-modes) and
+[required ACLs](/nomad/api-docs#acls).
 
 | Blocking Queries | Consistency Modes | ACL Required         |
 | ---------------- | ----------------- | -------------------- |

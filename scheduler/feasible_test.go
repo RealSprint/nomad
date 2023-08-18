@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package scheduler
 
 import (
@@ -103,8 +106,9 @@ func TestHostVolumeChecker(t *testing.T) {
 	}
 	nodes[1].HostVolumes = map[string]*structs.ClientHostVolumeConfig{"foo": {Name: "foo"}}
 	nodes[2].HostVolumes = map[string]*structs.ClientHostVolumeConfig{
-		"foo": {},
-		"bar": {},
+		"foo":              {},
+		"bar":              {},
+		"unique-volume[0]": {},
 	}
 	nodes[3].HostVolumes = map[string]*structs.ClientHostVolumeConfig{
 		"foo": {},
@@ -129,6 +133,11 @@ func TestHostVolumeChecker(t *testing.T) {
 		"baz": {
 			Type:   "nothost",
 			Source: "baz",
+		},
+		"unique": {
+			Type:     "host",
+			Source:   "unique-volume[0]",
+			PerAlloc: true,
 		},
 	}
 
@@ -165,8 +174,11 @@ func TestHostVolumeChecker(t *testing.T) {
 		},
 	}
 
+	alloc := mock.Alloc()
+	alloc.NodeID = nodes[2].ID
+
 	for i, c := range cases {
-		checker.SetVolumes(c.RequestedVolumes)
+		checker.SetVolumes(alloc.Name, c.RequestedVolumes)
 		if act := checker.Feasible(c.Node); act != c.Result {
 			t.Fatalf("case(%d) failed: got %v; want %v", i, act, c.Result)
 		}
@@ -235,8 +247,12 @@ func TestHostVolumeChecker_ReadOnly(t *testing.T) {
 			Result:           true,
 		},
 	}
+
+	alloc := mock.Alloc()
+	alloc.NodeID = nodes[1].ID
+
 	for i, c := range cases {
-		checker.SetVolumes(c.RequestedVolumes)
+		checker.SetVolumes(alloc.Name, c.RequestedVolumes)
 		if act := checker.Feasible(c.Node); act != c.Result {
 			t.Fatalf("case(%d) failed: got %v; want %v", i, act, c.Result)
 		}
@@ -384,7 +400,7 @@ func TestCSIVolumeChecker(t *testing.T) {
 			Source: vid2,
 		},
 	}
-	err = state.UpsertJob(structs.MsgTypeTestSetup, index, alloc.Job)
+	err = state.UpsertJob(structs.MsgTypeTestSetup, index, nil, alloc.Job)
 	require.NoError(t, err)
 	index++
 	summary := mock.JobSummary(alloc.JobID)
@@ -859,12 +875,14 @@ func TestConstraintChecker(t *testing.T) {
 		mock.Node(),
 		mock.Node(),
 		mock.Node(),
+		mock.Node(),
 	}
 
 	nodes[0].Attributes["kernel.name"] = "freebsd"
 	nodes[1].Datacenter = "dc2"
 	nodes[2].NodeClass = "large"
 	nodes[2].Attributes["foo"] = "bar"
+	nodes[3].NodePool = "prod"
 
 	constraints := []*structs.Constraint{
 		{
@@ -881,6 +899,11 @@ func TestConstraintChecker(t *testing.T) {
 			Operand: "!=",
 			LTarget: "${node.class}",
 			RTarget: "linux-medium-pci",
+		},
+		{
+			Operand: "!=",
+			LTarget: "${node.pool}",
+			RTarget: "prod",
 		},
 		{
 			Operand: "is_set",
@@ -903,6 +926,10 @@ func TestConstraintChecker(t *testing.T) {
 		{
 			Node:   nodes[2],
 			Result: true,
+		},
+		{
+			Node:   nodes[3],
+			Result: false,
 		},
 	}
 
@@ -1418,6 +1445,105 @@ func TestDistinctHostsIterator_JobDistinctHosts(t *testing.T) {
 
 	if out[0].ID != nodes[2].ID {
 		t.Fatalf("wrong node picked")
+	}
+}
+
+func TestDistinctHostsIterator_JobDistinctHosts_Table(t *testing.T) {
+	ci.Parallel(t)
+
+	// Create a job with a distinct_hosts constraint and a task group.
+	tg1 := &structs.TaskGroup{Name: "bar"}
+	job := &structs.Job{
+		ID:        "foo",
+		Namespace: structs.DefaultNamespace,
+		Constraints: []*structs.Constraint{{
+			Operand: structs.ConstraintDistinctHosts,
+		}},
+		TaskGroups: []*structs.TaskGroup{tg1},
+	}
+	makeJobAllocs := func(js []*structs.Job) []*structs.Allocation {
+		na := make([]*structs.Allocation, len(js))
+		for i, j := range js {
+			allocID := uuid.Generate()
+			na[i] = &structs.Allocation{
+				Namespace: structs.DefaultNamespace,
+				TaskGroup: j.TaskGroups[0].Name,
+				JobID:     j.ID,
+				Job:       j,
+				ID:        allocID,
+			}
+		}
+		return na
+	}
+
+	n1 := mock.Node()
+	n2 := mock.Node()
+	n3 := mock.Node()
+
+	testCases := []struct {
+		name        string
+		RTarget     string
+		expectLen   int
+		expectNodes []*structs.Node
+	}{
+		{
+			name:        "unset",
+			RTarget:     "",
+			expectLen:   1,
+			expectNodes: []*structs.Node{n3},
+		},
+		{
+			name:        "true",
+			RTarget:     "true",
+			expectLen:   1,
+			expectNodes: []*structs.Node{n3},
+		},
+		{
+			name:        "false",
+			RTarget:     "false",
+			expectLen:   3,
+			expectNodes: []*structs.Node{n1, n2, n3},
+		},
+		{
+			name:        "unparsable",
+			RTarget:     "not_a_bool",
+			expectLen:   1,
+			expectNodes: []*structs.Node{n3},
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc := tc
+			ci.Parallel(t)
+
+			_, ctx := testContext(t)
+			static := NewStaticIterator(ctx, []*structs.Node{n1, n2, n3})
+
+			j := job.Copy()
+			j.Constraints[0].RTarget = tc.RTarget
+
+			oj := j.Copy()
+			oj.ID = "otherJob"
+
+			plan := ctx.Plan()
+			// Add allocations so that some of the nodes will be ineligible
+			// to receive the job when the distinct_hosts constraint
+			// is active. This will require the job be placed on n3.
+			//
+			// Another job is placed on all of the nodes to ensure that there
+			// are no unexpected interactions.
+			plan.NodeAllocation[n1.ID] = makeJobAllocs([]*structs.Job{j, oj})
+			plan.NodeAllocation[n2.ID] = makeJobAllocs([]*structs.Job{j, oj})
+			plan.NodeAllocation[n3.ID] = makeJobAllocs([]*structs.Job{oj})
+
+			proposed := NewDistinctHostsIterator(ctx, static)
+			proposed.SetTaskGroup(tg1)
+			proposed.SetJob(j)
+
+			out := collectFeasible(proposed)
+			must.Len(t, tc.expectLen, out, must.Sprintf("Bad: %v", out))
+			must.SliceContainsAll(t, tc.expectNodes, out)
+		})
 	}
 }
 
@@ -2682,6 +2808,11 @@ func TestDeviceChecker(t *testing.T) {
 							LTarget: "${device.attr.cores_clock}",
 							RTarget: "800MHz",
 						},
+						{
+							Operand: "set_contains",
+							LTarget: "${device.ids}",
+							RTarget: nvidia.Instances[0].ID,
+						},
 					},
 				},
 			},
@@ -2714,6 +2845,11 @@ func TestDeviceChecker(t *testing.T) {
 							Operand: "=",
 							LTarget: "${device.attr.cores_clock}",
 							RTarget: "800MHz",
+						},
+						{
+							Operand: "set_contains",
+							LTarget: "${device.ids}",
+							RTarget: fmt.Sprintf("%s,%s", nvidia.Instances[1].ID, nvidia.Instances[0].ID),
 						},
 					},
 				},
@@ -2813,6 +2949,24 @@ func TestDeviceChecker(t *testing.T) {
 							Operand: "=",
 							LTarget: "${device.attr.cores_clock}",
 							RTarget: "800MHz",
+						},
+					},
+				},
+			},
+		},
+		{
+			Name:        "does not meet ID constraint",
+			Result:      false,
+			NodeDevices: []*structs.NodeDeviceResource{nvidia},
+			RequestedDevices: []*structs.RequestedDevice{
+				{
+					Name:  "nvidia/gpu",
+					Count: 1,
+					Constraints: []*structs.Constraint{
+						{
+							Operand: "set_contains",
+							LTarget: "${device.ids}",
+							RTarget: "not_valid",
 						},
 					},
 				},

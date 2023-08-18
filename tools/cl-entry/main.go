@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package main
 
 import (
@@ -29,7 +32,7 @@ const (
   Enter Note => `
 )
 
-var noteRe = regexp.MustCompile(`[a-z0-9/\s]+: .+`)
+var noteRe = regexp.MustCompile(`^[a-z0-9/\s]+: .+`)
 
 func main() {
 	pr, err := ask(pr)

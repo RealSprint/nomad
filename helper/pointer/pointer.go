@@ -1,9 +1,18 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 // Package pointer provides helper functions related to Go pointers.
 package pointer
 
 import (
 	"golang.org/x/exp/constraints"
 )
+
+// Primitive represents basic types that are safe to do basic comparisons by
+// pointer dereference (checking nullity first).
+type Primitive interface {
+	constraints.Ordered | bool
+}
 
 // Of returns a pointer to a.
 func Of[A any](a A) *A {
@@ -19,10 +28,12 @@ func Copy[A any](a *A) *A {
 	return &na
 }
 
-// Primitive represents basic types that are safe to do basic comparisons by
-// pointer dereference (checking nullity first).
-type Primitive interface {
-	constraints.Ordered // just so happens to be the types we want
+// Merge will return Copy(next) if next is not nil, otherwise return Copy(previous).
+func Merge[P Primitive](previous, next *P) *P {
+	if next != nil {
+		return Copy(next)
+	}
+	return Copy(previous)
 }
 
 // Eq returns whether a and b are equal in underlying value.

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package api
 
 import (
@@ -8,20 +11,20 @@ import (
 	"errors"
 	"hash"
 	"io"
-	"io/ioutil"
 	"math/rand"
 	"testing"
 	"testing/iotest"
 
 	"github.com/hashicorp/nomad/api/internal/testutil"
-	"github.com/stretchr/testify/require"
+	"github.com/shoenig/test/must"
 )
 
 func TestChecksumValidatingReader(t *testing.T) {
 	testutil.Parallel(t)
+
 	data := make([]byte, 4096)
 	_, err := rand.Read(data)
-	require.NoError(t, err)
+	must.NoError(t, err)
 
 	cases := []struct {
 		algo string
@@ -33,23 +36,23 @@ func TestChecksumValidatingReader(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run("valid: "+c.algo, func(t *testing.T) {
-			_, err := c.hash.Write(data)
-			require.NoError(t, err)
+			_, err = c.hash.Write(data)
+			must.NoError(t, err)
 
 			checksum := c.hash.Sum(nil)
 			digest := c.algo + "=" + base64.StdEncoding.EncodeToString(checksum)
 
 			r := iotest.HalfReader(bytes.NewReader(data))
-			cr, err := newChecksumValidatingReader(ioutil.NopCloser(r), digest)
-			require.NoError(t, err)
+			cr, err := newChecksumValidatingReader(io.NopCloser(r), digest)
+			must.NoError(t, err)
 
-			_, err = io.Copy(ioutil.Discard, cr)
-			require.NoError(t, err)
+			_, err = io.Copy(io.Discard, cr)
+			must.NoError(t, err)
 		})
 
 		t.Run("invalid: "+c.algo, func(t *testing.T) {
-			_, err := c.hash.Write(data)
-			require.NoError(t, err)
+			_, err = c.hash.Write(data)
+			must.NoError(t, err)
 
 			checksum := c.hash.Sum(nil)
 			// mess up checksum
@@ -57,33 +60,32 @@ func TestChecksumValidatingReader(t *testing.T) {
 			digest := c.algo + "=" + base64.StdEncoding.EncodeToString(checksum)
 
 			r := iotest.HalfReader(bytes.NewReader(data))
-			cr, err := newChecksumValidatingReader(ioutil.NopCloser(r), digest)
-			require.NoError(t, err)
+			cr, err := newChecksumValidatingReader(io.NopCloser(r), digest)
+			must.NoError(t, err)
 
-			_, err = io.Copy(ioutil.Discard, cr)
-			require.Error(t, err)
-			require.Equal(t, errMismatchChecksum, err)
+			_, err = io.Copy(io.Discard, cr)
+			must.ErrorIs(t, err, errMismatchChecksum)
 		})
 	}
 }
 
 func TestChecksumValidatingReader_PropagatesError(t *testing.T) {
 	testutil.Parallel(t)
+
 	pr, pw := io.Pipe()
-	defer pr.Close()
-	defer pw.Close()
+	defer func() { _ = pr.Close() }()
+	defer func() { _ = pw.Close() }()
 
 	expectedErr := errors.New("some error")
 
 	go func() {
-		pw.Write([]byte("some input"))
-		pw.CloseWithError(expectedErr)
+		_, _ = pw.Write([]byte("some input"))
+		_ = pw.CloseWithError(expectedErr)
 	}()
 
 	cr, err := newChecksumValidatingReader(pr, "sha-256=aaaa")
-	require.NoError(t, err)
+	must.NoError(t, err)
 
-	_, err = io.Copy(ioutil.Discard, cr)
-	require.Error(t, err)
-	require.Equal(t, expectedErr, err)
+	_, err = io.Copy(io.Discard, cr)
+	must.ErrorIs(t, err, expectedErr)
 }

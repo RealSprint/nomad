@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package nomad
 
 import (
@@ -28,8 +31,13 @@ func NewScalingEndpoint(srv *Server, ctx *RPCContext) *Scaling {
 // ListPolicies is used to list the policies
 func (p *Scaling) ListPolicies(args *structs.ScalingPolicyListRequest, reply *structs.ScalingPolicyListResponse) error {
 
+	authErr := p.srv.Authenticate(p.ctx, args)
 	if done, err := p.srv.forward("Scaling.ListPolicies", args, args, reply); done {
 		return err
+	}
+	p.srv.MeasureRPCRate("scaling", structs.RateMetricList, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
 	}
 	defer metrics.MeasureSince([]string{"nomad", "scaling", "list_policies"}, time.Now())
 
@@ -37,7 +45,7 @@ func (p *Scaling) ListPolicies(args *structs.ScalingPolicyListRequest, reply *st
 		return p.listAllNamespaces(args, reply)
 	}
 
-	if aclObj, err := p.srv.ResolveToken(args.AuthToken); err != nil {
+	if aclObj, err := p.srv.ResolveACL(args); err != nil {
 		return err
 	} else if aclObj != nil {
 		hasListScalingPolicies := aclObj.AllowNsOp(args.RequestNamespace(), acl.NamespaceCapabilityListScalingPolicies)
@@ -95,13 +103,18 @@ func (p *Scaling) ListPolicies(args *structs.ScalingPolicyListRequest, reply *st
 func (p *Scaling) GetPolicy(args *structs.ScalingPolicySpecificRequest,
 	reply *structs.SingleScalingPolicyResponse) error {
 
+	authErr := p.srv.Authenticate(p.ctx, args)
 	if done, err := p.srv.forward("Scaling.GetPolicy", args, args, reply); done {
 		return err
+	}
+	p.srv.MeasureRPCRate("scaling", structs.RateMetricRead, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
 	}
 	defer metrics.MeasureSince([]string{"nomad", "scaling", "get_policy"}, time.Now())
 
 	// Check for list-job permissions
-	if aclObj, err := p.srv.ResolveToken(args.AuthToken); err != nil {
+	if aclObj, err := p.srv.ResolveACL(args); err != nil {
 		return err
 	} else if aclObj != nil {
 		hasReadScalingPolicy := aclObj.AllowNsOp(args.RequestNamespace(), acl.NamespaceCapabilityReadScalingPolicy)
@@ -144,7 +157,7 @@ func (p *Scaling) GetPolicy(args *structs.ScalingPolicySpecificRequest,
 
 func (p *Scaling) listAllNamespaces(args *structs.ScalingPolicyListRequest, reply *structs.ScalingPolicyListResponse) error {
 	// Check for list-job permissions
-	aclObj, err := p.srv.ResolveToken(args.AuthToken)
+	aclObj, err := p.srv.ResolveACL(args)
 	if err != nil {
 		return err
 	}

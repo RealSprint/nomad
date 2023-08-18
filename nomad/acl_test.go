@@ -1,6 +1,10 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package nomad
 
 import (
+	"fmt"
 	"path"
 	"testing"
 	"time"
@@ -30,13 +34,13 @@ func TestAuthenticate_mTLS(t *testing.T) {
 		EnableHTTP:           true,
 		EnableRPC:            true,
 		VerifyServerHostname: true,
-		CAFile:               "../helper/tlsutil/testdata/ca.pem",
-		CertFile:             "../helper/tlsutil/testdata/nomad-foo.pem",
-		KeyFile:              "../helper/tlsutil/testdata/nomad-foo-key.pem",
+		CAFile:               "../helper/tlsutil/testdata/nomad-agent-ca.pem",
+		CertFile:             "../helper/tlsutil/testdata/regionFoo-server-nomad.pem",
+		KeyFile:              "../helper/tlsutil/testdata/regionFoo-server-nomad-key.pem",
 	}
 	clientTLSCfg := tlsCfg.Copy()
-	clientTLSCfg.CertFile = "../helper/tlsutil/testdata/nomad-foo-client.pem"
-	clientTLSCfg.KeyFile = "../helper/tlsutil/testdata/nomad-foo-client-key.pem"
+	clientTLSCfg.CertFile = "../helper/tlsutil/testdata/regionFoo-client-nomad.pem"
+	clientTLSCfg.KeyFile = "../helper/tlsutil/testdata/regionFoo-client-nomad-key.pem"
 
 	setCfg := func(name string, bootstrapExpect int) func(*Config) {
 		return func(c *Config) {
@@ -161,6 +165,7 @@ func TestAuthenticate_mTLS(t *testing.T) {
 		expectTLSName  string
 		expectIP       string
 		expectErr      string
+		expectIDKey    string
 		sendFromPeer   *Server
 	}{
 		{
@@ -168,14 +173,16 @@ func TestAuthenticate_mTLS(t *testing.T) {
 			tlsCfg:         clientTLSCfg, // TODO: this is a mixed use cert
 			testToken:      rootToken,
 			expectAccessor: rootAccessor,
+			expectIDKey:    fmt.Sprintf("token:%s", rootAccessor),
 		},
 		{
 			name:           "from peer to leader without token", // ex. Eval.Dequeue
 			tlsCfg:         tlsCfg,
-			expectTLSName:  "regionFoo.nomad",
+			expectTLSName:  "server.regionFoo.nomad",
 			expectAccessor: "anonymous",
 			expectIP:       follower.GetConfig().RPCAddr.IP.String(),
 			sendFromPeer:   follower,
+			expectIDKey:    "token:anonymous",
 		},
 		{
 			// note: this test is somewhat bogus because under test all the
@@ -183,37 +190,42 @@ func TestAuthenticate_mTLS(t *testing.T) {
 			name:           "anonymous forwarded from peer to leader",
 			tlsCfg:         tlsCfg,
 			expectAccessor: "anonymous",
-			expectTLSName:  "regionFoo.nomad",
+			expectTLSName:  "server.regionFoo.nomad",
 			expectIP:       "127.0.0.1",
+			expectIDKey:    "token:anonymous",
 		},
 		{
 			name:          "invalid token",
 			tlsCfg:        clientTLSCfg,
 			testToken:     uuid.Generate(),
-			expectTLSName: "regionFoo.nomad",
+			expectTLSName: "server.regionFoo.nomad",
 			expectIP:      follower.GetConfig().RPCAddr.IP.String(),
-		},
-		{
-			name:          "expired token",
-			tlsCfg:        clientTLSCfg,
-			testToken:     uuid.Generate(),
-			expectTLSName: "regionFoo.nomad",
-			expectIP:      follower.GetConfig().RPCAddr.IP.String(),
+			expectIDKey:   "server.regionFoo.nomad:127.0.0.1",
+			expectErr:     "rpc error: Permission denied",
 		},
 		{
 			name:           "from peer to leader with leader ACL", // ex. core job GC
 			tlsCfg:         tlsCfg,
 			testToken:      leader.getLeaderAcl(),
-			expectTLSName:  "regionFoo.nomad",
+			expectTLSName:  "server.regionFoo.nomad",
 			expectAccessor: "leader",
 			expectIP:       follower.GetConfig().RPCAddr.IP.String(),
 			sendFromPeer:   follower,
+			expectIDKey:    "token:leader",
 		},
 		{
 			name:           "from client", // ex. Node.GetAllocs
 			tlsCfg:         clientTLSCfg,
 			testToken:      node.SecretID,
 			expectClientID: node.ID,
+			expectIDKey:    fmt.Sprintf("client:%s", node.ID),
+		},
+		{
+			name:           "from client missing secret", // ex. Node.Register
+			tlsCfg:         clientTLSCfg,
+			expectAccessor: "anonymous",
+			expectTLSName:  "server.regionFoo.nomad",
+			expectIP:       follower.GetConfig().RPCAddr.IP.String(),
 		},
 		{
 			name:      "from failed workload", // ex. Variables.List
@@ -226,12 +238,14 @@ func TestAuthenticate_mTLS(t *testing.T) {
 			tlsCfg:        clientTLSCfg,
 			testToken:     claims2Token,
 			expectAllocID: alloc2.ID,
+			expectIDKey:   fmt.Sprintf("alloc:%s", alloc2.ID),
 		},
 		{
 			name:           "valid user token",
 			tlsCfg:         clientTLSCfg,
 			testToken:      token1.SecretID,
 			expectAccessor: token1.AccessorID,
+			expectIDKey:    fmt.Sprintf("token:%s", token1.AccessorID),
 		},
 		{
 			name:      "expired user token",
@@ -270,25 +284,30 @@ func TestAuthenticate_mTLS(t *testing.T) {
 			must.NotNil(t, resp)
 			must.NotNil(t, resp.Identity)
 
+			if tc.expectIDKey != "" {
+				must.Eq(t, tc.expectIDKey, resp.Identity.String(),
+					must.Sprintf("expected identity key for metrics to match"))
+			}
+
 			if tc.expectAccessor != "" {
 				must.NotNil(t, resp.Identity.ACLToken, must.Sprint("expected ACL token"))
 				test.Eq(t, tc.expectAccessor, resp.Identity.ACLToken.AccessorID,
-					must.Sprint("expected ACL token accessor ID"))
+					test.Sprint("expected ACL token accessor ID"))
 			}
 
 			test.Eq(t, tc.expectClientID, resp.Identity.ClientID,
-				must.Sprint("expected client ID"))
+				test.Sprint("expected client ID"))
 
 			if tc.expectAllocID != "" {
 				must.NotNil(t, resp.Identity.Claims, must.Sprint("expected claims"))
 				test.Eq(t, tc.expectAllocID, resp.Identity.Claims.AllocationID,
-					must.Sprint("expected workload identity"))
+					test.Sprint("expected workload identity"))
 			}
 
-			test.Eq(t, tc.expectTLSName, resp.Identity.TLSName, must.Sprint("expected TLS name"))
+			test.Eq(t, tc.expectTLSName, resp.Identity.TLSName, test.Sprint("expected TLS name"))
 
 			if tc.expectIP == "" {
-				test.Nil(t, resp.Identity.RemoteIP, must.Sprint("expected no remote IP"))
+				test.Nil(t, resp.Identity.RemoteIP, test.Sprint("expected no remote IP"))
 			} else {
 				test.Eq(t, tc.expectIP, resp.Identity.RemoteIP.String())
 			}
@@ -739,11 +758,6 @@ func TestResolveClaims(t *testing.T) {
 		JobID:     claims.JobID,
 	}
 
-	index++
-	err := store.UpsertACLPolicies(structs.MsgTypeTestSetup, index, []*structs.ACLPolicy{
-		policy0, policy1, policy2, policy3, policy4, policy5, policy6, policy7})
-	must.NoError(t, err)
-
 	aclObj, err := srv.ResolveClaims(claims)
 	must.Nil(t, aclObj)
 	must.EqError(t, err, "allocation does not exist")
@@ -753,11 +767,22 @@ func TestResolveClaims(t *testing.T) {
 	err = store.UpsertAllocs(structs.MsgTypeTestSetup, index, []*structs.Allocation{alloc})
 	must.NoError(t, err)
 
+	// Resolve claims and check we that the ACL object without policies provides no access
 	aclObj, err = srv.ResolveClaims(claims)
 	must.NoError(t, err)
 	must.NotNil(t, aclObj)
+	must.False(t, aclObj.AllowNamespaceOperation("default", acl.NamespaceCapabilityListJobs))
 
-	// Check that the ACL object looks reasonable
+	// Add the policies
+	index++
+	err = store.UpsertACLPolicies(structs.MsgTypeTestSetup, index, []*structs.ACLPolicy{
+		policy0, policy1, policy2, policy3, policy4, policy5, policy6, policy7})
+	must.NoError(t, err)
+
+	// Re-resolve and check that the resulting ACL looks reasonable
+	aclObj, err = srv.ResolveClaims(claims)
+	must.NoError(t, err)
+	must.NotNil(t, aclObj)
 	must.False(t, aclObj.IsManagement())
 	must.True(t, aclObj.AllowNamespaceOperation("default", acl.NamespaceCapabilityListJobs))
 	must.False(t, aclObj.AllowNamespaceOperation("other", acl.NamespaceCapabilityListJobs))

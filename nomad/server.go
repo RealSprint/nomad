@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package nomad
 
 import (
@@ -7,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"net/rpc"
 	"os"
@@ -23,7 +25,7 @@ import (
 	consulapi "github.com/hashicorp/consul/api"
 	log "github.com/hashicorp/go-hclog"
 	multierror "github.com/hashicorp/go-multierror"
-	lru "github.com/hashicorp/golang-lru"
+	"github.com/hashicorp/nomad/acl"
 	"github.com/hashicorp/raft"
 	autopilot "github.com/hashicorp/raft-autopilot"
 	raftboltdb "github.com/hashicorp/raft-boltdb/v2"
@@ -36,6 +38,7 @@ import (
 	"github.com/hashicorp/nomad/helper/pool"
 	"github.com/hashicorp/nomad/helper/stats"
 	"github.com/hashicorp/nomad/helper/tlsutil"
+	"github.com/hashicorp/nomad/lib/auth/oidc"
 	"github.com/hashicorp/nomad/nomad/deploymentwatcher"
 	"github.com/hashicorp/nomad/nomad/drainer"
 	"github.com/hashicorp/nomad/nomad/state"
@@ -215,6 +218,13 @@ type Server struct {
 	// volumeWatcher is used to release volume claims
 	volumeWatcher *volumewatcher.Watcher
 
+	// volumeControllerFutures is a map of plugin IDs to pending controller RPCs. If
+	// no RPC is pending for a given plugin, this may be nil.
+	volumeControllerFutures map[string]context.Context
+
+	// volumeControllerLock synchronizes access controllerFutures map
+	volumeControllerLock sync.Mutex
+
 	// keyringReplicator is used to replicate root encryption keys from the
 	// leader
 	keyringReplicator *KeyringReplicator
@@ -253,7 +263,12 @@ type Server struct {
 	workersEventCh   chan interface{}
 
 	// aclCache is used to maintain the parsed ACL objects
-	aclCache *lru.TwoQueueCache
+	aclCache *structs.ACLCache[*acl.ACL]
+
+	// oidcProviderCache maintains a cache of OIDC providers. This is useful as
+	// the provider performs background HTTP requests. When the Nomad server is
+	// shutting down, the oidcProviderCache.Shutdown() function must be called.
+	oidcProviderCache *oidc.ProviderCache
 
 	// leaderAcl is the management ACL token that is valid when resolved by the
 	// current leader.
@@ -278,36 +293,6 @@ type Server struct {
 	shutdownCtx    context.Context
 	shutdownCancel context.CancelFunc
 	shutdownCh     <-chan struct{}
-}
-
-// Holds the RPC endpoints
-type endpoints struct {
-	Status              *Status
-	Node                *Node
-	Job                 *Job
-	CSIVolume           *CSIVolume
-	CSIPlugin           *CSIPlugin
-	Deployment          *Deployment
-	Region              *Region
-	Search              *Search
-	Periodic            *Periodic
-	System              *System
-	Operator            *Operator
-	ACL                 *ACL
-	Scaling             *Scaling
-	Enterprise          *EnterpriseEndpoints
-	Event               *Event
-	Namespace           *Namespace
-	Variables           *Variables
-	Keyring             *Keyring
-	ServiceRegistration *ServiceRegistration
-
-	// Client endpoints
-	ClientStats       *ClientStats
-	FileSystem        *FileSystem
-	Agent             *Agent
-	ClientAllocations *ClientAllocations
-	ClientCSI         *ClientCSI
 }
 
 // NewServer is used to construct a new Nomad server from the
@@ -335,13 +320,15 @@ func NewServer(config *Config, consulCatalog consul.CatalogAPI, consulConfigEntr
 	}
 
 	// Create the ACL object cache
-	aclCache, err := lru.New2Q(aclCacheSize)
-	if err != nil {
-		return nil, err
-	}
+	aclCache := structs.NewACLCache[*acl.ACL](aclCacheSize)
 
 	// Create the logger
 	logger := config.Logger.ResetNamedIntercept("nomad")
+
+	// Validate enterprise license before anything stateful happens
+	if err = config.LicenseConfig.Validate(); err != nil {
+		return nil, err
+	}
 
 	// Create the server
 	s := &Server{
@@ -414,6 +401,11 @@ func NewServer(config *Config, consulCatalog consul.CatalogAPI, consulConfigEntr
 	}
 	s.encrypter = encrypter
 
+	// Set up the OIDC provider cache. This is needed by the setupRPC, but must
+	// be done separately so that the server can stop all background processes
+	// when it shuts down itself.
+	s.oidcProviderCache = oidc.NewProviderCache()
+
 	// Initialize the RPC layer
 	if err := s.setupRPC(tlsWrap); err != nil {
 		s.Shutdown()
@@ -460,6 +452,7 @@ func NewServer(config *Config, consulCatalog consul.CatalogAPI, consulConfigEntr
 		s.logger.Error("failed to create volume watcher", "error", err)
 		return nil, fmt.Errorf("failed to create volume watcher: %v", err)
 	}
+	s.volumeControllerFutures = map[string]context.Context{}
 
 	// Start the eval broker notification system so any subscribers can get
 	// updates when the processes SetEnabled is triggered.
@@ -720,6 +713,12 @@ func (s *Server) Shutdown() error {
 	// Stop being able to set Configuration Entries
 	s.consulConfigEntries.Stop()
 
+	// Shutdown the OIDC provider cache which contains background resources and
+	// processes.
+	if s.oidcProviderCache != nil {
+		s.oidcProviderCache.Shutdown()
+	}
+
 	return nil
 }
 
@@ -855,8 +854,11 @@ func (s *Server) Reload(newConfig *Config) error {
 		}
 	}
 
-	if newConfig.LicenseEnv != "" || newConfig.LicensePath != "" {
-		s.EnterpriseState.ReloadLicense(newConfig)
+	if newConfig.LicenseConfig.LicenseEnvBytes != "" || newConfig.LicenseConfig.LicensePath != "" {
+		if err = s.EnterpriseState.ReloadLicense(newConfig); err != nil {
+			s.logger.Error("error reloading license", "error", err)
+			_ = multierror.Append(&mErr, err)
+		}
 	}
 
 	// Because this is a new configuration, we extract the worker pool arguments without acquiring a lock
@@ -866,6 +868,18 @@ func (s *Server) Reload(newConfig *Config) error {
 			reloadSchedulers(s, newVals)
 		}
 		reloadSchedulers(s, newVals)
+	}
+
+	raftRC := raft.ReloadableConfig{
+		TrailingLogs:      newConfig.RaftConfig.TrailingLogs,
+		SnapshotInterval:  newConfig.RaftConfig.SnapshotInterval,
+		SnapshotThreshold: newConfig.RaftConfig.SnapshotThreshold,
+		HeartbeatTimeout:  newConfig.RaftConfig.HeartbeatTimeout,
+		ElectionTimeout:   newConfig.RaftConfig.ElectionTimeout,
+	}
+
+	if err := s.raft.ReloadConfig(raftRC); err != nil {
+		multierror.Append(&mErr, err)
 	}
 
 	return mErr.ErrorOrNil()
@@ -1132,10 +1146,10 @@ func (s *Server) setupVaultClient() error {
 // setupRPC is used to setup the RPC listener
 func (s *Server) setupRPC(tlsWrap tlsutil.RegionWrapper) error {
 	// Populate the static RPC server
-	err := s.setupRpcServer(s.rpcServer, nil)
-	if err != nil {
-		return err
-	}
+	s.setupRpcServer(s.rpcServer, nil)
+
+	// Setup streaming endpoints
+	s.setupStreamingEndpoints(s.rpcServer)
 
 	listener, err := s.createRPCListener()
 	if err != nil {
@@ -1193,26 +1207,21 @@ func (s *Server) setupRPC(tlsWrap tlsutil.RegionWrapper) error {
 	return nil
 }
 
-// setupRpcServer is used to populate an RPC server with endpoints. This gets
-// called at startup but also once for every new RPC connection so that RPC
-// handlers can have per-connection context.
-func (s *Server) setupRpcServer(server *rpc.Server, ctx *RPCContext) error {
-
+// setupStreamingEndpoints is used to populate an RPC server with streaming
+// endpoints. This only gets called at server startup.
+func (s *Server) setupStreamingEndpoints(server *rpc.Server) {
 	// The endpoints are client RPCs and don't include a connection
 	// context. They also need to be registered as streaming endpoints in their
 	// register() methods.
 
 	clientAllocs := NewClientAllocationsEndpoint(s)
 	clientAllocs.register()
-	_ = server.Register(clientAllocs)
 
 	fsEndpoint := NewFileSystemEndpoint(s)
 	fsEndpoint.register()
-	_ = server.Register(fsEndpoint)
 
 	agentEndpoint := NewAgentEndpoint(s)
 	agentEndpoint.register()
-	_ = server.Register(agentEndpoint)
 
 	// Event is a streaming-only endpoint so we don't want to register it as a
 	// normal RPC
@@ -1221,19 +1230,32 @@ func (s *Server) setupRpcServer(server *rpc.Server, ctx *RPCContext) error {
 
 	// Operator takes a RPC context but also has a streaming RPC that needs to
 	// be registered
-	operatorEndpoint := NewOperatorEndpoint(s, ctx)
+	operatorEndpoint := NewOperatorEndpoint(s, nil)
 	operatorEndpoint.register()
-	_ = server.Register(NewOperatorEndpoint(s, ctx))
+}
 
+// setupRpcServer is used to populate an RPC server with endpoints. This gets
+// called at startup but also once for every new RPC connection so that RPC
+// handlers can have per-connection context.
+func (s *Server) setupRpcServer(server *rpc.Server, ctx *RPCContext) {
 	// These endpoints are client RPCs and don't include a connection context
-	_ = server.Register(NewClientCSIEndpoint(s))
 	_ = server.Register(NewClientStatsEndpoint(s))
+	_ = server.Register(newNodeMetaEndpoint(s))
+
+	// These endpoints have their streaming component registered in
+	// setupStreamingEndpoints, but their non-streaming RPCs are registered
+	// here.
+	_ = server.Register(NewClientAllocationsEndpoint(s))
+	_ = server.Register(NewFileSystemEndpoint(s))
+	_ = server.Register(NewAgentEndpoint(s))
+	_ = server.Register(NewOperatorEndpoint(s, ctx))
 
 	// All other endpoints include the connection context and don't need to be
 	// registered as streaming endpoints
 
 	_ = server.Register(NewACLEndpoint(s, ctx))
 	_ = server.Register(NewAllocEndpoint(s, ctx))
+	_ = server.Register(NewClientCSIEndpoint(s, ctx))
 	_ = server.Register(NewCSIVolumeEndpoint(s, ctx))
 	_ = server.Register(NewCSIPluginEndpoint(s, ctx))
 	_ = server.Register(NewDeploymentEndpoint(s, ctx))
@@ -1242,6 +1264,7 @@ func (s *Server) setupRpcServer(server *rpc.Server, ctx *RPCContext) error {
 	_ = server.Register(NewKeyringEndpoint(s, ctx, s.encrypter))
 	_ = server.Register(NewNamespaceEndpoint(s, ctx))
 	_ = server.Register(NewNodeEndpoint(s, ctx))
+	_ = server.Register(NewNodePoolEndpoint(s, ctx))
 	_ = server.Register(NewPeriodicEndpoint(s, ctx))
 	_ = server.Register(NewPlanEndpoint(s, ctx))
 	_ = server.Register(NewRegionEndpoint(s, ctx))
@@ -1252,10 +1275,10 @@ func (s *Server) setupRpcServer(server *rpc.Server, ctx *RPCContext) error {
 	_ = server.Register(NewSystemEndpoint(s, ctx))
 	_ = server.Register(NewVariablesEndpoint(s, ctx, s.encrypter))
 
+	// Register non-streaming
+
 	ent := NewEnterpriseEndpoints(s, ctx)
 	ent.Register(server)
-
-	return nil
 }
 
 // setupRaft is used to setup and initialize Raft
@@ -1327,7 +1350,7 @@ func (s *Server) setupRaft() error {
 		if err := s.checkRaftVersionFile(raftVersionFilePath); err != nil {
 			return err
 		}
-		if err := ioutil.WriteFile(raftVersionFilePath, []byte(raftVersionFileContent), 0644); err != nil {
+		if err := os.WriteFile(raftVersionFilePath, []byte(raftVersionFileContent), 0644); err != nil {
 			return fmt.Errorf("failed to write Raft version file: %v", err)
 		}
 
@@ -1377,7 +1400,7 @@ func (s *Server) setupRaft() error {
 		peersFile := filepath.Join(path, "peers.json")
 		peersInfoFile := filepath.Join(path, "peers.info")
 		if _, err := os.Stat(peersInfoFile); os.IsNotExist(err) {
-			if err := ioutil.WriteFile(peersInfoFile, []byte(peersInfoContent), 0644); err != nil {
+			if err := os.WriteFile(peersInfoFile, []byte(peersInfoContent), 0644); err != nil {
 				return fmt.Errorf("failed to write peers.info file: %v", err)
 			}
 
@@ -1463,7 +1486,7 @@ func (s *Server) checkRaftVersionFile(path string) error {
 		return nil
 	}
 
-	v, err := ioutil.ReadFile(path)
+	v, err := os.ReadFile(path)
 	if err != nil {
 		s.logger.Warn(fmt.Sprintf("unable to read Raft version file, %s", baseWarning), "error", err)
 		return nil
@@ -1524,7 +1547,6 @@ func (s *Server) setupSerf(conf *serf.Config, ch chan serf.Event, path string) (
 			return nil, err
 		}
 	}
-	conf.RejoinAfterLeave = true
 	// LeavePropagateDelay is used to make sure broadcasted leave intents propagate
 	// This value was tuned using https://www.serf.io/docs/internals/simulator.html to
 	// allow for convergence in 99.9% of nodes in a 10 node cluster

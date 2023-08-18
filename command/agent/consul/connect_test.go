@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package consul
 
 import (
@@ -9,6 +12,7 @@ import (
 	"github.com/hashicorp/nomad/helper/pointer"
 	"github.com/hashicorp/nomad/helper/uuid"
 	"github.com/hashicorp/nomad/nomad/structs"
+	"github.com/shoenig/test/must"
 	"github.com/stretchr/testify/require"
 )
 
@@ -360,11 +364,11 @@ func TestConnect_connectUpstreams(t *testing.T) {
 	ci.Parallel(t)
 
 	t.Run("nil", func(t *testing.T) {
-		require.Nil(t, connectUpstreams(nil))
+		must.Nil(t, connectUpstreams(nil))
 	})
 
 	t.Run("not empty", func(t *testing.T) {
-		require.Equal(t,
+		must.Eq(t,
 			[]api.Upstream{{
 				DestinationName: "foo",
 				LocalBindPort:   8000,
@@ -374,6 +378,7 @@ func TestConnect_connectUpstreams(t *testing.T) {
 				LocalBindPort:        9000,
 				Datacenter:           "dc2",
 				LocalBindAddress:     "127.0.0.2",
+				Config:               map[string]any{"connect_timeout_ms": 5000},
 			}},
 			connectUpstreams([]structs.ConsulUpstream{{
 				DestinationName: "foo",
@@ -384,6 +389,7 @@ func TestConnect_connectUpstreams(t *testing.T) {
 				LocalBindPort:        9000,
 				Datacenter:           "dc2",
 				LocalBindAddress:     "127.0.0.2",
+				Config:               map[string]any{"connect_timeout_ms": 5000},
 			}}),
 		)
 	})

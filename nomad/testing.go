@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package nomad
 
 import (
@@ -5,25 +8,23 @@ import (
 	"math/rand"
 	"net"
 	"sync/atomic"
-	"testing"
 	"time"
 
+	"github.com/hashicorp/nomad/ci"
 	"github.com/hashicorp/nomad/command/agent/consul"
-	"github.com/hashicorp/nomad/helper/freeport"
-	"github.com/hashicorp/nomad/helper/pluginutils/catalog"
-	"github.com/hashicorp/nomad/helper/pluginutils/singleton"
 	"github.com/hashicorp/nomad/helper/testlog"
 	"github.com/hashicorp/nomad/nomad/mock"
 	"github.com/hashicorp/nomad/nomad/structs"
 	"github.com/hashicorp/nomad/version"
-	"github.com/stretchr/testify/require"
+	testing "github.com/mitchellh/go-testing-interface"
+	"github.com/shoenig/test/must"
 )
 
 var (
 	nodeNumber int32 = 0
 )
 
-func TestACLServer(t *testing.T, cb func(*Config)) (*Server, *structs.ACLToken, func()) {
+func TestACLServer(t testing.T, cb func(*Config)) (*Server, *structs.ACLToken, func()) {
 	server, cleanup := TestServer(t, func(c *Config) {
 		c.ACLEnabled = true
 		if cb != nil {
@@ -38,13 +39,17 @@ func TestACLServer(t *testing.T, cb func(*Config)) (*Server, *structs.ACLToken, 
 	return server, token, cleanup
 }
 
-func TestServer(t *testing.T, cb func(*Config)) (*Server, func()) {
+func TestServer(t testing.T, cb func(*Config)) (*Server, func()) {
 	s, c, err := TestServerErr(t, cb)
-	require.NoError(t, err, "failed to start test server")
+	must.NoError(t, err, must.Sprint("failed to start test server"))
 	return s, c
 }
 
-func TestServerErr(t *testing.T, cb func(*Config)) (*Server, func(), error) {
+// TestConfigForServer provides a fully functional Config to pass to NewServer()
+// It can be changed beforehand to induce different behavior such as specific errors.
+func TestConfigForServer(t testing.T) *Config {
+	t.Helper()
+
 	// Setup the default settings
 	config := DefaultConfig()
 
@@ -85,10 +90,6 @@ func TestServerErr(t *testing.T, cb func(*Config)) (*Server, func(), error) {
 	config.ServerHealthInterval = 50 * time.Millisecond
 	config.AutopilotInterval = 100 * time.Millisecond
 
-	// Set the plugin loaders
-	config.PluginLoader = catalog.TestPluginLoader(t)
-	config.PluginSingletonLoader = singleton.NewSingletonLoader(config.Logger, config.PluginLoader)
-
 	// Disable consul autojoining: tests typically join servers directly
 	config.ConsulConfig.ServerAutoJoin = &f
 
@@ -100,6 +101,22 @@ func TestServerErr(t *testing.T, cb func(*Config)) (*Server, func(), error) {
 		MinTermLength: 2,
 	}
 
+	// Get random ports for RPC and Serf
+	ports := ci.PortAllocator.Grab(2)
+	config.RPCAddr = &net.TCPAddr{
+		IP:   []byte{127, 0, 0, 1},
+		Port: ports[0],
+	}
+	config.SerfConfig.MemberlistConfig.BindPort = ports[1]
+
+	// max job submission source size
+	config.JobMaxSourceSize = 1e6
+
+	return config
+}
+
+func TestServerErr(t testing.T, cb func(*Config)) (*Server, func(), error) {
+	config := TestConfigForServer(t)
 	// Invoke the callback if any
 	if cb != nil {
 		cb(config)
@@ -109,18 +126,12 @@ func TestServerErr(t *testing.T, cb func(*Config)) (*Server, func(), error) {
 	cConfigs := consul.NewMockConfigsAPI(config.Logger)
 	cACLs := consul.NewMockACLsAPI(config.Logger)
 
+	var server *Server
+	var err error
+
 	for i := 10; i >= 0; i-- {
-		// Get random ports, need to cleanup later
-		ports := freeport.MustTake(2)
-
-		config.RPCAddr = &net.TCPAddr{
-			IP:   []byte{127, 0, 0, 1},
-			Port: ports[0],
-		}
-		config.SerfConfig.MemberlistConfig.BindPort = ports[1]
-
 		// Create server
-		server, err := NewServer(config, cCatalog, cConfigs, cACLs)
+		server, err = NewServer(config, cCatalog, cConfigs, cACLs)
 		if err == nil {
 			return server, func() {
 				ch := make(chan error)
@@ -128,12 +139,10 @@ func TestServerErr(t *testing.T, cb func(*Config)) (*Server, func(), error) {
 					defer close(ch)
 
 					// Shutdown server
-					err := server.Shutdown()
+					err = server.Shutdown()
 					if err != nil {
 						ch <- fmt.Errorf("failed to shutdown server: %w", err)
 					}
-
-					freeport.Return(ports)
 				}()
 
 				select {
@@ -145,35 +154,35 @@ func TestServerErr(t *testing.T, cb func(*Config)) (*Server, func(), error) {
 					t.Fatal("timed out while shutting down server")
 				}
 			}, nil
-		} else if i == 0 {
-			freeport.Return(ports)
-			return nil, nil, err
-		} else {
+		} else if i > 0 {
 			if server != nil {
 				_ = server.Shutdown()
-				freeport.Return(ports)
 			}
 			wait := time.Duration(rand.Int31n(2000)) * time.Millisecond
 			time.Sleep(wait)
 		}
+
+		// if it failed for port reasons, try new ones
+		ports := ci.PortAllocator.Grab(2)
+		config.RPCAddr = &net.TCPAddr{
+			IP:   []byte{127, 0, 0, 1},
+			Port: ports[0],
+		}
+		config.SerfConfig.MemberlistConfig.BindPort = ports[1]
 	}
 
-	return nil, nil, nil
+	return nil, nil, fmt.Errorf("error starting test server: %w", err)
 }
 
-func TestJoin(t *testing.T, servers ...*Server) {
+func TestJoin(t testing.T, servers ...*Server) {
 	for i := 0; i < len(servers)-1; i++ {
 		addr := fmt.Sprintf("127.0.0.1:%d",
 			servers[i].config.SerfConfig.MemberlistConfig.BindPort)
 
 		for j := i + 1; j < len(servers); j++ {
 			num, err := servers[j].Join([]string{addr})
-			if err != nil {
-				t.Fatalf("err: %v", err)
-			}
-			if num != 1 {
-				t.Fatalf("bad: %d", num)
-			}
+			must.NoError(t, err)
+			must.Eq(t, 1, num)
 		}
 	}
 }

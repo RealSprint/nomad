@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package structs
 
 import (
@@ -54,6 +57,8 @@ func TestStructs_VariableDecrypted_Validate(t *testing.T) {
 		{path: "example/_-~/whatever", ok: true},
 		{path: "example/@whatever"},
 		{path: "example/what.ever"},
+		{path: "nomad/job-templates"},
+		{path: "nomad/job-templates/whatever", ok: true},
 	}
 	for _, tc := range testCases {
 		tc := tc

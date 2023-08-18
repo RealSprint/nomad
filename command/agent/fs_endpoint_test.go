@@ -1,9 +1,12 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package agent
 
 import (
 	"encoding/base64"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -63,7 +66,7 @@ func addAllocToClient(agent *TestAgent, alloc *structs.Allocation, wait clientAl
 
 	// Upsert the allocation
 	state := agent.server.State()
-	require.Nil(state.UpsertJob(structs.MsgTypeTestSetup, 999, alloc.Job))
+	require.Nil(state.UpsertJob(structs.MsgTypeTestSetup, 999, nil, alloc.Job))
 	require.Nil(state.UpsertAllocs(structs.MsgTypeTestSetup, 1003, []*structs.Allocation{alloc}))
 
 	if wait == noWaitClientAlloc {
@@ -322,7 +325,7 @@ func TestHTTP_FS_ReadAt(t *testing.T) {
 		_, err = s.Server.FileReadAtRequest(respW, req)
 		require.Nil(err)
 
-		output, err := ioutil.ReadAll(respW.Result().Body)
+		output, err := io.ReadAll(respW.Result().Body)
 		require.Nil(err)
 		require.EqualValues(expectation, output)
 	})
@@ -341,7 +344,7 @@ func TestHTTP_FS_ReadAt_XSS(t *testing.T) {
 		require.NoError(t, err)
 		defer resp.Body.Close()
 
-		buf, err := ioutil.ReadAll(resp.Body)
+		buf, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
 		require.Equal(t, xssLoggerMockDriverStdout, string(buf))
 
@@ -368,7 +371,7 @@ func TestHTTP_FS_Cat(t *testing.T) {
 		_, err = s.Server.FileCatRequest(respW, req)
 		require.Nil(err)
 
-		output, err := ioutil.ReadAll(respW.Result().Body)
+		output, err := io.ReadAll(respW.Result().Body)
 		require.Nil(err)
 		require.EqualValues(defaultLoggerMockDriverStdout, output)
 	})
@@ -386,7 +389,7 @@ func TestHTTP_FS_Cat_XSS(t *testing.T) {
 		require.NoError(t, err)
 		defer resp.Body.Close()
 
-		buf, err := ioutil.ReadAll(resp.Body)
+		buf, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
 		require.Equal(t, xssLoggerMockDriverStdout, string(buf))
 
@@ -423,7 +426,7 @@ func TestHTTP_FS_Stream_NoFollow(t *testing.T) {
 
 		out := ""
 		testutil.WaitForResult(func() (bool, error) {
-			output, err := ioutil.ReadAll(respW)
+			output, err := io.ReadAll(respW)
 			if err != nil {
 				return false, err
 			}
@@ -455,7 +458,7 @@ func TestHTTP_FS_Stream_NoFollow_XSS(t *testing.T) {
 		require.NoError(t, err)
 		defer resp.Body.Close()
 
-		buf, err := ioutil.ReadAll(resp.Body)
+		buf, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
 		expected := `{"Data":"PHNjcmlwdD5hbGVydChkb2N1bWVudC5kb21haW4pOzwvc2NyaXB0Pg==","File":"alloc/logs/web.stdout.0","Offset":40}`
 		require.Equal(t, expected, string(buf))
@@ -487,7 +490,7 @@ func TestHTTP_FS_Stream_Follow(t *testing.T) {
 
 		out := ""
 		testutil.WaitForResult(func() (bool, error) {
-			output, err := ioutil.ReadAll(respW.Body)
+			output, err := io.ReadAll(respW.Body)
 			if err != nil {
 				return false, err
 			}
@@ -528,7 +531,7 @@ func TestHTTP_FS_Logs(t *testing.T) {
 
 		out := ""
 		testutil.WaitForResult(func() (bool, error) {
-			output, err := ioutil.ReadAll(respW)
+			output, err := io.ReadAll(respW)
 			if err != nil {
 				return false, err
 			}
@@ -557,7 +560,7 @@ func TestHTTP_FS_Logs_XSS(t *testing.T) {
 		require.NoError(t, err)
 		defer resp.Body.Close()
 
-		buf, err := ioutil.ReadAll(resp.Body)
+		buf, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
 		require.Equal(t, xssLoggerMockDriverStdout, string(buf))
 
@@ -588,7 +591,7 @@ func TestHTTP_FS_Logs_Follow(t *testing.T) {
 
 		out := ""
 		testutil.WaitForResult(func() (bool, error) {
-			output, err := ioutil.ReadAll(respW)
+			output, err := io.ReadAll(respW)
 			if err != nil {
 				return false, err
 			}

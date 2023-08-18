@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package agent
 
 import (
@@ -105,6 +108,7 @@ var basicConfig = &Config{
 		JobGCInterval:             "3m",
 		JobGCThreshold:            "12h",
 		DeploymentGCThreshold:     "12h",
+		CSIVolumeClaimGCInterval:  "3m",
 		CSIVolumeClaimGCThreshold: "12h",
 		CSIPluginGCThreshold:      "12h",
 		ACLTokenGCThreshold:       "12h",
@@ -147,7 +151,9 @@ var basicConfig = &Config{
 				ServiceSchedulerEnabled: true,
 			},
 		},
-		LicensePath: "/tmp/nomad.hclic",
+		LicensePath:        "/tmp/nomad.hclic",
+		JobDefaultPriority: pointer.Of(100),
+		JobMaxPriority:     pointer.Of(200),
 	},
 	ACL: &ACLConfig{
 		Enabled:                  true,

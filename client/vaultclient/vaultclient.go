@@ -1,16 +1,19 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package vaultclient
 
 import (
 	"container/heap"
 	"fmt"
 	"math/rand"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	metrics "github.com/armon/go-metrics"
 	hclog "github.com/hashicorp/go-hclog"
+	"github.com/hashicorp/nomad/helper/useragent"
 	"github.com/hashicorp/nomad/nomad/structs"
 	"github.com/hashicorp/nomad/nomad/structs/config"
 	vaultapi "github.com/hashicorp/vault/api"
@@ -21,7 +24,7 @@ import (
 // wrapped tokens will be unwrapped using the vault API client.
 type TokenDeriverFunc func(*structs.Allocation, []string, *vaultapi.Client) (map[string]string, error)
 
-// The interface which nomad client uses to interact with vault and
+// VaultClient is the interface which nomad client uses to interact with vault and
 // periodically renews the tokens and secrets.
 type VaultClient interface {
 	// Start initiates the renewal loop of tokens and secrets
@@ -151,9 +154,8 @@ func NewVaultClient(config *config.VaultConfig, logger hclog.Logger, tokenDerive
 		return nil, err
 	}
 
-	client.SetHeaders(http.Header{
-		"User-Agent": []string{"hashicorp/nomad"},
-	})
+	// Set our Nomad user agent
+	useragent.SetHeaders(client)
 
 	// SetHeaders above will replace all headers, make this call second
 	if config.Namespace != "" {
@@ -193,7 +195,7 @@ func (c *vaultClient) isRunning() bool {
 	return c.running
 }
 
-// Starts the renewal loop of vault client
+// Start starts the renewal loop of vault client
 func (c *vaultClient) Start() {
 	c.lock.Lock()
 	defer c.lock.Unlock()
@@ -207,7 +209,7 @@ func (c *vaultClient) Start() {
 	go c.run()
 }
 
-// Stops the renewal loop of vault client
+// Stop stops the renewal loop of vault client
 func (c *vaultClient) Stop() {
 	c.lock.Lock()
 	defer c.lock.Unlock()
@@ -353,8 +355,7 @@ func (c *vaultClient) renew(req *vaultClientRenewalRequest) error {
 	var renewalErr error
 	leaseDuration := req.increment
 	if req.isToken {
-		// Set the token in the API client to the one that needs
-		// renewal
+		// Set the token in the API client to the one that needs renewal
 		c.client.SetToken(req.id)
 
 		// Renew the token

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package taskrunner
 
 import (
@@ -8,13 +11,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hashicorp/nomad/client/lib/cgutil"
 	"golang.org/x/exp/slices"
 
 	metrics "github.com/armon/go-metrics"
 	log "github.com/hashicorp/go-hclog"
 	multierror "github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/hcl/v2/hcldec"
+
 	"github.com/hashicorp/nomad/client/allocdir"
 	"github.com/hashicorp/nomad/client/allocrunner/interfaces"
 	"github.com/hashicorp/nomad/client/allocrunner/taskrunner/restarts"
@@ -24,6 +27,7 @@ import (
 	"github.com/hashicorp/nomad/client/devicemanager"
 	"github.com/hashicorp/nomad/client/dynamicplugins"
 	cinterfaces "github.com/hashicorp/nomad/client/interfaces"
+	"github.com/hashicorp/nomad/client/lib/cgutil"
 	"github.com/hashicorp/nomad/client/pluginmanager/csimanager"
 	"github.com/hashicorp/nomad/client/pluginmanager/drivermanager"
 	"github.com/hashicorp/nomad/client/serviceregistration"
@@ -175,6 +179,9 @@ type TaskRunner struct {
 	// hookResources captures the resources provided by hooks
 	hookResources *hookResources
 
+	// allocHookResources captures the resources provided by the allocrunner hooks
+	allocHookResources *cstructs.AllocHookResources
+
 	// consulClient is the client used by the consul service hook for
 	// registering services and checks
 	consulServiceClient serviceregistration.Handler
@@ -253,8 +260,6 @@ type TaskRunner struct {
 	networkIsolationLock sync.Mutex
 	networkIsolationSpec *drivers.NetworkIsolationSpec
 
-	allocHookResources *cstructs.AllocHookResources
-
 	// serviceRegWrapper is the handler wrapper that is used by service hooks
 	// to perform service and check registration and deregistration.
 	serviceRegWrapper *wrapper.HandlerWrapper
@@ -329,6 +334,10 @@ type Config struct {
 
 	// Getter is an interface for retrieving artifacts.
 	Getter cinterfaces.ArtifactGetter
+
+	// AllocHookResources is how taskrunner hooks can get state written by
+	// allocrunner hooks
+	AllocHookResources *cstructs.AllocHookResources
 }
 
 func NewTaskRunner(config *Config) (*TaskRunner, error) {
@@ -368,6 +377,7 @@ func NewTaskRunner(config *Config) (*TaskRunner, error) {
 		vaultClient:            config.Vault,
 		state:                  tstate,
 		localState:             state.NewLocalState(),
+		allocHookResources:     config.AllocHookResources,
 		stateDB:                config.StateDB,
 		stateUpdater:           config.StateUpdater,
 		deviceStatsReporter:    config.DeviceStatsReporter,
@@ -486,30 +496,20 @@ func (tr *TaskRunner) initLabels() {
 	}
 }
 
-// MarkFailedDead marks a task as failed and not to run. Aimed to be invoked
-// when alloc runner prestart hooks failed. Should never be called with Run().
-func (tr *TaskRunner) MarkFailedDead(reason string) {
-	defer close(tr.waitCh)
-
-	tr.stateLock.Lock()
-	if err := tr.stateDB.PutTaskRunnerLocalState(tr.allocID, tr.taskName, tr.localState); err != nil {
-		//TODO Nomad will be unable to restore this task; try to kill
-		//     it now and fail? In general we prefer to leave running
-		//     tasks running even if the agent encounters an error.
-		tr.logger.Warn("error persisting local failed task state; may be unable to restore after a Nomad restart",
-			"error", err)
-	}
-	tr.stateLock.Unlock()
-
+// MarkFailedKill marks a task as failed and should be killed.
+// It should be invoked when alloc runner prestart hooks fail.
+// Afterwards, Run() will perform any necessary cleanup.
+func (tr *TaskRunner) MarkFailedKill(reason string) {
+	// Emit an event that fails the task and gives reasons for humans.
 	event := structs.NewTaskEvent(structs.TaskSetupFailure).
+		SetKillReason(structs.TaskRestoreFailed).
 		SetDisplayMessage(reason).
 		SetFailsTask()
-	tr.UpdateState(structs.TaskStateDead, event)
+	tr.EmitEvent(event)
 
-	// Run the stop hooks in case task was a restored task that failed prestart
-	if err := tr.stop(); err != nil {
-		tr.logger.Error("stop failed while marking task dead", "error", err)
-	}
+	// Cancel kill context, so later when allocRunner runs tr.Run(),
+	// we'll follow the usual kill path and do all the appropriate cleanup steps.
+	tr.killCtxCancel()
 }
 
 // Run the TaskRunner. Starts the user's task or reattaches to a restored task.
@@ -985,10 +985,16 @@ func (tr *TaskRunner) handleKill(resultCh <-chan *drivers.ExitResult) *drivers.E
 	// This allows for things like service de-registration to run
 	// before waiting to kill task
 	if delay := tr.Task().ShutdownDelay; delay != 0 {
-		tr.logger.Debug("waiting before killing task", "shutdown_delay", delay)
-
-		ev := structs.NewTaskEvent(structs.TaskWaitingShuttingDownDelay).
-			SetDisplayMessage(fmt.Sprintf("Waiting for shutdown_delay of %s before killing the task.", delay))
+		var ev *structs.TaskEvent
+		if tr.alloc.DesiredTransition.ShouldIgnoreShutdownDelay() {
+			tr.logger.Debug("skipping shutdown_delay", "shutdown_delay", delay)
+			ev = structs.NewTaskEvent(structs.TaskSkippingShutdownDelay).
+				SetDisplayMessage(fmt.Sprintf("Skipping shutdown_delay of %s before killing the task.", delay))
+		} else {
+			tr.logger.Debug("waiting before killing task", "shutdown_delay", delay)
+			ev = structs.NewTaskEvent(structs.TaskWaitingShuttingDownDelay).
+				SetDisplayMessage(fmt.Sprintf("Waiting for shutdown_delay of %s before killing the task.", delay))
+		}
 		tr.UpdateState(structs.TaskStatePending, ev)
 
 		select {
@@ -1138,6 +1144,7 @@ func (tr *TaskRunner) buildTaskConfig() *drivers.TaskConfig {
 		Namespace:     alloc.Namespace,
 		NodeName:      alloc.NodeName,
 		NodeID:        alloc.NodeID,
+		ParentJobID:   alloc.Job.ParentID,
 		Resources: &drivers.Resources{
 			NomadResources: taskResources,
 			LinuxResources: &drivers.LinuxResources{
@@ -1256,8 +1263,6 @@ func (tr *TaskRunner) UpdateState(state string, event *structs.TaskEvent) {
 	tr.logger.Trace("setting task state", "state", state)
 
 	if event != nil {
-		tr.logger.Trace("appending task event", "state", state, "event", event.Type)
-
 		// Append the event
 		tr.appendEvent(event)
 	}
@@ -1370,6 +1375,8 @@ func (tr *TaskRunner) appendEvent(event *structs.TaskEvent) error {
 		tr.state.LastRestart = time.Unix(0, event.Time)
 	}
 
+	tr.logger.Info("Task event", "type", event.Type, "msg", event.DisplayMessage, "failed", event.FailsTask)
+
 	// Append event to slice
 	appendTaskEvent(tr.state, event, tr.maxEvents)
 
@@ -1475,9 +1482,11 @@ func (tr *TaskRunner) UpdateStats(ru *cstructs.TaskResourceUsage) {
 func (tr *TaskRunner) setGaugeForMemory(ru *cstructs.TaskResourceUsage) {
 	alloc := tr.Alloc()
 	var allocatedMem float32
+	var allocatedMemMax float32
 	if taskRes := alloc.AllocatedResources.Tasks[tr.taskName]; taskRes != nil {
 		// Convert to bytes to match other memory metrics
 		allocatedMem = float32(taskRes.Memory.MemoryMB) * 1024 * 1024
+		allocatedMemMax = float32(taskRes.Memory.MemoryMaxMB) * 1024 * 1024
 	}
 
 	ms := ru.ResourceUsage.MemoryStats
@@ -1501,6 +1510,10 @@ func (tr *TaskRunner) setGaugeForMemory(ru *cstructs.TaskResourceUsage) {
 		metrics.SetGaugeWithLabels([]string{"client", "allocs", "memory", "allocated"},
 			allocatedMem, tr.baseLabels)
 	}
+	if allocatedMemMax > 0 {
+		metrics.SetGaugeWithLabels([]string{"client", "allocs", "memory", "max_allocated"},
+			allocatedMemMax, tr.baseLabels)
+	}
 }
 
 // TODO Remove Backwardscompat or use tr.Alloc()?
@@ -1522,6 +1535,8 @@ func (tr *TaskRunner) setGaugeForCPU(ru *cstructs.TaskResourceUsage) {
 	metrics.SetGaugeWithLabels([]string{"client", "allocs", "cpu", "throttled_periods"},
 		float32(ru.ResourceUsage.CpuStats.ThrottledPeriods), tr.baseLabels)
 	metrics.SetGaugeWithLabels([]string{"client", "allocs", "cpu", "total_ticks"},
+		float32(ru.ResourceUsage.CpuStats.TotalTicks), tr.baseLabels)
+	metrics.IncrCounterWithLabels([]string{"client", "allocs", "cpu", "total_ticks_count"},
 		float32(ru.ResourceUsage.CpuStats.TotalTicks), tr.baseLabels)
 	if allocatedCPU > 0 {
 		metrics.SetGaugeWithLabels([]string{"client", "allocs", "cpu", "allocated"},
@@ -1578,10 +1593,6 @@ func (tr *TaskRunner) TaskExecHandler() drivermanager.TaskExecHandler {
 
 func (tr *TaskRunner) DriverCapabilities() (*drivers.Capabilities, error) {
 	return tr.driver.Capabilities()
-}
-
-func (tr *TaskRunner) SetAllocHookResources(res *cstructs.AllocHookResources) {
-	tr.allocHookResources = res
 }
 
 // shutdownDelayCancel is used for testing only and cancels the

@@ -1,10 +1,13 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package fingerprint
 
 import (
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -38,7 +41,7 @@ func fakeConsul(payload string) (*httptest.Server, *config.Config) {
 }
 
 func fakeConsulPayload(t *testing.T, filename string) string {
-	b, err := ioutil.ReadFile(filename)
+	b, err := os.ReadFile(filename)
 	require.NoError(t, err)
 	return string(b)
 }
@@ -154,6 +157,14 @@ func TestConsulFingerprint_sku(t *testing.T) {
 		})
 		require.True(t, ok)
 		require.Equal(t, "ent", s)
+	})
+
+	t.Run("extra spaces", func(t *testing.T) {
+		v, ok := fp.sku(agentconsul.Self{
+			"Config": {"Version": "   v1.9.5\n"},
+		})
+		require.True(t, ok)
+		require.Equal(t, "oss", v)
 	})
 
 	t.Run("missing", func(t *testing.T) {
@@ -362,6 +373,15 @@ func TestConsulFingerprint_grpc(t *testing.T) {
 	t.Run("grpc set post-1.14 https", func(t *testing.T) {
 		s, ok := fp.grpc("https")(agentconsul.Self{
 			"Config":      {"Version": "1.14.0"},
+			"DebugConfig": {"GRPCTLSPort": 8503.0}, // JSON numbers are floats
+		})
+		require.True(t, ok)
+		require.Equal(t, "8503", s)
+	})
+
+	t.Run("version with extra spaces", func(t *testing.T) {
+		s, ok := fp.grpc("https")(agentconsul.Self{
+			"Config":      {"Version": "  1.14.0\n"},
 			"DebugConfig": {"GRPCTLSPort": 8503.0}, // JSON numbers are floats
 		})
 		require.True(t, ok)

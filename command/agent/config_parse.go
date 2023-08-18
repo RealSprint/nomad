@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package agent
 
 import (
@@ -247,6 +250,10 @@ func extraKeys(c *Config) error {
 	for _, k := range []string{"enabled_schedulers", "start_join", "retry_join", "server_join"} {
 		helper.RemoveEqualFold(&c.ExtraKeysHCL, k)
 		helper.RemoveEqualFold(&c.ExtraKeysHCL, "server")
+	}
+
+	for _, k := range []string{"preemption_config"} {
+		helper.RemoveEqualFold(&c.Server.ExtraKeysHCL, k)
 	}
 
 	for _, k := range []string{"datadog_tags"} {

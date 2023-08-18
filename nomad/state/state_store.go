@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package state
 
 import (
@@ -13,9 +16,12 @@ import (
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/go-memdb"
 	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/go-set"
 	"github.com/hashicorp/nomad/helper/pointer"
+	"github.com/hashicorp/nomad/lib/lang"
 	"github.com/hashicorp/nomad/nomad/stream"
 	"github.com/hashicorp/nomad/nomad/structs"
+	"golang.org/x/exp/slices"
 )
 
 // Txn is a transaction against a state store.
@@ -33,6 +39,15 @@ const (
 	// SortReverse indicates that the result should be returned using the
 	// reversed go-memdb ResultIterator order.
 	SortReverse SortOption = true
+)
+
+// NodeUpsertOption represents options to configure a NodeUpsert operation.
+type NodeUpsertOption uint8
+
+const (
+	// NodeUpsertWithNodePool indicates that the node pool in the node should
+	// be created if it doesn't exist.
+	NodeUpsertWithNodePool NodeUpsertOption = iota
 )
 
 const (
@@ -149,9 +164,13 @@ func NewStateStore(config *StateStoreConfig) (*StateStore, error) {
 		s.db = NewChangeTrackerDB(db, nil, noOpProcessChanges)
 	}
 
-	// Initialize the state store with the default namespace.
+	// Initialize the state store with the default namespace and built-in node
+	// pools.
 	if err := s.namespaceInit(); err != nil {
-		return nil, fmt.Errorf("enterprise state store initialization failed: %v", err)
+		return nil, fmt.Errorf("namespace state store initialization failed: %v", err)
+	}
+	if err := s.nodePoolInit(); err != nil {
+		return nil, fmt.Errorf("node pool state store initialization failed: %w", err)
 	}
 
 	return s, nil
@@ -242,7 +261,7 @@ func (s *StateStore) SnapshotMinIndex(ctx context.Context, index uint64) (*State
 		// Get the states current index
 		snapshotIndex, err := s.LatestIndex()
 		if err != nil {
-			return nil, fmt.Errorf("failed to determine state store's index: %v", err)
+			return nil, fmt.Errorf("failed to determine state store's index: %w", err)
 		}
 
 		// We only need the FSM state to be as recent as the given index
@@ -675,7 +694,8 @@ func deploymentNamespaceFilter(namespace string) func(interface{}) bool {
 			return true
 		}
 
-		return d.Namespace != namespace
+		return namespace != structs.AllNamespacesSentinel &&
+			d.Namespace != namespace
 	}
 }
 
@@ -885,9 +905,19 @@ func (s *StateStore) ScalingEventsByJob(ws memdb.WatchSet, namespace, jobID stri
 // UpsertNode is used to register a node or update a node definition
 // This is assumed to be triggered by the client, so we retain the value
 // of drain/eligibility which is set by the scheduler.
-func (s *StateStore) UpsertNode(msgType structs.MessageType, index uint64, node *structs.Node) error {
+func (s *StateStore) UpsertNode(msgType structs.MessageType, index uint64, node *structs.Node, opts ...NodeUpsertOption) error {
 	txn := s.db.WriteTxnMsgT(msgType, index)
 	defer txn.Abort()
+
+	for _, opt := range opts {
+		// Create node pool if necessary.
+		if opt == NodeUpsertWithNodePool && node.NodePool != "" {
+			_, err := s.fetchOrCreateNodePoolTxn(txn, index, node.NodePool)
+			if err != nil {
+				return err
+			}
+		}
+	}
 
 	err := upsertNodeTxn(txn, index, node)
 	if err != nil {
@@ -909,6 +939,11 @@ func upsertNodeTxn(txn *txn, index uint64, node *structs.Node) error {
 		node.CreateIndex = exist.CreateIndex
 		node.ModifyIndex = index
 
+		// Update last missed heartbeat if the node became unresponsive.
+		if !exist.UnresponsiveStatus() && node.UnresponsiveStatus() {
+			node.LastMissedHeartbeatIndex = index
+		}
+
 		// Retain node events that have already been set on the node
 		node.Events = exist.Events
 
@@ -923,6 +958,16 @@ func upsertNodeTxn(txn *txn, index uint64, node *structs.Node) error {
 		node.SchedulingEligibility = exist.SchedulingEligibility // Retain the eligibility
 		node.DrainStrategy = exist.DrainStrategy                 // Retain the drain strategy
 		node.LastDrain = exist.LastDrain                         // Retain the drain metadata
+
+		// Retain the last index the node missed a heartbeat.
+		if node.LastMissedHeartbeatIndex < exist.LastMissedHeartbeatIndex {
+			node.LastMissedHeartbeatIndex = exist.LastMissedHeartbeatIndex
+		}
+
+		// Retain the last index the node updated its allocs.
+		if node.LastAllocUpdateIndex < exist.LastAllocUpdateIndex {
+			node.LastAllocUpdateIndex = exist.LastAllocUpdateIndex
+		}
 	} else {
 		// Because this is the first time the node is being registered, we should
 		// also create a node registration event
@@ -1028,6 +1073,15 @@ func (s *StateStore) updateNodeStatusTxn(txn *txn, nodeID, status string, update
 	// Update the status in the copy
 	copyNode.Status = status
 	copyNode.ModifyIndex = txn.Index
+
+	// Update last missed heartbeat if the node became unresponsive or reset it
+	// zero if the node became ready.
+	if !existingNode.UnresponsiveStatus() && copyNode.UnresponsiveStatus() {
+		copyNode.LastMissedHeartbeatIndex = txn.Index
+	} else if existingNode.Status != structs.NodeStatusReady &&
+		copyNode.Status == structs.NodeStatusReady {
+		copyNode.LastMissedHeartbeatIndex = 0
+	}
 
 	// Insert the node
 	if err := txn.Insert("nodes", copyNode); err != nil {
@@ -1433,14 +1487,13 @@ func deleteNodeCSIPlugins(txn *txn, node *structs.Node, index uint64) error {
 
 // updateOrGCPlugin updates a plugin but will delete it if the plugin is empty
 func updateOrGCPlugin(index uint64, txn Txn, plug *structs.CSIPlugin) error {
-	plug.ModifyIndex = index
-
 	if plug.IsEmpty() {
 		err := txn.Delete("csi_plugins", plug)
 		if err != nil {
 			return fmt.Errorf("csi_plugins delete error: %v", err)
 		}
 	} else {
+		plug.ModifyIndex = index
 		err := txn.Insert("csi_plugins", plug)
 		if err != nil {
 			return fmt.Errorf("csi_plugins update error %s: %v", plug.ID, err)
@@ -1593,6 +1646,20 @@ func (s *StateStore) NodeBySecretID(ws memdb.WatchSet, secretID string) (*struct
 	return nil, nil
 }
 
+// NodesByNodePool returns an iterator over all nodes that are part of the
+// given node pool.
+func (s *StateStore) NodesByNodePool(ws memdb.WatchSet, pool string) (memdb.ResultIterator, error) {
+	txn := s.db.ReadTxn()
+
+	iter, err := txn.Get("nodes", "node_pool", pool)
+	if err != nil {
+		return nil, err
+	}
+
+	ws.Add(iter.WatchCh())
+	return iter, nil
+}
+
 // Nodes returns an iterator over all the nodes
 func (s *StateStore) Nodes(ws memdb.WatchSet) (memdb.ResultIterator, error) {
 	txn := s.db.ReadTxn()
@@ -1607,10 +1674,10 @@ func (s *StateStore) Nodes(ws memdb.WatchSet) (memdb.ResultIterator, error) {
 }
 
 // UpsertJob is used to register a job or update a job definition
-func (s *StateStore) UpsertJob(msgType structs.MessageType, index uint64, job *structs.Job) error {
+func (s *StateStore) UpsertJob(msgType structs.MessageType, index uint64, sub *structs.JobSubmission, job *structs.Job) error {
 	txn := s.db.WriteTxnMsgT(msgType, index)
 	defer txn.Abort()
-	if err := s.upsertJobImpl(index, job, false, txn); err != nil {
+	if err := s.upsertJobImpl(index, sub, job, false, txn); err != nil {
 		return err
 	}
 	return txn.Commit()
@@ -1618,17 +1685,28 @@ func (s *StateStore) UpsertJob(msgType structs.MessageType, index uint64, job *s
 
 // UpsertJobTxn is used to register a job or update a job definition, like UpsertJob,
 // but in a transaction.  Useful for when making multiple modifications atomically
-func (s *StateStore) UpsertJobTxn(index uint64, job *structs.Job, txn Txn) error {
-	return s.upsertJobImpl(index, job, false, txn)
+func (s *StateStore) UpsertJobTxn(index uint64, sub *structs.JobSubmission, job *structs.Job, txn Txn) error {
+	return s.upsertJobImpl(index, sub, job, false, txn)
 }
 
 // upsertJobImpl is the implementation for registering a job or updating a job definition
-func (s *StateStore) upsertJobImpl(index uint64, job *structs.Job, keepVersion bool, txn *txn) error {
+func (s *StateStore) upsertJobImpl(index uint64, sub *structs.JobSubmission, job *structs.Job, keepVersion bool, txn *txn) error {
 	// Assert the namespace exists
 	if exists, err := s.namespaceExists(txn, job.Namespace); err != nil {
 		return err
 	} else if !exists {
 		return fmt.Errorf("job %q is in nonexistent namespace %q", job.ID, job.Namespace)
+	}
+
+	// Upgrade path.
+	// Assert the node pool is set and exists.
+	if job.NodePool == "" {
+		job.NodePool = structs.NodePoolDefault
+	}
+	if exists, err := s.nodePoolExists(txn, job.NodePool); err != nil {
+		return err
+	} else if !exists {
+		return fmt.Errorf("job %q is in nonexistent node pool %q", job.ID, job.NodePool)
 	}
 
 	// Check if the job already exists
@@ -1651,6 +1729,11 @@ func (s *StateStore) upsertJobImpl(index uint64, job *structs.Job, keepVersion b
 		if !keepVersion {
 			job.JobModifyIndex = index
 			if job.Version <= existingJob.Version {
+				if sub == nil {
+					// in the reversion case we must set the submission to be
+					// that of the job version we are reverting to
+					sub, _ = s.jobSubmission(nil, job.Namespace, job.ID, job.Version, txn)
+				}
 				job.Version = existingJob.Version + 1
 			}
 		}
@@ -1698,6 +1781,10 @@ func (s *StateStore) upsertJobImpl(index uint64, job *structs.Job, keepVersion b
 
 	if err := s.updateJobCSIPlugins(index, job, existingJob, txn); err != nil {
 		return fmt.Errorf("unable to update job csi plugins: %v", err)
+	}
+
+	if err := s.updateJobSubmission(index, sub, job.Namespace, job.ID, job.Version, txn); err != nil {
+		return fmt.Errorf("unable to update job submission: %v", err)
 	}
 
 	// Insert the job
@@ -1808,6 +1895,11 @@ func (s *StateStore) DeleteJobTxn(index uint64, namespace, jobID string, txn Txn
 		return fmt.Errorf("index update failed: %v", err)
 	}
 
+	// Delete the job submission
+	if err := s.deleteJobSubmission(job, txn); err != nil {
+		return fmt.Errorf("deleting job submission failed: %v", err)
+	}
+
 	// Delete any remaining job scaling policies
 	if err := s.deleteJobScalingPolicies(index, job, txn); err != nil {
 		return fmt.Errorf("deleting job scaling policies failed: %v", err)
@@ -1859,6 +1951,39 @@ func (s *StateStore) deleteJobScalingPolicies(index uint64, job *structs.Job, tx
 			return fmt.Errorf("index update failed: %v", err)
 		}
 	}
+	return nil
+}
+
+func (s *StateStore) deleteJobSubmission(job *structs.Job, txn *txn) error {
+	// find submissions associated with job
+	remove := *set.NewHashSet[*structs.JobSubmission, string](structs.JobTrackedVersions)
+
+	iter, err := txn.Get("job_submission", "id_prefix", job.Namespace, job.ID)
+	if err != nil {
+		return err
+	}
+
+	for {
+		obj := iter.Next()
+		if obj == nil {
+			break
+		}
+		sub := obj.(*structs.JobSubmission)
+
+		// iterating by prefix; ensure we have an exact match
+		if sub.Namespace == job.Namespace && sub.JobID == job.ID {
+			remove.Insert(sub)
+		}
+	}
+
+	// now delete the submissions we found associated with the job
+	for _, sub := range remove.Slice() {
+		err := txn.Delete("job_submission", sub)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -1948,6 +2073,27 @@ func (s *StateStore) upsertJobVersion(index uint64, job *structs.Job, txn *txn) 
 	}
 
 	return nil
+}
+
+// JobSubmission returns the original HCL/Variables context of a job, if available.
+//
+// Note: it is a normal case for the submission context to be unavailable, in which case
+// nil is returned with no error.
+func (s *StateStore) JobSubmission(ws memdb.WatchSet, namespace, jobName string, version uint64) (*structs.JobSubmission, error) {
+	txn := s.db.ReadTxn()
+	return s.jobSubmission(ws, namespace, jobName, version, txn)
+}
+
+func (s *StateStore) jobSubmission(ws memdb.WatchSet, namespace, jobName string, version uint64, txn Txn) (*structs.JobSubmission, error) {
+	watchCh, existing, err := txn.FirstWatch("job_submission", "id", namespace, jobName, version)
+	if err != nil {
+		return nil, fmt.Errorf("job submission lookup failed: %v", err)
+	}
+	ws.Add(watchCh)
+	if existing != nil {
+		return existing.(*structs.JobSubmission), nil
+	}
+	return nil, nil
 }
 
 // JobByID is used to lookup a job by its ID. JobByID returns the current/latest job
@@ -2168,6 +2314,20 @@ func (s *StateStore) JobsByGC(ws memdb.WatchSet, gc bool) (memdb.ResultIterator,
 	txn := s.db.ReadTxn()
 
 	iter, err := txn.Get("jobs", "gc", gc)
+	if err != nil {
+		return nil, err
+	}
+
+	ws.Add(iter.WatchCh())
+
+	return iter, nil
+}
+
+// JobsByPool returns an iterator over all jobs in a given node pool.
+func (s *StateStore) JobsByPool(ws memdb.WatchSet, pool string) (memdb.ResultIterator, error) {
+	txn := s.db.ReadTxn()
+
+	iter, err := txn.Get("jobs", "pool", pool)
 	if err != nil {
 		return nil, err
 	}
@@ -2576,6 +2736,7 @@ func (s *StateStore) CSIVolumeDeregister(index uint64, namespace string, ids []s
 // volSafeToForce checks if the any of the remaining allocations
 // are in a non-terminal state.
 func (s *StateStore) volSafeToForce(txn Txn, v *structs.CSIVolume) bool {
+	v = v.Copy()
 	vol, err := s.csiVolumeDenormalizeTxn(txn, nil, v)
 	if err != nil {
 		return false
@@ -3094,11 +3255,12 @@ func (s *StateStore) nestedUpsertEval(txn *txn, index uint64, eval *structs.Eval
 		}
 
 		// Go through and update the evals
-		for _, eval := range blocked {
-			newEval := eval.Copy()
+		for _, blockedEval := range blocked {
+			newEval := blockedEval.Copy()
 			newEval.Status = structs.EvalStatusCancelled
-			newEval.StatusDescription = fmt.Sprintf("evaluation %q successful", newEval.ID)
+			newEval.StatusDescription = fmt.Sprintf("evaluation %q successful", eval.ID)
 			newEval.ModifyIndex = index
+			newEval.ModifyTime = eval.ModifyTime
 
 			if err := txn.Insert("evals", newEval); err != nil {
 				return fmt.Errorf("eval insert failed: %v", err)
@@ -3582,8 +3744,13 @@ func (s *StateStore) UpdateAllocsFromClient(msgType structs.MessageType, index u
 	txn := s.db.WriteTxnMsgT(msgType, index)
 	defer txn.Abort()
 
+	// Capture all nodes being affected. Alloc updates from clients are batched
+	// so this request may include allocs from several nodes.
+	nodeIDs := set.New[string](1)
+
 	// Handle each of the updated allocations
 	for _, alloc := range allocs {
+		nodeIDs.Insert(alloc.NodeID)
 		if err := s.nestedUpdateAllocFromClient(txn, index, alloc); err != nil {
 			return err
 		}
@@ -3592,6 +3759,13 @@ func (s *StateStore) UpdateAllocsFromClient(msgType structs.MessageType, index u
 	// Update the indexes
 	if err := txn.Insert("index", &IndexEntry{"allocs", index}); err != nil {
 		return fmt.Errorf("index update failed: %v", err)
+	}
+
+	// Update the index of when nodes last updated their allocs.
+	for _, nodeID := range nodeIDs.List() {
+		if err := s.updateClientAllocUpdateIndex(txn, index, nodeID); err != nil {
+			return fmt.Errorf("node update failed: %v", err)
+		}
 	}
 
 	return txn.Commit()
@@ -3681,6 +3855,28 @@ func (s *StateStore) nestedUpdateAllocFromClient(txn *txn, index uint64, alloc *
 
 	if err := s.setJobStatuses(index, txn, jobs, false); err != nil {
 		return fmt.Errorf("setting job status failed: %v", err)
+	}
+	return nil
+}
+
+func (s *StateStore) updateClientAllocUpdateIndex(txn *txn, index uint64, nodeID string) error {
+	existing, err := txn.First("nodes", "id", nodeID)
+	if err != nil {
+		return fmt.Errorf("node lookup failed: %v", err)
+	}
+	if existing == nil {
+		return nil
+	}
+
+	node := existing.(*structs.Node)
+	copyNode := node.Copy()
+	copyNode.LastAllocUpdateIndex = index
+
+	if err := txn.Insert("nodes", copyNode); err != nil {
+		return fmt.Errorf("node update failed: %v", err)
+	}
+	if err := txn.Insert("index", &IndexEntry{"nodes", txn.Index}); err != nil {
+		return fmt.Errorf("index update failed: %v", err)
 	}
 	return nil
 }
@@ -4431,7 +4627,7 @@ func (s *StateStore) UpdateDeploymentStatus(msgType structs.MessageType, index u
 
 	// Upsert the job if necessary
 	if req.Job != nil {
-		if err := s.upsertJobImpl(index, req.Job, false, txn); err != nil {
+		if err := s.upsertJobImpl(index, nil, req.Job, false, txn); err != nil {
 			return err
 		}
 	}
@@ -4518,7 +4714,7 @@ func (s *StateStore) updateJobStabilityImpl(index uint64, namespace, jobID strin
 
 	copy := job.Copy()
 	copy.Stable = stable
-	return s.upsertJobImpl(index, copy, true, txn)
+	return s.upsertJobImpl(index, nil, copy, true, txn)
 }
 
 // UpdateDeploymentPromotion is used to promote canaries in a deployment and
@@ -4747,7 +4943,7 @@ func (s *StateStore) UpdateDeploymentAllocHealth(msgType structs.MessageType, in
 
 	// Upsert the job if necessary
 	if req.Job != nil {
-		if err := s.upsertJobImpl(index, req.Job, false, txn); err != nil {
+		if err := s.upsertJobImpl(index, nil, req.Job, false, txn); err != nil {
 			return err
 		}
 	}
@@ -5253,6 +5449,92 @@ func (s *StateStore) updateJobScalingPolicies(index uint64, job *structs.Job, tx
 		return fmt.Errorf("UpsertScalingPolicies of policies failed: %v", err)
 	}
 
+	return nil
+}
+
+// updateJobSubmission stores the original job source and variables associated that the
+// job structure originates from. It is up to the job submitter to include the source
+// material, and as such sub may be nil, in which case nothing is stored.
+func (s *StateStore) updateJobSubmission(index uint64, sub *structs.JobSubmission, namespace, jobID string, version uint64, txn *txn) error {
+	// critical that we operate on a copy; the original must not be modified
+	// e.g. in the case of job gc and its last second version bump
+	sub = sub.Copy()
+
+	switch {
+	case sub == nil:
+		return nil
+	case namespace == "":
+		return errors.New("job_submission requires a namespace")
+	case jobID == "":
+		return errors.New("job_submission requires a jobID")
+	default:
+		sub.Namespace = namespace
+		sub.JobID = jobID
+		sub.JobModifyIndex = index
+		sub.Version = version
+	}
+
+	// check if we already have a submission for this (namespace, jobID, version)
+	obj, err := txn.First("job_submission", "id", namespace, jobID, version)
+	if err != nil {
+		return err
+	}
+	if obj != nil {
+		// if we already have a submission for this (namespace, jobID, version)
+		// then there is nothing to do; manually avoid potential for duplicates
+		return nil
+	}
+
+	// insert the job submission for this (namespace, jobID, version)
+	if err := txn.Insert("job_submission", sub); err != nil {
+		return err
+	}
+
+	// prune old job submissions
+	return s.pruneJobSubmissions(namespace, jobID, txn)
+}
+
+func (s *StateStore) pruneJobSubmissions(namespace, jobID string, txn *txn) error {
+	// although the number of tracked submissions is the same as the number of
+	// tracked job versions, do not assume a 1:1 correlation, as there could be
+	// holes in the submissions (or none at all)
+	limit := structs.JobTrackedVersions
+
+	// iterate through all stored submissions
+	iter, err := txn.Get("job_submission", "id_prefix", namespace, jobID)
+	if err != nil {
+		return err
+	}
+
+	stored := make([]lang.Pair[uint64, uint64], 0, limit+1)
+	for next := iter.Next(); next != nil; next = iter.Next() {
+		sub := next.(*structs.JobSubmission)
+		// scanning by prefix; make sure we collect exact matches only
+		if sub.Namespace == namespace && sub.JobID == jobID {
+			stored = append(stored, lang.Pair[uint64, uint64]{First: sub.JobModifyIndex, Second: sub.Version})
+		}
+	}
+
+	// if we are still below the limit, nothing to do
+	if len(stored) <= limit {
+		return nil
+	}
+
+	// sort by job modify index descending so we can just keep the first N
+	slices.SortFunc(stored, func(a, b lang.Pair[uint64, uint64]) bool {
+		return a.First > b.First
+	})
+
+	// remove the outdated submission versions
+	for _, sub := range stored[limit:] {
+		if err = txn.Delete("job_submission", &structs.JobSubmission{
+			Namespace: namespace,
+			JobID:     jobID,
+			Version:   sub.Second,
+		}); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -6416,6 +6698,8 @@ func (s *StateStore) UpsertNamespaces(index uint64, namespaces []*structs.Namesp
 	defer txn.Abort()
 
 	for _, ns := range namespaces {
+		// Handle upgrade path.
+		ns.Canonicalize()
 		if err := s.upsertNamespaceImpl(index, txn, ns); err != nil {
 			return err
 		}

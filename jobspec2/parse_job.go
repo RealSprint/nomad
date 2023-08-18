@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package jobspec2
 
 import (
@@ -61,6 +64,9 @@ func normalizeVault(v *api.Vault) {
 
 	if v.Env == nil {
 		v.Env = pointer.Of(true)
+	}
+	if v.DisableFile == nil {
+		v.DisableFile = pointer.Of(false)
 	}
 	if v.ChangeMode == nil {
 		v.ChangeMode = pointer.Of("restart")

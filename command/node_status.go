@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package command
 
 import (
@@ -247,7 +250,7 @@ func (c *NodeStatusCommand) Run(args []string) int {
 			return 0
 		}
 
-		out[0] = "ID|DC|Name|Class|"
+		out[0] = "ID|Node Pool|DC|Name|Class|"
 
 		if c.os {
 			out[0] += "OS|"
@@ -264,8 +267,9 @@ func (c *NodeStatusCommand) Run(args []string) int {
 		}
 
 		for i, node := range nodes {
-			out[i+1] = fmt.Sprintf("%s|%s|%s|%s",
+			out[i+1] = fmt.Sprintf("%s|%s|%s|%s|%s",
 				limit(node.ID, c.length),
+				node.NodePool,
 				node.Datacenter,
 				node.Name,
 				node.NodeClass)
@@ -399,7 +403,7 @@ func nodeCSINodeNames(n *api.Node) []string {
 	return names
 }
 
-func nodeCSIVolumeNames(n *api.Node, allocs []*api.Allocation) []string {
+func nodeCSIVolumeNames(allocs []*api.Allocation) []string {
 	var names []string
 	for _, alloc := range allocs {
 		tg := alloc.GetTaskGroup()
@@ -477,6 +481,7 @@ func (c *NodeStatusCommand) formatNode(client *api.Client, node *api.Node) int {
 	basic := []string{
 		fmt.Sprintf("ID|%s", node.ID),
 		fmt.Sprintf("Name|%s", node.Name),
+		fmt.Sprintf("Node Pool|%s", node.NodePool),
 		fmt.Sprintf("Class|%s", node.NodeClass),
 		fmt.Sprintf("DC|%s", node.Datacenter),
 		fmt.Sprintf("Drain|%v", formatDrain(node)),
@@ -489,7 +494,7 @@ func (c *NodeStatusCommand) formatNode(client *api.Client, node *api.Node) int {
 	if c.short {
 		basic = append(basic, fmt.Sprintf("Host Volumes|%s", strings.Join(nodeVolumeNames(node), ",")))
 		basic = append(basic, fmt.Sprintf("Host Networks|%s", strings.Join(nodeNetworkNames(node), ",")))
-		basic = append(basic, fmt.Sprintf("CSI Volumes|%s", strings.Join(nodeCSIVolumeNames(node, runningAllocs), ",")))
+		basic = append(basic, fmt.Sprintf("CSI Volumes|%s", strings.Join(nodeCSIVolumeNames(runningAllocs), ",")))
 		basic = append(basic, fmt.Sprintf("Drivers|%s", strings.Join(nodeDrivers(node), ",")))
 		c.Ui.Output(c.Colorize().Color(formatKV(basic)))
 
@@ -518,7 +523,7 @@ func (c *NodeStatusCommand) formatNode(client *api.Client, node *api.Node) int {
 	if !c.verbose {
 		basic = append(basic, fmt.Sprintf("Host Volumes|%s", strings.Join(nodeVolumeNames(node), ",")))
 		basic = append(basic, fmt.Sprintf("Host Networks|%s", strings.Join(nodeNetworkNames(node), ",")))
-		basic = append(basic, fmt.Sprintf("CSI Volumes|%s", strings.Join(nodeCSIVolumeNames(node, runningAllocs), ",")))
+		basic = append(basic, fmt.Sprintf("CSI Volumes|%s", strings.Join(nodeCSIVolumeNames(runningAllocs), ",")))
 		driverStatus := fmt.Sprintf("Driver Status| %s", c.outputTruncatedNodeDriverInfo(node))
 		basic = append(basic, driverStatus)
 	}
@@ -695,14 +700,15 @@ func (c *NodeStatusCommand) outputNodeCSIVolumeInfo(client *api.Client, node *ap
 
 		// Output the volumes in name order
 		output := make([]string, 0, len(names)+1)
-		output = append(output, "ID|Name|Plugin ID|Schedulable|Provider|Access Mode")
+		output = append(output, "ID|Name|Namespace|Plugin ID|Schedulable|Provider|Access Mode")
 		for _, name := range names {
 			v, ok := volumes[name]
 			if ok {
 				output = append(output, fmt.Sprintf(
-					"%s|%s|%s|%t|%s|%s",
+					"%s|%s|%s|%s|%t|%s|%s",
 					v.ID,
 					name,
+					v.Namespace,
 					v.PluginID,
 					v.Schedulable,
 					v.Provider,
@@ -821,7 +827,7 @@ func (c *NodeStatusCommand) formatDeviceAttributes(node *api.Node) {
 		}
 
 		if first {
-			c.Ui.Output("\nDevice Group Attributes")
+			c.Ui.Output("\n[bold]Device Group Attributes[reset]")
 			first = false
 		} else {
 			c.Ui.Output("")
@@ -831,21 +837,8 @@ func (c *NodeStatusCommand) formatDeviceAttributes(node *api.Node) {
 }
 
 func (c *NodeStatusCommand) formatMeta(node *api.Node) {
-	// Print the meta
-	keys := make([]string, 0, len(node.Meta))
-	for k := range node.Meta {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	var meta []string
-	for _, k := range keys {
-		if k != "" {
-			meta = append(meta, fmt.Sprintf("%s|%s", k, node.Meta[k]))
-		}
-	}
 	c.Ui.Output(c.Colorize().Color("\n[bold]Meta[reset]"))
-	c.Ui.Output(formatKV(meta))
+	c.Ui.Output(formatNodeMeta(node.Meta))
 }
 
 func (c *NodeStatusCommand) printCpuStats(hostStats *api.HostStats) {

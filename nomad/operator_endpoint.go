@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package nomad
 
 import (
@@ -35,12 +38,18 @@ func (op *Operator) register() {
 
 // RaftGetConfiguration is used to retrieve the current Raft configuration.
 func (op *Operator) RaftGetConfiguration(args *structs.GenericRequest, reply *structs.RaftConfigurationResponse) error {
+
+	authErr := op.srv.Authenticate(op.ctx, args)
 	if done, err := op.srv.forward("Operator.RaftGetConfiguration", args, args, reply); done {
 		return err
 	}
+	op.srv.MeasureRPCRate("operator", structs.RateMetricRead, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
+	}
 
 	// Check management permissions
-	if aclObj, err := op.srv.ResolveToken(args.AuthToken); err != nil {
+	if aclObj, err := op.srv.ResolveACL(args); err != nil {
 		return err
 	} else if aclObj != nil && !aclObj.IsManagement() {
 		return structs.ErrPermissionDenied
@@ -96,12 +105,18 @@ func (op *Operator) RaftGetConfiguration(args *structs.GenericRequest, reply *st
 // "IP:port". The reply argument is not used, but it required to fulfill the RPC
 // interface.
 func (op *Operator) RaftRemovePeerByAddress(args *structs.RaftPeerByAddressRequest, reply *struct{}) error {
+
+	authErr := op.srv.Authenticate(op.ctx, args)
 	if done, err := op.srv.forward("Operator.RaftRemovePeerByAddress", args, args, reply); done {
 		return err
 	}
+	op.srv.MeasureRPCRate("operator", structs.RateMetricWrite, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
+	}
 
 	// Check management permissions
-	if aclObj, err := op.srv.ResolveToken(args.AuthToken); err != nil {
+	if aclObj, err := op.srv.ResolveACL(args); err != nil {
 		return err
 	} else if aclObj != nil && !aclObj.IsManagement() {
 		return structs.ErrPermissionDenied
@@ -148,12 +163,18 @@ REMOVE:
 // "IP:port". The reply argument is not used, but is required to fulfill the RPC
 // interface.
 func (op *Operator) RaftRemovePeerByID(args *structs.RaftPeerByIDRequest, reply *struct{}) error {
+
+	authErr := op.srv.Authenticate(op.ctx, args)
 	if done, err := op.srv.forward("Operator.RaftRemovePeerByID", args, args, reply); done {
 		return err
 	}
+	op.srv.MeasureRPCRate("operator", structs.RateMetricWrite, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
+	}
 
 	// Check management permissions
-	if aclObj, err := op.srv.ResolveToken(args.AuthToken); err != nil {
+	if aclObj, err := op.srv.ResolveACL(args); err != nil {
 		return err
 	} else if aclObj != nil && !aclObj.IsManagement() {
 		return structs.ErrPermissionDenied
@@ -209,12 +230,18 @@ REMOVE:
 
 // AutopilotGetConfiguration is used to retrieve the current Autopilot configuration.
 func (op *Operator) AutopilotGetConfiguration(args *structs.GenericRequest, reply *structs.AutopilotConfig) error {
+
+	authErr := op.srv.Authenticate(op.ctx, args)
 	if done, err := op.srv.forward("Operator.AutopilotGetConfiguration", args, args, reply); done {
 		return err
 	}
+	op.srv.MeasureRPCRate("operator", structs.RateMetricRead, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
+	}
 
 	// This action requires operator read access.
-	rule, err := op.srv.ResolveToken(args.AuthToken)
+	rule, err := op.srv.ResolveACL(args)
 	if err != nil {
 		return err
 	}
@@ -238,12 +265,18 @@ func (op *Operator) AutopilotGetConfiguration(args *structs.GenericRequest, repl
 
 // AutopilotSetConfiguration is used to set the current Autopilot configuration.
 func (op *Operator) AutopilotSetConfiguration(args *structs.AutopilotSetConfigRequest, reply *bool) error {
+
+	authErr := op.srv.Authenticate(op.ctx, args)
 	if done, err := op.srv.forward("Operator.AutopilotSetConfiguration", args, args, reply); done {
 		return err
 	}
+	op.srv.MeasureRPCRate("operator", structs.RateMetricWrite, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
+	}
 
 	// This action requires operator write access.
-	rule, err := op.srv.ResolveToken(args.AuthToken)
+	rule, err := op.srv.ResolveACL(args)
 	if err != nil {
 		return err
 	}
@@ -262,9 +295,6 @@ func (op *Operator) AutopilotSetConfiguration(args *structs.AutopilotSetConfigRe
 		op.logger.Error("failed applying AutoPilot configuration", "error", err)
 		return err
 	}
-	if respErr, ok := resp.(error); ok {
-		return respErr
-	}
 
 	// Check if the return type is a bool.
 	if respBool, ok := resp.(bool); ok {
@@ -275,15 +305,21 @@ func (op *Operator) AutopilotSetConfiguration(args *structs.AutopilotSetConfigRe
 
 // ServerHealth is used to get the current health of the servers.
 func (op *Operator) ServerHealth(args *structs.GenericRequest, reply *structs.OperatorHealthReply) error {
+
+	authErr := op.srv.Authenticate(op.ctx, args)
 	// This must be sent to the leader, so we fix the args since we are
 	// re-using a structure where we don't support all the options.
 	args.AllowStale = false
 	if done, err := op.srv.forward("Operator.ServerHealth", args, args, reply); done {
 		return err
 	}
+	op.srv.MeasureRPCRate("operator", structs.RateMetricRead, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
+	}
 
 	// This action requires operator read access.
-	rule, err := op.srv.ResolveToken(args.AuthToken)
+	rule, err := op.srv.ResolveACL(args)
 	if err != nil {
 		return err
 	}
@@ -307,12 +343,18 @@ func (op *Operator) ServerHealth(args *structs.GenericRequest, reply *structs.Op
 
 // SchedulerSetConfiguration is used to set the current Scheduler configuration.
 func (op *Operator) SchedulerSetConfiguration(args *structs.SchedulerSetConfigRequest, reply *structs.SchedulerSetConfigurationResponse) error {
+
+	authErr := op.srv.Authenticate(op.ctx, args)
 	if done, err := op.srv.forward("Operator.SchedulerSetConfiguration", args, args, reply); done {
 		return err
 	}
+	op.srv.MeasureRPCRate("operator", structs.RateMetricWrite, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
+	}
 
 	// This action requires operator write access.
-	rule, err := op.srv.ResolveToken(args.AuthToken)
+	rule, err := op.srv.ResolveACL(args)
 	if err != nil {
 		return err
 	} else if rule != nil && !rule.AllowOperatorWrite() {
@@ -329,9 +371,8 @@ func (op *Operator) SchedulerSetConfiguration(args *structs.SchedulerSetConfigRe
 	if err != nil {
 		op.logger.Error("failed applying Scheduler configuration", "error", err)
 		return err
-	} else if respErr, ok := resp.(error); ok {
-		return respErr
 	}
+
 	//  If CAS request, raft returns a boolean indicating if the update was applied.
 	// Otherwise, assume success
 	reply.Updated = true
@@ -356,12 +397,18 @@ func (op *Operator) SchedulerSetConfiguration(args *structs.SchedulerSetConfigRe
 
 // SchedulerGetConfiguration is used to retrieve the current Scheduler configuration.
 func (op *Operator) SchedulerGetConfiguration(args *structs.GenericRequest, reply *structs.SchedulerConfigurationResponse) error {
+
+	authErr := op.srv.Authenticate(op.ctx, args)
 	if done, err := op.srv.forward("Operator.SchedulerGetConfiguration", args, args, reply); done {
 		return err
 	}
+	op.srv.MeasureRPCRate("operator", structs.RateMetricRead, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
+	}
 
 	// This action requires operator read access.
-	rule, err := op.srv.ResolveToken(args.AuthToken)
+	rule, err := op.srv.ResolveACL(args)
 	if err != nil {
 		return err
 	} else if rule != nil && !rule.AllowOperatorRead() {
@@ -429,6 +476,8 @@ func (op *Operator) snapshotSave(conn io.ReadWriteCloser) {
 		return
 	}
 
+	authErr := op.srv.Authenticate(nil, &args)
+
 	// Forward to appropriate region
 	if args.Region != op.srv.Region() {
 		err := op.forwardStreamingRPC(args.Region, "Operator.SnapshotSave", args, conn)
@@ -455,8 +504,13 @@ func (op *Operator) snapshotSave(conn io.ReadWriteCloser) {
 		}
 	}
 
+	op.srv.MeasureRPCRate("operator", structs.RateMetricWrite, &args)
+	if authErr != nil {
+		handleFailure(403, structs.ErrPermissionDenied)
+	}
+
 	// Check agent permissions
-	if aclObj, err := op.srv.ResolveToken(args.AuthToken); err != nil {
+	if aclObj, err := op.srv.ResolveACL(&args); err != nil {
 		code := 500
 		if err == structs.ErrTokenNotFound {
 			code = 400
@@ -511,6 +565,8 @@ func (op *Operator) snapshotRestore(conn io.ReadWriteCloser) {
 		return
 	}
 
+	authErr := op.srv.Authenticate(nil, &args)
+
 	// Forward to appropriate region
 	if args.Region != op.srv.Region() {
 		err := op.forwardStreamingRPC(args.Region, "Operator.SnapshotRestore", args, conn)
@@ -535,8 +591,13 @@ func (op *Operator) snapshotRestore(conn io.ReadWriteCloser) {
 
 	}
 
+	op.srv.MeasureRPCRate("operator", structs.RateMetricWrite, &args)
+	if authErr != nil {
+		handleFailure(403, structs.ErrPermissionDenied)
+	}
+
 	// Check agent permissions
-	if aclObj, err := op.srv.ResolveToken(args.AuthToken); err != nil {
+	if aclObj, err := op.srv.ResolveACL(&args); err != nil {
 		code := 500
 		if err == structs.ErrTokenNotFound {
 			code = 400

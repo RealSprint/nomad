@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package agent
 
 import (
@@ -5,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -30,8 +32,7 @@ func TestHTTP_Variables(t *testing.T) {
 
 	httpTest(t, cb, func(s *TestAgent) {
 		// These tests are run against the same running server in order to reduce
-		// the costs of server startup and allow as much parallelization as possible
-		// given the port reuse issue that we have seen with the current freeport
+		// the costs of server startup and allow as much parallelization as possible.
 		t.Run("error_badverb_list", func(t *testing.T) {
 			req, err := http.NewRequest("LOLWUT", "/v1/vars", nil)
 			require.NoError(t, err)
@@ -476,7 +477,7 @@ func encodeBrokenReq(obj interface{}) io.ReadCloser {
 	// enc.Encode(obj)
 	b, _ := json.Marshal(obj)
 	b = b[0 : len(b)-5] // strip newline and final }
-	return ioutil.NopCloser(bytes.NewReader(b))
+	return io.NopCloser(bytes.NewReader(b))
 }
 
 // rpcReadSV lets this test read a variable using the RPC endpoint

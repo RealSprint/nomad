@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package scheduler
 
 import (
@@ -161,24 +164,18 @@ type BinPackIterator struct {
 
 // NewBinPackIterator returns a BinPackIterator which tries to fit tasks
 // potentially evicting other tasks based on a given priority.
-func NewBinPackIterator(ctx Context, source RankIterator, evict bool, priority int, schedConfig *structs.SchedulerConfiguration) *BinPackIterator {
+func NewBinPackIterator(ctx Context, source RankIterator, evict bool, priority int) *BinPackIterator {
+	return &BinPackIterator{
+		ctx:      ctx,
+		source:   source,
+		evict:    evict,
+		priority: priority,
 
-	algorithm := schedConfig.EffectiveSchedulerAlgorithm()
-	scoreFn := structs.ScoreFitBinPack
-	if algorithm == structs.SchedulerAlgorithmSpread {
-		scoreFn = structs.ScoreFitSpread
+		// These are default values that may be overwritten by
+		// SetSchedulerConfiguration.
+		memoryOversubscription: false,
+		scoreFit:               structs.ScoreFitBinPack,
 	}
-
-	iter := &BinPackIterator{
-		ctx:                    ctx,
-		source:                 source,
-		evict:                  evict,
-		priority:               priority,
-		memoryOversubscription: schedConfig != nil && schedConfig.MemoryOversubscriptionEnabled,
-		scoreFit:               scoreFn,
-	}
-	iter.ctx.Logger().Named("binpack").Trace("NewBinPackIterator created", "algorithm", algorithm)
-	return iter
 }
 
 func (iter *BinPackIterator) SetJob(job *structs.Job) {
@@ -190,6 +187,19 @@ func (iter *BinPackIterator) SetTaskGroup(taskGroup *structs.TaskGroup) {
 	iter.taskGroup = taskGroup
 }
 
+func (iter *BinPackIterator) SetSchedulerConfiguration(schedConfig *structs.SchedulerConfiguration) {
+	// Set scoring function.
+	algorithm := schedConfig.EffectiveSchedulerAlgorithm()
+	scoreFn := structs.ScoreFitBinPack
+	if algorithm == structs.SchedulerAlgorithmSpread {
+		scoreFn = structs.ScoreFitSpread
+	}
+	iter.scoreFit = scoreFn
+
+	// Set memory oversubscription.
+	iter.memoryOversubscription = schedConfig != nil && schedConfig.MemoryOversubscriptionEnabled
+}
+
 func (iter *BinPackIterator) Next() *RankedNode {
 OUTER:
 	for {
@@ -199,7 +209,8 @@ OUTER:
 			return nil
 		}
 
-		// Get the proposed allocations
+		// Get the allocations that already exist on the node + those allocs
+		// that have been placed as part of this same evaluation
 		proposed, err := option.ProposedAllocs(iter.ctx)
 		if err != nil {
 			iter.ctx.Logger().Named("binpack").Error("failed retrieving proposed allocations", "error", err)
@@ -400,7 +411,6 @@ OUTER:
 						continue OUTER
 					}
 				}
-
 				// Reserve this to prevent another task from colliding
 				netIdx.AddReserved(offer)
 
@@ -731,17 +741,29 @@ func (iter *NodeAffinityIterator) Next() *RankedNode {
 	// TODO(preetha): we should calculate normalized weights once and reuse it here
 	sumWeight := 0.0
 	for _, affinity := range iter.affinities {
-		sumWeight += math.Abs(float64(affinity.Weight))
+		if affinity.NormalizeNodeAffinity {
+			sumWeight += math.Abs(float64(affinity.Weight))
+		}
 	}
 
+	if sumWeight == 0.0 {
+		sumWeight = 1.0
+	}
+
+	totalAffinityScoreToNormalize := 0.0
 	totalAffinityScore := 0.0
 	for _, affinity := range iter.affinities {
 		if matchesAffinity(iter.ctx, affinity, option.Node) {
-			totalAffinityScore += float64(affinity.Weight)
+			if affinity.NormalizeNodeAffinity {
+				totalAffinityScoreToNormalize += float64(affinity.Weight)
+			} else {
+				totalAffinityScore += float64(affinity.Weight)
+			}
 		}
 	}
-	normScore := totalAffinityScore / sumWeight
-	if totalAffinityScore != 0.0 {
+
+	normScore := totalAffinityScoreToNormalize/sumWeight + totalAffinityScore
+	if normScore != 0.0 {
 		option.Scores = append(option.Scores, normScore)
 		iter.ctx.Metrics().ScoreNode(option.Node, "node-affinity", normScore)
 	}

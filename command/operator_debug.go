@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package command
 
 import (
@@ -11,7 +14,6 @@ import (
 	"fmt"
 	"html/template"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"os/signal"
@@ -482,7 +484,7 @@ func (c *OperatorDebugCommand) Run(args []string) int {
 		}
 	} else {
 		// Generate temp directory
-		tmp, err = ioutil.TempDir(os.TempDir(), stamped)
+		tmp, err = os.MkdirTemp(os.TempDir(), stamped)
 		if err != nil {
 			c.Ui.Error(fmt.Sprintf("Error creating tmp directory: %s", err.Error()))
 			return 2
@@ -1476,7 +1478,7 @@ func (c *OperatorDebugCommand) writeBody(dir, file string, resp *http.Response, 
 
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		c.writeError(dir, file, err)
 		return
@@ -1821,7 +1823,7 @@ func (e *external) token() string {
 	}
 
 	if e.tokenFile != "" {
-		bs, err := ioutil.ReadFile(e.tokenFile)
+		bs, err := os.ReadFile(e.tokenFile)
 		if err == nil {
 			return strings.TrimSpace(string(bs))
 		}

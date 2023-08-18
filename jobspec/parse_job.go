@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package jobspec
 
 import (
@@ -128,7 +131,7 @@ func parseJob(result *api.Job, list *ast.ObjectList) error {
 		}
 	}
 
-	// If we have a reschedule stanza, then parse that
+	// If we have a reschedule block, then parse that
 	if o := listVal.Filter("reschedule"); len(o.Items) > 0 {
 		if err := parseReschedulePolicy(&result.Reschedule, o); err != nil {
 			return multierror.Prefix(err, "reschedule ->")
@@ -191,8 +194,9 @@ func parseJob(result *api.Job, list *ast.ObjectList) error {
 	// If we have a vault block, then parse that
 	if o := listVal.Filter("vault"); len(o.Items) > 0 {
 		jobVault := &api.Vault{
-			Env:        boolToPtr(true),
-			ChangeMode: stringToPtr("restart"),
+			Env:         boolToPtr(true),
+			DisableFile: boolToPtr(false),
+			ChangeMode:  stringToPtr("restart"),
 		}
 
 		if err := parseVault(jobVault, o); err != nil {

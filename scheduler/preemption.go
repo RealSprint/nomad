@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package scheduler
 
 import (
@@ -9,7 +12,7 @@ import (
 
 // maxParallelPenalty is a score penalty applied to allocations to mitigate against
 // too many allocations of the same job being preempted. This penalty is applied after the
-// number of allocations being preempted exceeds max_parallel value in the job's migrate stanza
+// number of allocations being preempted exceeds max_parallel value in the job's migrate block
 const maxParallelPenalty = 50.0
 
 type groupedAllocs struct {

@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: MPL-2.0
+ */
+
 import hbs from 'htmlbars-inline-precompile';
 
 export default {
@@ -425,6 +430,13 @@ export let DiffViewerWithManyChanges = () => {
                           {
                             Annotations: null,
                             Name: 'Protocol',
+                            New: '',
+                            Old: '',
+                            Type: 'None',
+                          },
+                          {
+                            Annotations: null,
+                            Name: 'TLSServerName',
                             New: '',
                             Old: '',
                             Type: 'None',

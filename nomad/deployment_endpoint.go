@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package nomad
 
 import (
@@ -29,14 +32,21 @@ func NewDeploymentEndpoint(srv *Server, ctx *RPCContext) *Deployment {
 // GetDeployment is used to request information about a specific deployment
 func (d *Deployment) GetDeployment(args *structs.DeploymentSpecificRequest,
 	reply *structs.SingleDeploymentResponse) error {
+
+	authErr := d.srv.Authenticate(d.ctx, args)
 	if done, err := d.srv.forward("Deployment.GetDeployment", args, args, reply); done {
 		return err
 	}
+	d.srv.MeasureRPCRate("deployment", structs.RateMetricRead, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
+	}
+
 	defer metrics.MeasureSince([]string{"nomad", "deployment", "get_deployment"}, time.Now())
 
 	// Check namespace read-job permissions
 	allowNsOp := acl.NamespaceValidator(acl.NamespaceCapabilityReadJob)
-	aclObj, err := d.srv.ResolveToken(args.AuthToken)
+	aclObj, err := d.srv.ResolveACL(args)
 	if err != nil {
 		return err
 	} else if !allowNsOp(aclObj, args.RequestNamespace()) {
@@ -87,8 +97,14 @@ func (d *Deployment) GetDeployment(args *structs.DeploymentSpecificRequest,
 
 // Fail is used to force fail a deployment
 func (d *Deployment) Fail(args *structs.DeploymentFailRequest, reply *structs.DeploymentUpdateResponse) error {
+
+	authErr := d.srv.Authenticate(d.ctx, args)
 	if done, err := d.srv.forward("Deployment.Fail", args, args, reply); done {
 		return err
+	}
+	d.srv.MeasureRPCRate("deployment", structs.RateMetricWrite, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
 	}
 	defer metrics.MeasureSince([]string{"nomad", "deployment", "fail"}, time.Now())
 
@@ -113,7 +129,7 @@ func (d *Deployment) Fail(args *structs.DeploymentFailRequest, reply *structs.De
 	}
 
 	// Check namespace submit-job permissions
-	if aclObj, err := d.srv.ResolveToken(args.AuthToken); err != nil {
+	if aclObj, err := d.srv.ResolveACL(args); err != nil {
 		return err
 	} else if aclObj != nil && !aclObj.AllowNsOp(deploy.Namespace, acl.NamespaceCapabilitySubmitJob) {
 		return structs.ErrPermissionDenied
@@ -129,8 +145,13 @@ func (d *Deployment) Fail(args *structs.DeploymentFailRequest, reply *structs.De
 
 // Pause is used to pause a deployment
 func (d *Deployment) Pause(args *structs.DeploymentPauseRequest, reply *structs.DeploymentUpdateResponse) error {
+	authErr := d.srv.Authenticate(d.ctx, args)
 	if done, err := d.srv.forward("Deployment.Pause", args, args, reply); done {
 		return err
+	}
+	d.srv.MeasureRPCRate("deployment", structs.RateMetricWrite, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
 	}
 	defer metrics.MeasureSince([]string{"nomad", "deployment", "pause"}, time.Now())
 
@@ -155,7 +176,7 @@ func (d *Deployment) Pause(args *structs.DeploymentPauseRequest, reply *structs.
 	}
 
 	// Check namespace submit-job permissions
-	if aclObj, err := d.srv.ResolveToken(args.AuthToken); err != nil {
+	if aclObj, err := d.srv.ResolveACL(args); err != nil {
 		return err
 	} else if aclObj != nil && !aclObj.AllowNsOp(deploy.Namespace, acl.NamespaceCapabilitySubmitJob) {
 		return structs.ErrPermissionDenied
@@ -175,8 +196,13 @@ func (d *Deployment) Pause(args *structs.DeploymentPauseRequest, reply *structs.
 
 // Promote is used to promote canaries in a deployment
 func (d *Deployment) Promote(args *structs.DeploymentPromoteRequest, reply *structs.DeploymentUpdateResponse) error {
+	authErr := d.srv.Authenticate(d.ctx, args)
 	if done, err := d.srv.forward("Deployment.Promote", args, args, reply); done {
 		return err
+	}
+	d.srv.MeasureRPCRate("deployment", structs.RateMetricWrite, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
 	}
 	defer metrics.MeasureSince([]string{"nomad", "deployment", "promote"}, time.Now())
 
@@ -201,7 +227,7 @@ func (d *Deployment) Promote(args *structs.DeploymentPromoteRequest, reply *stru
 	}
 
 	// Check namespace submit-job permissions
-	if aclObj, err := d.srv.ResolveToken(args.AuthToken); err != nil {
+	if aclObj, err := d.srv.ResolveACL(args); err != nil {
 		return err
 	} else if aclObj != nil && !aclObj.AllowNsOp(deploy.Namespace, acl.NamespaceCapabilitySubmitJob) {
 		return structs.ErrPermissionDenied
@@ -217,8 +243,13 @@ func (d *Deployment) Promote(args *structs.DeploymentPromoteRequest, reply *stru
 
 // Run is used to start a pending deployment
 func (d *Deployment) Run(args *structs.DeploymentRunRequest, reply *structs.DeploymentUpdateResponse) error {
+	authErr := d.srv.Authenticate(d.ctx, args)
 	if done, err := d.srv.forward("Deployment.Run", args, args, reply); done {
 		return err
+	}
+	d.srv.MeasureRPCRate("deployment", structs.RateMetricWrite, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
 	}
 	defer metrics.MeasureSince([]string{"nomad", "deployment", "run"}, time.Now())
 
@@ -243,7 +274,7 @@ func (d *Deployment) Run(args *structs.DeploymentRunRequest, reply *structs.Depl
 	}
 
 	// Check namespace submit-job permissions
-	if aclObj, err := d.srv.ResolveToken(args.AuthToken); err != nil {
+	if aclObj, err := d.srv.ResolveACL(args); err != nil {
 		return err
 	} else if aclObj != nil && !aclObj.AllowNsOp(deploy.Namespace, acl.NamespaceCapabilitySubmitJob) {
 		return structs.ErrPermissionDenied
@@ -259,8 +290,13 @@ func (d *Deployment) Run(args *structs.DeploymentRunRequest, reply *structs.Depl
 
 // Unblock is used to unblock a deployment
 func (d *Deployment) Unblock(args *structs.DeploymentUnblockRequest, reply *structs.DeploymentUpdateResponse) error {
+	authErr := d.srv.Authenticate(d.ctx, args)
 	if done, err := d.srv.forward("Deployment.Unblock", args, args, reply); done {
 		return err
+	}
+	d.srv.MeasureRPCRate("deployment", structs.RateMetricWrite, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
 	}
 	defer metrics.MeasureSince([]string{"nomad", "deployment", "unblock"}, time.Now())
 
@@ -285,7 +321,7 @@ func (d *Deployment) Unblock(args *structs.DeploymentUnblockRequest, reply *stru
 	}
 
 	// Check namespace submit-job permissions
-	if aclObj, err := d.srv.ResolveToken(args.AuthToken); err != nil {
+	if aclObj, err := d.srv.ResolveACL(args); err != nil {
 		return err
 	} else if aclObj != nil && !aclObj.AllowNsOp(deploy.Namespace, acl.NamespaceCapabilitySubmitJob) {
 		return structs.ErrPermissionDenied
@@ -301,8 +337,13 @@ func (d *Deployment) Unblock(args *structs.DeploymentUnblockRequest, reply *stru
 
 // Cancel is used to cancel a deployment
 func (d *Deployment) Cancel(args *structs.DeploymentCancelRequest, reply *structs.DeploymentUpdateResponse) error {
+	authErr := d.srv.Authenticate(d.ctx, args)
 	if done, err := d.srv.forward("Deployment.Cancel", args, args, reply); done {
 		return err
+	}
+	d.srv.MeasureRPCRate("deployment", structs.RateMetricWrite, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
 	}
 	defer metrics.MeasureSince([]string{"nomad", "deployment", "cancel"}, time.Now())
 
@@ -327,7 +368,7 @@ func (d *Deployment) Cancel(args *structs.DeploymentCancelRequest, reply *struct
 	}
 
 	// Check namespace submit-job permissions
-	if aclObj, err := d.srv.ResolveToken(args.AuthToken); err != nil {
+	if aclObj, err := d.srv.ResolveACL(args); err != nil {
 		return err
 	} else if aclObj != nil && !aclObj.AllowNsOp(deploy.Namespace, acl.NamespaceCapabilitySubmitJob) {
 		return structs.ErrPermissionDenied
@@ -344,8 +385,13 @@ func (d *Deployment) Cancel(args *structs.DeploymentCancelRequest, reply *struct
 // SetAllocHealth is used to set the health of allocations that are part of the
 // deployment.
 func (d *Deployment) SetAllocHealth(args *structs.DeploymentAllocHealthRequest, reply *structs.DeploymentUpdateResponse) error {
+	authErr := d.srv.Authenticate(d.ctx, args)
 	if done, err := d.srv.forward("Deployment.SetAllocHealth", args, args, reply); done {
 		return err
+	}
+	d.srv.MeasureRPCRate("deployment", structs.RateMetricWrite, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
 	}
 	defer metrics.MeasureSince([]string{"nomad", "deployment", "set_alloc_health"}, time.Now())
 
@@ -374,7 +420,7 @@ func (d *Deployment) SetAllocHealth(args *structs.DeploymentAllocHealthRequest, 
 	}
 
 	// Check namespace submit-job permissions
-	if aclObj, err := d.srv.ResolveToken(args.AuthToken); err != nil {
+	if aclObj, err := d.srv.ResolveACL(args); err != nil {
 		return err
 	} else if aclObj != nil && !aclObj.AllowNsOp(deploy.Namespace, acl.NamespaceCapabilitySubmitJob) {
 		return structs.ErrPermissionDenied
@@ -390,8 +436,13 @@ func (d *Deployment) SetAllocHealth(args *structs.DeploymentAllocHealthRequest, 
 
 // List returns the list of deployments in the system
 func (d *Deployment) List(args *structs.DeploymentListRequest, reply *structs.DeploymentListResponse) error {
+	authErr := d.srv.Authenticate(d.ctx, args)
 	if done, err := d.srv.forward("Deployment.List", args, args, reply); done {
 		return err
+	}
+	d.srv.MeasureRPCRate("deployment", structs.RateMetricList, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
 	}
 	defer metrics.MeasureSince([]string{"nomad", "deployment", "list"}, time.Now())
 
@@ -399,11 +450,16 @@ func (d *Deployment) List(args *structs.DeploymentListRequest, reply *structs.De
 
 	// Check namespace read-job permissions against request namespace since
 	// results are filtered by request namespace.
-	if aclObj, err := d.srv.ResolveToken(args.AuthToken); err != nil {
+	aclObj, err := d.srv.ResolveACL(args)
+	if err != nil {
 		return err
-	} else if aclObj != nil && !aclObj.AllowNsOp(namespace, acl.NamespaceCapabilityReadJob) {
+	}
+
+	if aclObj != nil && !aclObj.AllowNsOp(namespace, acl.NamespaceCapabilityReadJob) {
 		return structs.ErrPermissionDenied
 	}
+
+	allow := aclObj.AllowNsOpFunc(acl.NamespaceCapabilityReadJob)
 
 	// Setup the blocking query
 	sort := state.SortOption(args.Reverse)
@@ -411,8 +467,16 @@ func (d *Deployment) List(args *structs.DeploymentListRequest, reply *structs.De
 		queryOpts: &args.QueryOptions,
 		queryMeta: &reply.QueryMeta,
 		run: func(ws memdb.WatchSet, store *state.StateStore) error {
+			allowableNamespaces, err := allowedNSes(aclObj, store, allow)
+			if err != nil {
+				if err == structs.ErrPermissionDenied {
+					reply.Deployments = make([]*structs.Deployment, 0)
+					return nil
+				}
+				return err
+			}
+
 			// Capture all the deployments
-			var err error
 			var iter memdb.ResultIterator
 			var opts paginator.StructsTokenizerOptions
 
@@ -440,8 +504,14 @@ func (d *Deployment) List(args *structs.DeploymentListRequest, reply *structs.De
 
 			tokenizer := paginator.NewStructsTokenizer(iter, opts)
 
+			filters := []paginator.Filter{
+				paginator.NamespaceFilter{
+					AllowableNamespaces: allowableNamespaces,
+				},
+			}
+
 			var deploys []*structs.Deployment
-			paginator, err := paginator.NewPaginator(iter, tokenizer, nil, args.QueryOptions,
+			pnator, err := paginator.NewPaginator(iter, tokenizer, filters, args.QueryOptions,
 				func(raw interface{}) error {
 					deploy := raw.(*structs.Deployment)
 					deploys = append(deploys, deploy)
@@ -452,7 +522,7 @@ func (d *Deployment) List(args *structs.DeploymentListRequest, reply *structs.De
 					http.StatusBadRequest, "failed to create result paginator: %v", err)
 			}
 
-			nextToken, err := paginator.Page()
+			nextToken, err := pnator.Page()
 			if err != nil {
 				return structs.NewErrRPCCodedf(
 					http.StatusBadRequest, "failed to read result page: %v", err)
@@ -471,14 +541,21 @@ func (d *Deployment) List(args *structs.DeploymentListRequest, reply *structs.De
 			// Set the query response
 			d.srv.setQueryMeta(&reply.QueryMeta)
 			return nil
-		}}
+		},
+	}
+
 	return d.srv.blockingRPC(&opts)
 }
 
 // Allocations returns the list of allocations that are a part of the deployment
 func (d *Deployment) Allocations(args *structs.DeploymentSpecificRequest, reply *structs.AllocListResponse) error {
+	authErr := d.srv.Authenticate(d.ctx, args)
 	if done, err := d.srv.forward("Deployment.Allocations", args, args, reply); done {
 		return err
+	}
+	d.srv.MeasureRPCRate("deployment", structs.RateMetricList, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
 	}
 	defer metrics.MeasureSince([]string{"nomad", "deployment", "allocations"}, time.Now())
 
@@ -486,7 +563,7 @@ func (d *Deployment) Allocations(args *structs.DeploymentSpecificRequest, reply 
 	// Must re-check against the alloc namespace when they return to ensure
 	// there's no namespace mismatch.
 	allowNsOp := acl.NamespaceValidator(acl.NamespaceCapabilityReadJob)
-	aclObj, err := d.srv.ResolveToken(args.AuthToken)
+	aclObj, err := d.srv.ResolveACL(args)
 	if err != nil {
 		return err
 	} else if !allowNsOp(aclObj, args.RequestNamespace()) {
@@ -537,14 +614,19 @@ func (d *Deployment) Allocations(args *structs.DeploymentSpecificRequest, reply 
 func (d *Deployment) Reap(args *structs.DeploymentDeleteRequest,
 	reply *structs.GenericResponse) error {
 
+	authErr := d.srv.Authenticate(d.ctx, args)
+
 	// Ensure the connection was initiated by another server if TLS is used.
 	err := validateTLSCertificateLevel(d.srv, d.ctx, tlsCertificateLevelServer)
 	if err != nil {
 		return err
 	}
-
 	if done, err := d.srv.forward("Deployment.Reap", args, args, reply); done {
 		return err
+	}
+	d.srv.MeasureRPCRate("deployment", structs.RateMetricWrite, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
 	}
 	defer metrics.MeasureSince([]string{"nomad", "deployment", "reap"}, time.Now())
 

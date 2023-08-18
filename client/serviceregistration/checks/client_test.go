@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package checks
 
 import (
@@ -12,8 +15,8 @@ import (
 	"time"
 
 	"github.com/hashicorp/nomad/ci"
-	"github.com/hashicorp/nomad/helper/freeport"
 	"github.com/hashicorp/nomad/helper/testlog"
+	"github.com/hashicorp/nomad/helper/useragent"
 	"github.com/hashicorp/nomad/nomad/mock"
 	"github.com/hashicorp/nomad/nomad/structs"
 	"github.com/shoenig/test/must"
@@ -36,6 +39,19 @@ func TestChecker_Do_HTTP(t *testing.T) {
 
 	// create an http server with various responses
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// handle query param requests with string match because we want to
+		// test the path is set correctly instead of with escaped query params.
+		if strings.Contains(r.URL.Path, "query-param") {
+			if r.URL.RawQuery == "" {
+				w.WriteHeader(400)
+				_, _ = io.WriteString(w, "400 bad request")
+			} else {
+				w.WriteHeader(200)
+				_, _ = io.WriteString(w, "200 ok")
+			}
+			return
+		}
+
 		switch r.URL.Path {
 		case "/fail":
 			w.WriteHeader(500)
@@ -179,6 +195,16 @@ func TestChecker_Do_HTTP(t *testing.T) {
 			http.StatusCreated,
 			truncate,
 		),
+	}, {
+		name: "query param",
+		qc:   makeQueryContext(),
+		q:    makeQuery(structs.Healthiness, "query-param?a=b"),
+		expResult: makeExpResult(
+			structs.Healthiness,
+			structs.CheckSuccess,
+			http.StatusOK,
+			"nomad: http ok",
+		),
 	}}
 
 	for _, tc := range cases {
@@ -240,7 +266,7 @@ func TestChecker_Do_HTTP_extras(t *testing.T) {
 	}
 
 	encoding := [2]string{"Accept-Encoding", "gzip"}
-	agent := [2]string{"User-Agent", "Go-http-client/1.1"}
+	agent := [2]string{useragent.Header, useragent.String()}
 
 	cases := []struct {
 		name    string
@@ -269,6 +295,13 @@ func TestChecker_Do_HTTP_extras(t *testing.T) {
 			headers: makeHeaders(encoding, agent,
 				[2]string{"X-My-Header", "hello"},
 				[2]string{"Authorization", "Basic ZWxhc3RpYzpjaGFuZ2VtZQ=="},
+			),
+		},
+		{
+			name:   "user agent header",
+			method: "GET",
+			headers: makeHeaders(encoding,
+				[2]string{"User-Agent", "my-custom-agent"},
 			),
 		},
 		{
@@ -349,7 +382,7 @@ func TestChecker_Do_HTTP_extras(t *testing.T) {
 				}
 			}
 			if !hostSent {
-				must.Eq(t, nil, tc.headers["Host"])
+				must.Nil(t, tc.headers["Host"])
 			}
 
 			must.Eq(t, tc.headers, headers)
@@ -410,8 +443,7 @@ func TestChecker_Do_TCP(t *testing.T) {
 		}
 	}
 
-	ports := freeport.MustTake(3)
-	defer freeport.Return(ports)
+	ports := ci.PortAllocator.Grab(3)
 
 	cases := []struct {
 		name      string

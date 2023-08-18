@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package command
 
 import (
@@ -884,11 +887,11 @@ FOUND:
 	if len(hostVolumesOutput) > 1 {
 		c.Ui.Output("Host Volumes:")
 		c.Ui.Output(formatList(hostVolumesOutput))
-		c.Ui.Output("") // line padding to next stanza
+		c.Ui.Output("") // line padding to next block
 	}
 	if len(csiVolumesOutput) > 1 {
 		c.Ui.Output("CSI Volumes:")
 		c.Ui.Output(formatList(csiVolumesOutput))
-		c.Ui.Output("") // line padding to next stanza
+		c.Ui.Output("") // line padding to next block
 	}
 }

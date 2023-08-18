@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package nomad
 
 import (
@@ -5,7 +8,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"os"
 	"path"
@@ -19,7 +21,6 @@ import (
 	"github.com/hashicorp/nomad/acl"
 	"github.com/hashicorp/nomad/ci"
 	cstructs "github.com/hashicorp/nomad/client/structs"
-	"github.com/hashicorp/nomad/helper/freeport"
 	"github.com/hashicorp/nomad/helper/snapshot"
 	"github.com/hashicorp/nomad/helper/uuid"
 	"github.com/hashicorp/nomad/nomad/mock"
@@ -148,8 +149,7 @@ func TestOperator_RaftRemovePeerByAddress(t *testing.T) {
 	codec := rpcClient(t, s1)
 	testutil.WaitForLeader(t, s1.RPC)
 
-	ports := freeport.MustTake(1)
-	defer freeport.Return(ports)
+	ports := ci.PortAllocator.Grab(1)
 
 	// Try to remove a peer that's not there.
 	arg := structs.RaftPeerByAddressRequest{
@@ -216,8 +216,7 @@ func TestOperator_RaftRemovePeerByAddress_ACL(t *testing.T) {
 	// Create ACL token
 	invalidToken := mock.CreatePolicyAndToken(t, state, 1001, "test-invalid", mock.NodePolicy(acl.PolicyWrite))
 
-	ports := freeport.MustTake(1)
-	defer freeport.Return(ports)
+	ports := ci.PortAllocator.Grab(1)
 
 	arg := structs.RaftPeerByAddressRequest{
 		Address: raft.ServerAddress(fmt.Sprintf("127.0.0.1:%d", ports[0])),
@@ -276,8 +275,7 @@ func TestOperator_RaftRemovePeerByID(t *testing.T) {
 		t.Fatalf("err: %v", err)
 	}
 
-	ports := freeport.MustTake(1)
-	defer freeport.Return(ports)
+	ports := ci.PortAllocator.Grab(1)
 
 	// Add it manually to Raft.
 	{
@@ -337,8 +335,7 @@ func TestOperator_RaftRemovePeerByID_ACL(t *testing.T) {
 	}
 	arg.Region = s1.config.Region
 
-	ports := freeport.MustTake(1)
-	defer freeport.Return(ports)
+	ports := ci.PortAllocator.Grab(1)
 
 	// Add peer manually to Raft.
 	{
@@ -619,7 +616,7 @@ func TestOperator_SnapshotSave(t *testing.T) {
 
 			index := resp.Index
 
-			snap, err := ioutil.TempFile("", "nomadtests-snapshot-")
+			snap, err := os.CreateTemp("", "nomadtests-snapshot-")
 			require.NoError(t, err)
 			defer os.Remove(snap.Name())
 
@@ -669,7 +666,7 @@ func TestOperator_SnapshotSave_ACL(t *testing.T) {
 	}{
 		{"root", root.SecretID, 0, nil},
 		{"no_permission_token", deniedToken.SecretID, 403, structs.ErrPermissionDenied},
-		{"invalid token", uuid.Generate(), 400, structs.ErrTokenNotFound},
+		{"invalid token", uuid.Generate(), 403, structs.ErrPermissionDenied},
 		{"unauthenticated", "", 403, structs.ErrPermissionDenied},
 	}
 
@@ -712,7 +709,7 @@ func TestOperator_SnapshotSave_ACL(t *testing.T) {
 			require.NotEmpty(t, resp.SnapshotChecksum)
 			require.Contains(t, resp.SnapshotChecksum, "sha-256=")
 
-			io.Copy(ioutil.Discard, p1)
+			io.Copy(io.Discard, p1)
 		})
 	}
 }
@@ -762,7 +759,7 @@ func generateSnapshot(t *testing.T) (*snapshot.Snapshot, *structs.Job) {
 	err := msgpackrpc.CallWithCodec(codec, "Job.Register", jobReq, &jobResp)
 	require.NoError(t, err)
 
-	err = s.State().UpsertJob(structs.MsgTypeTestSetup, 1000, job)
+	err = s.State().UpsertJob(structs.MsgTypeTestSetup, 1000, nil, job)
 	require.NoError(t, err)
 
 	snapshot, err := snapshot.New(s.logger, s.raft)
@@ -891,7 +888,7 @@ func TestOperator_SnapshotRestore_ACL(t *testing.T) {
 	}{
 		{"root", 0, nil},
 		{"no_permission_token", 403, structs.ErrPermissionDenied},
-		{"invalid token", 400, structs.ErrTokenNotFound},
+		{"invalid token", 403, structs.ErrPermissionDenied},
 		{"unauthenticated", 403, structs.ErrPermissionDenied},
 	}
 
@@ -973,7 +970,7 @@ func TestOperator_SnapshotRestore_ACL(t *testing.T) {
 
 			require.NotZero(t, resp.Index)
 
-			io.Copy(ioutil.Discard, p1)
+			io.Copy(io.Discard, p1)
 		})
 	}
 }

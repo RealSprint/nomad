@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package command
 
 import (
@@ -32,8 +35,9 @@ Usage: nomad status [options] <job>
   Display status information about a job. If no job ID is given, a list of all
   known jobs will be displayed.
 
-  When ACLs are enabled, this command requires a token with the 'read-job' and
-  'list-jobs' capabilities for the job's namespace.
+  When ACLs are enabled, this command requires a token with the 'read-job'
+  capability for the job's namespace. The 'list-jobs' capability is required to
+  run the command with a job prefix instead of the exact job ID.
 
 General Options:
 
@@ -145,27 +149,16 @@ func (c *JobStatusCommand) Run(args []string) int {
 	}
 
 	// Try querying the job
-	jobID := strings.TrimSpace(args[0])
-
-	jobs, _, err := client.Jobs().PrefixList(jobID)
+	jobIDPrefix := strings.TrimSpace(args[0])
+	jobID, namespace, err := c.JobIDByPrefix(client, jobIDPrefix, nil)
 	if err != nil {
-		c.Ui.Error(fmt.Sprintf("Error querying job: %s", err))
+		c.Ui.Error(err.Error())
 		return 1
-	}
-	if len(jobs) == 0 {
-		c.Ui.Error(fmt.Sprintf("No job(s) with prefix or id %q found", jobID))
-		return 1
-	}
-	if len(jobs) > 1 {
-		if (jobID != jobs[0].ID) || (allNamespaces && jobs[0].ID == jobs[1].ID) {
-			c.Ui.Error(fmt.Sprintf("Prefix matched multiple jobs\n\n%s", createStatusListOutput(jobs, allNamespaces)))
-			return 1
-		}
 	}
 
 	// Prefix lookup matched a single job
-	q := &api.QueryOptions{Namespace: jobs[0].JobSummary.Namespace}
-	job, _, err := client.Jobs().Info(jobs[0].ID, q)
+	q := &api.QueryOptions{Namespace: namespace}
+	job, _, err := client.Jobs().Info(jobID, q)
 	if err != nil {
 		c.Ui.Error(fmt.Sprintf("Error querying job: %s", err))
 		return 1
@@ -173,6 +166,11 @@ func (c *JobStatusCommand) Run(args []string) int {
 
 	periodic := job.IsPeriodic()
 	parameterized := job.IsParameterized()
+
+	nodePool := ""
+	if job.NodePool != nil {
+		nodePool = *job.NodePool
+	}
 
 	// Format the job info
 	basic := []string{
@@ -183,6 +181,7 @@ func (c *JobStatusCommand) Run(args []string) int {
 		fmt.Sprintf("Priority|%d", *job.Priority),
 		fmt.Sprintf("Datacenters|%s", strings.Join(job.Datacenters, ",")),
 		fmt.Sprintf("Namespace|%s", *job.Namespace),
+		fmt.Sprintf("Node Pool|%s", nodePool),
 		fmt.Sprintf("Status|%s", getStatusString(*job.Status, job.Stop)),
 		fmt.Sprintf("Periodic|%v", periodic),
 		fmt.Sprintf("Parameterized|%v", parameterized),

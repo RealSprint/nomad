@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: MPL-2.0
+ */
+
 import { module, test } from 'qunit';
 import { visit, currentURL, click, typeIn, findAll } from '@ember/test-helpers';
 import { setupApplicationTest } from 'ember-qunit';
@@ -46,7 +51,11 @@ module('Acceptance | policies', function (hooks) {
     assert.dom('[data-test-title]').includesText(server.db.policies[0].name);
     await click('button[type="submit"]');
     assert.dom('.flash-message.alert-success').exists();
-    assert.equal(currentURL(), '/policies');
+    assert.equal(
+      currentURL(),
+      `/policies/${server.db.policies[0].name}`,
+      'remain on page after save'
+    );
     // Reset Token
     window.localStorage.nomadTokenSecret = null;
   });
@@ -61,14 +70,19 @@ module('Acceptance | policies', function (hooks) {
     await typeIn('[data-test-policy-name-input]', 'My Fun Policy');
     await click('button[type="submit"]');
     assert
-      .dom('.flash-message.alert-error')
+      .dom('.flash-message.alert-critical')
       .exists('Doesnt let you save a bad name');
     assert.equal(currentURL(), '/policies/new');
     document.querySelector('[data-test-policy-name-input]').value = ''; // clear
     await typeIn('[data-test-policy-name-input]', 'My-Fun-Policy');
     await click('button[type="submit"]');
     assert.dom('.flash-message.alert-success').exists();
-    assert.equal(currentURL(), '/policies');
+    assert.equal(
+      currentURL(),
+      '/policies/My-Fun-Policy',
+      'redirected to the now-created policy'
+    );
+    await visit('/policies');
     const newPolicy = [...findAll('[data-test-policy-name]')].filter((a) =>
       a.textContent.includes('My-Fun-Policy')
     )[0];

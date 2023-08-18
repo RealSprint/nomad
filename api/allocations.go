@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package api
 
 import (
@@ -27,6 +30,7 @@ const (
 	AllocClientStatusComplete = "complete"
 	AllocClientStatusFailed   = "failed"
 	AllocClientStatusLost     = "lost"
+	AllocClientStatusUnknown  = "unknown"
 )
 
 const (
@@ -164,6 +168,8 @@ func (a *Allocations) Restart(alloc *Allocation, taskName string, q *QueryOption
 // Note: for cluster topologies where API consumers don't have network access to
 // Nomad clients, set api.ClientConnTimeout to a small value (ex 1ms) to avoid
 // long pauses on this API call.
+//
+// DEPRECATED: This method will be removed in 1.6.0
 func (a *Allocations) RestartAllTasks(alloc *Allocation, q *QueryOptions) error {
 	req := AllocationRestartRequest{
 		AllTasks: true,
@@ -179,9 +185,29 @@ func (a *Allocations) RestartAllTasks(alloc *Allocation, q *QueryOptions) error 
 // Note: for cluster topologies where API consumers don't have network access to
 // Nomad clients, set api.ClientConnTimeout to a small value (ex 1ms) to avoid
 // long pauses on this API call.
+//
+// BREAKING: This method will have the following signature in 1.6.0
+// func (a *Allocations) Stop(allocID string, w *WriteOptions) (*AllocStopResponse, error) {
 func (a *Allocations) Stop(alloc *Allocation, q *QueryOptions) (*AllocStopResponse, error) {
+	// COMPAT: Remove in 1.6.0
+	var w *WriteOptions
+	if q != nil {
+		w = &WriteOptions{
+			Region:    q.Region,
+			Namespace: q.Namespace,
+			AuthToken: q.AuthToken,
+			Headers:   q.Headers,
+			ctx:       q.ctx,
+		}
+	}
+
 	var resp AllocStopResponse
-	_, err := a.client.putQuery("/v1/allocation/"+alloc.ID+"/stop", nil, &resp, q)
+	wm, err := a.client.put("/v1/allocation/"+alloc.ID+"/stop", nil, &resp, w)
+	if wm != nil {
+		resp.LastIndex = wm.LastIndex
+		resp.RequestTime = wm.RequestTime
+	}
+
 	return &resp, err
 }
 
@@ -245,6 +271,7 @@ type Allocation struct {
 	PreviousAllocation    string
 	NextAllocation        string
 	RescheduleTracker     *RescheduleTracker
+	NetworkStatus         *AllocNetworkStatus
 	PreemptedAllocations  []string
 	PreemptedByAllocation string
 	CreateIndex           uint64
@@ -258,6 +285,7 @@ type Allocation struct {
 type AllocationMetric struct {
 	NodesEvaluated     int
 	NodesFiltered      int
+	NodesInPool        int
 	NodesAvailable     map[string]int
 	ClassFiltered      map[string]int
 	ConstraintFiltered map[string]int
@@ -301,6 +329,7 @@ func (a *Allocation) Stub() *AllocationListStub {
 		TaskStates:            a.TaskStates,
 		DeploymentStatus:      a.DeploymentStatus,
 		FollowupEvalID:        a.FollowupEvalID,
+		NextAllocation:        a.NextAllocation,
 		RescheduleTracker:     a.RescheduleTracker,
 		PreemptedAllocations:  a.PreemptedAllocations,
 		PreemptedByAllocation: a.PreemptedByAllocation,
@@ -354,6 +383,7 @@ type AllocationListStub struct {
 	TaskStates            map[string]*TaskState
 	DeploymentStatus      *AllocDeploymentStatus
 	FollowupEvalID        string
+	NextAllocation        string
 	RescheduleTracker     *RescheduleTracker
 	PreemptedAllocations  []string
 	PreemptedByAllocation string
@@ -371,6 +401,15 @@ type AllocDeploymentStatus struct {
 	Timestamp   time.Time
 	Canary      bool
 	ModifyIndex uint64
+}
+
+// AllocNetworkStatus captures the status of an allocation's network during runtime.
+// Depending on the network mode, an allocation's address may need to be known to other
+// systems in Nomad such as service registration.
+type AllocNetworkStatus struct {
+	InterfaceName string
+	Address       string
+	DNS           *DNSConfig
 }
 
 type AllocatedResources struct {

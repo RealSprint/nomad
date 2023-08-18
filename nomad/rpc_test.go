@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package nomad
 
 import (
@@ -7,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/rpc"
 	"os"
@@ -16,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/go-msgpack/codec"
 	"github.com/hashicorp/go-sockaddr"
 	msgpackrpc "github.com/hashicorp/net-rpc-msgpackrpc"
@@ -102,7 +105,7 @@ func TestRPC_forwardLeader(t *testing.T) {
 
 	if remote != nil {
 		var out struct{}
-		err := s1.forwardLeader(remote, "Status.Ping", struct{}{}, &out)
+		err := s1.forwardLeader(remote, "Status.Ping", &structs.GenericRequest{}, &out)
 		if err != nil {
 			t.Fatalf("err: %v", err)
 		}
@@ -115,7 +118,7 @@ func TestRPC_forwardLeader(t *testing.T) {
 
 	if remote != nil {
 		var out struct{}
-		err := s2.forwardLeader(remote, "Status.Ping", struct{}{}, &out)
+		err := s2.forwardLeader(remote, "Status.Ping", &structs.GenericRequest{}, &out)
 		if err != nil {
 			t.Fatalf("err: %v", err)
 		}
@@ -178,12 +181,12 @@ func TestRPC_forwardRegion(t *testing.T) {
 	testutil.WaitForLeader(t, s2.RPC)
 
 	var out struct{}
-	err := s1.forwardRegion("global", "Status.Ping", struct{}{}, &out)
+	err := s1.forwardRegion("global", "Status.Ping", &structs.GenericRequest{}, &out)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
 
-	err = s2.forwardRegion("global", "Status.Ping", struct{}{}, &out)
+	err = s2.forwardRegion("global", "Status.Ping", &structs.GenericRequest{}, &out)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -220,9 +223,9 @@ func TestRPC_PlaintextRPCSucceedsWhenInUpgradeMode(t *testing.T) {
 	assert := assert.New(t)
 
 	const (
-		cafile  = "../helper/tlsutil/testdata/ca.pem"
-		foocert = "../helper/tlsutil/testdata/nomad-foo.pem"
-		fookey  = "../helper/tlsutil/testdata/nomad-foo-key.pem"
+		cafile  = "../helper/tlsutil/testdata/nomad-agent-ca.pem"
+		foocert = "../helper/tlsutil/testdata/regionFoo-client-nomad.pem"
+		fookey  = "../helper/tlsutil/testdata/regionFoo-client-nomad-key.pem"
 	)
 	dir := t.TempDir()
 
@@ -262,9 +265,9 @@ func TestRPC_PlaintextRPCFailsWhenNotInUpgradeMode(t *testing.T) {
 	assert := assert.New(t)
 
 	const (
-		cafile  = "../helper/tlsutil/testdata/ca.pem"
-		foocert = "../helper/tlsutil/testdata/nomad-foo.pem"
-		fookey  = "../helper/tlsutil/testdata/nomad-foo-key.pem"
+		cafile  = "../helper/tlsutil/testdata/nomad-agent-ca.pem"
+		foocert = "../helper/tlsutil/testdata/regionFoo-client-nomad.pem"
+		fookey  = "../helper/tlsutil/testdata/regionFoo-client-nomad-key.pem"
 	)
 	dir := t.TempDir()
 
@@ -328,9 +331,9 @@ func TestRPC_streamingRpcConn_badMethod_TLS(t *testing.T) {
 	require := require.New(t)
 
 	const (
-		cafile  = "../helper/tlsutil/testdata/ca.pem"
-		foocert = "../helper/tlsutil/testdata/nomad-foo.pem"
-		fookey  = "../helper/tlsutil/testdata/nomad-foo-key.pem"
+		cafile  = "../helper/tlsutil/testdata/nomad-agent-ca.pem"
+		foocert = "../helper/tlsutil/testdata/regionFoo-server-nomad.pem"
+		fookey  = "../helper/tlsutil/testdata/regionFoo-server-nomad-key.pem"
 	)
 	dir := t.TempDir()
 	s1, cleanupS1 := TestServer(t, func(c *Config) {
@@ -438,9 +441,9 @@ func TestRPC_streamingRpcConn_goodMethod_TLS(t *testing.T) {
 	require := require.New(t)
 
 	const (
-		cafile  = "../helper/tlsutil/testdata/ca.pem"
-		foocert = "../helper/tlsutil/testdata/nomad-foo.pem"
-		fookey  = "../helper/tlsutil/testdata/nomad-foo-key.pem"
+		cafile  = "../helper/tlsutil/testdata/nomad-agent-ca.pem"
+		foocert = "../helper/tlsutil/testdata/regionFoo-server-nomad.pem"
+		fookey  = "../helper/tlsutil/testdata/regionFoo-server-nomad-key.pem"
 	)
 	dir := t.TempDir()
 	s1, cleanupS1 := TestServer(t, func(c *Config) {
@@ -576,9 +579,9 @@ func TestRPC_TLS_in_TLS(t *testing.T) {
 	ci.Parallel(t)
 
 	const (
-		cafile  = "../helper/tlsutil/testdata/ca.pem"
-		foocert = "../helper/tlsutil/testdata/nomad-foo.pem"
-		fookey  = "../helper/tlsutil/testdata/nomad-foo-key.pem"
+		cafile  = "../helper/tlsutil/testdata/nomad-agent-ca.pem"
+		foocert = "../helper/tlsutil/testdata/regionFoo-client-nomad.pem"
+		fookey  = "../helper/tlsutil/testdata/regionFoo-client-nomad-key.pem"
 	)
 
 	s, cleanup := TestServer(t, func(c *Config) {
@@ -636,9 +639,9 @@ func TestRPC_Limits_OK(t *testing.T) {
 	ci.Parallel(t)
 
 	const (
-		cafile   = "../helper/tlsutil/testdata/ca.pem"
-		foocert  = "../helper/tlsutil/testdata/nomad-foo.pem"
-		fookey   = "../helper/tlsutil/testdata/nomad-foo-key.pem"
+		cafile   = "../helper/tlsutil/testdata/nomad-agent-ca.pem"
+		foocert  = "../helper/tlsutil/testdata/regionFoo-client-nomad.pem"
+		fookey   = "../helper/tlsutil/testdata/regionFoo-client-nomad-key.pem"
 		maxConns = 10 // limit must be < this for testing
 	)
 
@@ -1151,7 +1154,7 @@ func TestRPC_TLS_Enforcement_RPC(t *testing.T) {
 	defer tlsHelper.cleanup()
 
 	standardRPCs := map[string]interface{}{
-		"Status.Ping": struct{}{},
+		"Status.Ping": &structs.GenericRequest{},
 	}
 
 	localServersOnlyRPCs := map[string]interface{}{
@@ -1347,9 +1350,9 @@ type tlsTestHelper struct {
 	nodeID int
 
 	mtlsServer1            *Server
-	mtlsServer1Cleanup     func()
+	mtlsServerCleanup1     func()
 	mtlsServer2            *Server
-	mtlsServer2Cleanup     func()
+	mtlsServerCleanup2     func()
 	nonVerifyServer        *Server
 	nonVerifyServerCleanup func()
 
@@ -1367,57 +1370,48 @@ func newTLSTestHelper(t *testing.T) tlsTestHelper {
 	}
 
 	// Generate CA certificate and write it to disk.
-	h.caPEM, h.pk, err = tlsutil.GenerateCA(tlsutil.CAOpts{Days: 5, Domain: "nomad"})
-	require.NoError(t, err)
+	h.caPEM, h.pk, err = tlsutil.GenerateCA(tlsutil.CAOpts{
+		Name:               "Nomad CA",
+		Country:            "ZZ",
+		Days:               5,
+		Organization:       "CustOrgUnit",
+		OrganizationalUnit: "CustOrgUnit",
+	})
+	must.NoError(t, err)
 
-	err = ioutil.WriteFile(filepath.Join(h.dir, "ca.pem"), []byte(h.caPEM), 0600)
-	require.NoError(t, err)
+	err = os.WriteFile(filepath.Join(h.dir, "ca.pem"), []byte(h.caPEM), 0600)
+	must.NoError(t, err)
 
 	// Generate servers and their certificate.
 	h.serverCert = h.newCert(t, "server.global.nomad")
 
-	h.mtlsServer1, h.mtlsServer1Cleanup = TestServer(t, func(c *Config) {
-		c.BootstrapExpect = 2
-		c.TLSConfig = &config.TLSConfig{
-			EnableRPC:            true,
-			VerifyServerHostname: true,
-			CAFile:               filepath.Join(h.dir, "ca.pem"),
-			CertFile:             h.serverCert + ".pem",
-			KeyFile:              h.serverCert + ".key",
-		}
-	})
-	h.mtlsServer2, h.mtlsServer2Cleanup = TestServer(t, func(c *Config) {
-		c.BootstrapExpect = 2
-		c.TLSConfig = &config.TLSConfig{
-			EnableRPC:            true,
-			VerifyServerHostname: true,
-			CAFile:               filepath.Join(h.dir, "ca.pem"),
-			CertFile:             h.serverCert + ".pem",
-			KeyFile:              h.serverCert + ".key",
-		}
-	})
-	TestJoin(t, h.mtlsServer1, h.mtlsServer2)
-	testutil.WaitForLeader(t, h.mtlsServer1.RPC)
-	testutil.WaitForLeader(t, h.mtlsServer2.RPC)
+	makeServer := func(bootstrapExpect int, verifyServerHostname bool) (*Server, func()) {
+		return TestServer(t, func(c *Config) {
+			c.Logger.SetLevel(hclog.Off)
+			c.BootstrapExpect = bootstrapExpect
+			c.TLSConfig = &config.TLSConfig{
+				EnableRPC:            true,
+				VerifyServerHostname: verifyServerHostname,
+				CAFile:               filepath.Join(h.dir, "ca.pem"),
+				CertFile:             h.serverCert + ".pem",
+				KeyFile:              h.serverCert + ".key",
+			}
+		})
+	}
 
-	h.nonVerifyServer, h.nonVerifyServerCleanup = TestServer(t, func(c *Config) {
-		c.TLSConfig = &config.TLSConfig{
-			EnableRPC:            true,
-			VerifyServerHostname: false,
-			CAFile:               filepath.Join(h.dir, "ca.pem"),
-			CertFile:             h.serverCert + ".pem",
-			KeyFile:              h.serverCert + ".key",
-		}
-	})
+	h.mtlsServer1, h.mtlsServerCleanup1 = makeServer(3, true)
+	h.mtlsServer2, h.mtlsServerCleanup2 = makeServer(3, true)
+	h.nonVerifyServer, h.nonVerifyServerCleanup = makeServer(3, false)
 
+	TestJoin(t, h.mtlsServer1, h.mtlsServer2, h.nonVerifyServer)
+	testutil.WaitForLeaders(t, h.mtlsServer1.RPC, h.mtlsServer2.RPC, h.nonVerifyServer.RPC)
 	return h
 }
 
 func (h tlsTestHelper) cleanup() {
-	h.mtlsServer1Cleanup()
-	h.mtlsServer2Cleanup()
+	h.mtlsServerCleanup1()
+	h.mtlsServerCleanup2()
 	h.nonVerifyServerCleanup()
-	os.RemoveAll(h.dir)
 }
 
 func (h tlsTestHelper) newCert(t *testing.T, name string) string {
@@ -1438,9 +1432,9 @@ func (h tlsTestHelper) newCert(t *testing.T, name string) string {
 	})
 	require.NoError(t, err)
 
-	err = ioutil.WriteFile(filepath.Join(h.dir, node+"-"+name+".pem"), []byte(pem), 0600)
+	err = os.WriteFile(filepath.Join(h.dir, node+"-"+name+".pem"), []byte(pem), 0600)
 	require.NoError(t, err)
-	err = ioutil.WriteFile(filepath.Join(h.dir, node+"-"+name+".key"), []byte(key), 0600)
+	err = os.WriteFile(filepath.Join(h.dir, node+"-"+name+".key"), []byte(key), 0600)
 	require.NoError(t, err)
 
 	return filepath.Join(h.dir, node+"-"+name)

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 //go:build !release
 // +build !release
 
@@ -8,8 +11,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/hashicorp/nomad/client/allocrunner/interfaces"
 	"github.com/hashicorp/nomad/client/allocrunner/taskrunner/getter"
 	"github.com/hashicorp/nomad/client/allocwatcher"
+	"github.com/hashicorp/nomad/client/config"
 	clientconfig "github.com/hashicorp/nomad/client/config"
 	"github.com/hashicorp/nomad/client/consul"
 	"github.com/hashicorp/nomad/client/devicemanager"
@@ -64,7 +69,7 @@ func (m *MockStateUpdater) Reset() {
 	m.mu.Unlock()
 }
 
-func testAllocRunnerConfig(t *testing.T, alloc *structs.Allocation) (*Config, func()) {
+func testAllocRunnerConfig(t *testing.T, alloc *structs.Allocation) (*config.AllocRunnerConfig, func()) {
 	clientConf, cleanup := clientconfig.TestClientConfig(t)
 
 	consulRegMock := mock.NewServiceRegistrationHandler(clientConf.Logger)
@@ -72,7 +77,7 @@ func testAllocRunnerConfig(t *testing.T, alloc *structs.Allocation) (*Config, fu
 
 	stateDB := new(state.NoopDB)
 
-	conf := &Config{
+	conf := &config.AllocRunnerConfig{
 		// Copy the alloc in case the caller edits and reuses it
 		Alloc:              alloc.Copy(),
 		Logger:             clientConf.Logger,
@@ -90,7 +95,7 @@ func testAllocRunnerConfig(t *testing.T, alloc *structs.Allocation) (*Config, fu
 		ServersContactedCh: make(chan struct{}),
 		ServiceRegWrapper:  wrapper.NewHandlerWrapper(clientConf.Logger, consulRegMock, nomadRegMock),
 		CheckStore:         checkstore.NewStore(clientConf.Logger, stateDB),
-		Getter:             getter.TestDefaultGetter(t),
+		Getter:             getter.TestSandbox(t),
 	}
 
 	return conf, cleanup
@@ -104,10 +109,10 @@ func TestAllocRunnerFromAlloc(t *testing.T, alloc *structs.Allocation) (*allocRu
 		require.NoError(t, err, "Failed to setup AllocRunner")
 	}
 
-	return ar, cleanup
+	return ar.(*allocRunner), cleanup
 }
 
-func WaitForClientState(t *testing.T, ar *allocRunner, state string) {
+func WaitForClientState(t *testing.T, ar interfaces.AllocRunner, state string) {
 	testutil.WaitForResult(func() (bool, error) {
 		got := ar.AllocState().ClientStatus
 		return got == state,

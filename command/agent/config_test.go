@@ -1,8 +1,10 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package agent
 
 import (
 	"fmt"
-	"io/ioutil"
 	"net"
 	"os"
 	"path/filepath"
@@ -16,7 +18,6 @@ import (
 	"github.com/hashicorp/nomad/ci"
 	client "github.com/hashicorp/nomad/client/config"
 	"github.com/hashicorp/nomad/client/testutil"
-	"github.com/hashicorp/nomad/helper/freeport"
 	"github.com/hashicorp/nomad/helper/pointer"
 	"github.com/hashicorp/nomad/nomad/structs"
 	"github.com/hashicorp/nomad/nomad/structs/config"
@@ -108,6 +109,7 @@ func TestConfig_Merge(t *testing.T) {
 			StateDir:  "/tmp/state1",
 			AllocDir:  "/tmp/alloc1",
 			NodeClass: "class1",
+			NodePool:  "dev",
 			Options: map[string]string{
 				"foo": "bar",
 			},
@@ -141,6 +143,7 @@ func TestConfig_Merge(t *testing.T) {
 			RaftMultiplier:         pointer.Of(5),
 			NumSchedulers:          pointer.Of(1),
 			NodeGCThreshold:        "1h",
+			BatchEvalGCThreshold:   "4h",
 			HeartbeatGrace:         30 * time.Second,
 			MinHeartbeatTTL:        30 * time.Second,
 			MaxHeartbeatsPerSecond: 30.0,
@@ -287,6 +290,7 @@ func TestConfig_Merge(t *testing.T) {
 			CirconusBrokerSelectTag:            "dc:dc2",
 			PrefixFilter:                       []string{"prefix1", "prefix2"},
 			DisableDispatchedJobSummaryMetrics: true,
+			DisableRPCRateMetricsLabels:        true,
 			FilterDefault:                      pointer.Of(false),
 		},
 		Client: &ClientConfig{
@@ -294,6 +298,7 @@ func TestConfig_Merge(t *testing.T) {
 			StateDir:  "/tmp/state2",
 			AllocDir:  "/tmp/alloc2",
 			NodeClass: "class2",
+			NodePool:  "dev",
 			Servers:   []string{"server2"},
 			Meta: map[string]string{
 				"baz": "zip",
@@ -339,6 +344,7 @@ func TestConfig_Merge(t *testing.T) {
 			NumSchedulers:          pointer.Of(2),
 			EnabledSchedulers:      []string{structs.JobTypeBatch},
 			NodeGCThreshold:        "12h",
+			BatchEvalGCThreshold:   "4h",
 			HeartbeatGrace:         2 * time.Minute,
 			MinHeartbeatTTL:        2 * time.Minute,
 			MaxHeartbeatsPerSecond: 200.0,
@@ -356,6 +362,8 @@ func TestConfig_Merge(t *testing.T) {
 				NodeThreshold: 100,
 				NodeWindow:    11 * time.Minute,
 			},
+			JobMaxPriority:     pointer.Of(200),
+			JobDefaultPriority: pointer.Of(100),
 		},
 		ACL: &ACLConfig{
 			Enabled:               true,
@@ -465,7 +473,7 @@ func TestConfig_ParseConfigFile(t *testing.T) {
 		t.Fatalf("expected error, got nothing")
 	}
 
-	fh, err := ioutil.TempFile("", "nomad")
+	fh, err := os.CreateTemp("", "nomad")
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -519,19 +527,19 @@ func TestConfig_LoadConfigDir(t *testing.T) {
 	}
 
 	file1 := filepath.Join(dir, "conf1.hcl")
-	err = ioutil.WriteFile(file1, []byte(`{"region":"west"}`), 0600)
+	err = os.WriteFile(file1, []byte(`{"region":"west"}`), 0600)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
 
 	file2 := filepath.Join(dir, "conf2.hcl")
-	err = ioutil.WriteFile(file2, []byte(`{"datacenter":"sfo"}`), 0600)
+	err = os.WriteFile(file2, []byte(`{"datacenter":"sfo"}`), 0600)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
 
 	file3 := filepath.Join(dir, "conf3.hcl")
-	err = ioutil.WriteFile(file3, []byte(`nope;!!!`), 0600)
+	err = os.WriteFile(file3, []byte(`nope;!!!`), 0600)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -563,7 +571,7 @@ func TestConfig_LoadConfig(t *testing.T) {
 		t.Fatalf("expected error, got nothing")
 	}
 
-	fh, err := ioutil.TempFile("", "nomad")
+	fh, err := os.CreateTemp("", "nomad")
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -591,7 +599,7 @@ func TestConfig_LoadConfig(t *testing.T) {
 	dir := t.TempDir()
 
 	file1 := filepath.Join(dir, "config1.hcl")
-	err = ioutil.WriteFile(file1, []byte(`{"datacenter":"sfo"}`), 0600)
+	err = os.WriteFile(file1, []byte(`{"datacenter":"sfo"}`), 0600)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -660,8 +668,7 @@ func TestConfig_Listener(t *testing.T) {
 	}
 
 	// Works with valid inputs
-	ports := freeport.MustTake(2)
-	defer freeport.Return(ports)
+	ports := ci.PortAllocator.Grab(2)
 
 	ln, err := config.Listener("tcp", "127.0.0.1", ports[0])
 	if err != nil {
@@ -1348,10 +1355,11 @@ func TestTelemetry_Parse(t *testing.T) {
 	dir := t.TempDir()
 
 	file1 := filepath.Join(dir, "config1.hcl")
-	err := ioutil.WriteFile(file1, []byte(`telemetry{
+	err := os.WriteFile(file1, []byte(`telemetry{
 		prefix_filter = ["+nomad.raft"]
 		filter_default = false
 		disable_dispatched_job_summary_metrics = true
+		disable_rpc_rate_metrics_labels = true
 	}`), 0600)
 	require.NoError(err)
 
@@ -1362,6 +1370,7 @@ func TestTelemetry_Parse(t *testing.T) {
 	require.False(*config.Telemetry.FilterDefault)
 	require.Exactly([]string{"+nomad.raft"}, config.Telemetry.PrefixFilter)
 	require.True(config.Telemetry.DisableDispatchedJobSummaryMetrics)
+	require.True(config.Telemetry.DisableRPCRateMetricsLabels)
 }
 
 func TestEventBroker_Parse(t *testing.T) {

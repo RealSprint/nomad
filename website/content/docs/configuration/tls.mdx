@@ -1,16 +1,16 @@
 ---
 layout: docs
-page_title: tls Stanza - Agent Configuration
+page_title: tls Block - Agent Configuration
 description: |-
-  The "tls" stanza configures Nomad's TLS communication via HTTP and RPC to
+  The "tls" block configures Nomad's TLS communication via HTTP and RPC to
   enforce secure cluster communication between servers and clients.
 ---
 
-# `tls` Stanza
+# `tls` Block
 
 <Placement groups={['tls']} />
 
-The `tls` stanza configures Nomad's TLS communication via HTTP and RPC to
+The `tls` block configures Nomad's TLS communication via HTTP and RPC to
 enforce secure cluster communication between servers, clients, and between.
 
 ```hcl
@@ -24,8 +24,8 @@ tls {
 start the Nomad agent.
 
 This section of the documentation only covers the configuration options for
-`tls` stanza. To understand how to setup the certificates themselves, please see
-the [Enable TLS Encryption for Nomad Tutorial](https://learn.hashicorp.com/tutorials/nomad/security-enable-tls).
+`tls` block. To understand how to setup the certificates themselves, please see
+the [Enable TLS Encryption for Nomad Tutorial](/nomad/tutorials/transport-security/security-enable-tls).
 
 ## `tls` Parameters
 
@@ -38,13 +38,13 @@ the [Enable TLS Encryption for Nomad Tutorial](https://learn.hashicorp.com/tutor
 - `key_file` `(string: "")` - Specifies the path to the key file to use for
   Nomad's TLS communication.
 
-- `http` `(bool: false)` - Specifies if TLS should be enabled on the HTTP
+- `http` `(bool: false)` - Specifies if mTLS should be enabled on the HTTP
   endpoints on the Nomad agent, including the API.
 
-- `rpc` `(bool: false)` - Specifies if TLS should be enabled on the RPC
-  endpoints and [Raft][raft] traffic between the Nomad servers. Enabling this on
-  a Nomad client makes the client use TLS for making RPC requests to the Nomad
-  servers.
+- `rpc` `(bool: false)` - Toggle the option to enable mTLS on the RPC endpoints 
+   and [Raft][raft] traffic. When this setting is activated, it establishes protection 
+   both between Nomad servers and from the clients back to the servers, ensuring 
+   mutual authentication.
 
 - `rpc_upgrade_mode` `(bool: false)` - This option should be used only when the
   cluster is being upgraded to TLS, and removed after the migration is
@@ -79,8 +79,8 @@ the [Enable TLS Encryption for Nomad Tutorial](https://learn.hashicorp.com/tutor
 
 ## `tls` Examples
 
-The following examples only show the `tls` stanzas. Remember that the
-`tls` stanza is only valid in the placements listed above.
+The following examples only show the `tls` blocks. Remember that the
+`tls` block is only valid in the placements listed above.
 
 ### Enabling TLS
 

@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: MPL-2.0
+ */
+
 /* eslint-disable qunit/require-expect */
 import { currentURL, find, findAll, visit, click } from '@ember/test-helpers';
 import { module, skip, test } from 'qunit';
@@ -13,6 +18,11 @@ import percySnapshot from '@percy/ember';
 import faker from 'nomad-ui/mirage/faker';
 import moment from 'moment';
 import { run } from '@ember/runloop';
+import { allScenarios } from '../../mirage/scenarios/default';
+import {
+  selectChoose,
+  clickTrigger,
+} from 'ember-power-select/test-support/helpers';
 
 let job;
 let node;
@@ -28,6 +38,7 @@ module('Acceptance | tokens', function (hooks) {
     faker.seed(1);
 
     server.create('agent');
+    server.create('node-pool');
     node = server.create('node');
     job = server.create('job');
     managementToken = server.create('token');
@@ -50,7 +61,7 @@ module('Acceptance | tokens', function (hooks) {
       null,
       'No token secret set'
     );
-    assert.equal(document.title, 'Authorization - Nomad');
+    assert.ok(document.title.includes('Authorization'));
 
     await Tokens.secret(secretId).submit();
     assert.equal(
@@ -212,10 +223,10 @@ module('Acceptance | tokens', function (hooks) {
     // TTL Action
     await Jobs.visit();
     assert
-      .dom('.flash-message.alert-error button')
+      .dom('.flash-message.alert-warning button')
       .exists('A global alert exists and has a clickable button');
 
-    await click('.flash-message.alert-error button');
+    await click('.flash-message.alert-warning button');
     assert.equal(
       currentURL(),
       '/settings/tokens',
@@ -312,7 +323,7 @@ module('Acceptance | tokens', function (hooks) {
     // short-circuiting our Ember Concurrency loop.
     setTimeout(() => {
       assert
-        .dom('.flash-message.alert-error')
+        .dom('.flash-message.alert-warning')
         .doesNotExist('No notification yet for a token with 10m5s left');
       notificationNotRendered();
       setTimeout(async () => {
@@ -321,7 +332,7 @@ module('Acceptance | tokens', function (hooks) {
         });
 
         assert
-          .dom('.flash-message.alert-error')
+          .dom('.flash-message.alert-warning')
           .exists('Notification is rendered at the 10m mark');
         notificationRendered();
         run.cancelTimers();
@@ -413,6 +424,157 @@ module('Acceptance | tokens', function (hooks) {
     assert.ok(Tokens.ssoErrorMessage);
   });
 
+  test('JWT Sign-in flow: OIDC methods only', async function (assert) {
+    server.create('auth-method', { name: 'Vault', type: 'OIDC' });
+    server.create('auth-method', { name: 'Auth0', type: 'OIDC' });
+    await Tokens.visit();
+    assert
+      .dom('[data-test-auth-method]')
+      .exists({ count: 2 }, 'Both OIDC methods shown');
+    assert
+      .dom('label[for="token-input"]')
+      .hasText(
+        'Secret ID',
+        'Secret ID input shown without JWT info when no such method exists'
+      );
+  });
+
+  test('JWT Sign-in flow: JWT method', async function (assert) {
+    server.create('auth-method', { name: 'Vault', type: 'OIDC' });
+    server.create('auth-method', { name: 'Auth0', type: 'OIDC' });
+    server.create('auth-method', { name: 'JWT-Local', type: 'JWT' });
+    await Tokens.visit();
+    assert
+      .dom('[data-test-auth-method]')
+      .exists(
+        { count: 2 },
+        'The newly added JWT method does not add a 3rd Auth Method button'
+      );
+    assert
+      .dom('label[for="token-input"]')
+      .hasText('Secret ID or JWT', 'Secret ID input now shows JWT info');
+
+    // Expect to be signed in as a manager
+    await Tokens.secret(
+      'aaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.management'
+    ).submit();
+    assert.ok(currentURL().startsWith('/settings/tokens'));
+    assert.dom('[data-test-token-name]').includesText('Token: Manager');
+    await Tokens.clear();
+
+    // Expect to be signed in as a client
+    await Tokens.secret(
+      'aaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.whateverlol'
+    ).submit();
+    assert.ok(currentURL().startsWith('/settings/tokens'));
+    assert.dom('[data-test-token-name]').includesText(
+      `Token: ${
+        server.db.tokens.filter((token) => {
+          return token.type === 'client';
+        })[0].name
+      }`
+    );
+    await Tokens.clear();
+
+    // Expect to an error on bad JWT
+    await Tokens.secret(
+      'aaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bad'
+    ).submit();
+    assert.ok(currentURL().startsWith('/settings/tokens'));
+    assert.dom('[data-test-token-error]').exists();
+  });
+
+  test('JWT Sign-in flow: JWT Method Selector, Single JWT', async function (assert) {
+    server.create('auth-method', { name: 'Vault', type: 'OIDC' });
+    server.create('auth-method', { name: 'Auth0', type: 'OIDC' });
+    server.create('auth-method', { name: 'JWT-Local', type: 'JWT' });
+    await Tokens.visit();
+    assert
+      .dom('[data-test-token-submit]')
+      .exists(
+        { count: 1 },
+        'Submit token/JWT button exists with only a single JWT '
+      );
+    assert
+      .dom('[data-test-token-submit]')
+      .hasText(
+        'Sign in with secret',
+        'Submit token/JWT button has correct text with only a single JWT '
+      );
+    await Tokens.secret('very-short-secret');
+    assert
+      .dom('[data-test-token-submit]')
+      .hasText(
+        'Sign in with secret',
+        'A short secret still shows the "secret" verbiage on the button'
+      );
+    await Tokens.secret(
+      'aaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.whateverlol'
+    );
+    assert
+      .dom('[data-test-token-submit]')
+      .hasText(
+        'Sign in with JWT',
+        'A JWT-shaped secret will change button text to reflect JWT sign-in'
+      );
+
+    assert
+      .dom('[data-test-select-jwt]')
+      .doesNotExist('No JWT selector shown with only a single method');
+  });
+
+  test('JWT Sign-in flow: JWT Method Selector, Multiple JWT', async function (assert) {
+    server.create('auth-method', { name: 'Vault', type: 'OIDC' });
+    server.create('auth-method', { name: 'Auth0', type: 'OIDC' });
+    server.create('auth-method', {
+      name: 'JWT-Local',
+      type: 'JWT',
+      default: false,
+    });
+    server.create('auth-method', {
+      name: 'JWT-Regional',
+      type: 'JWT',
+      default: false,
+    });
+    server.create('auth-method', {
+      name: 'JWT-Global',
+      type: 'JWT',
+      default: true,
+    });
+    await Tokens.visit();
+    assert
+      .dom('[data-test-token-submit]')
+      .exists(
+        { count: 1 },
+        'Submit token/JWT button exists with only a single JWT '
+      );
+    assert
+      .dom('[data-test-select-jwt]')
+      .doesNotExist('No JWT selector shown with an empty token/secret');
+    await Tokens.secret(
+      'aaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.whateverlol'
+    );
+    assert
+      .dom('[data-test-select-jwt]')
+      .exists({ count: 1 }, 'JWT selector shown with multiple JWT methods');
+
+    assert.equal(
+      currentURL(),
+      '/settings/tokens?jwtAuthMethod=JWT-Global',
+      'Default JWT method is selected'
+    );
+    await clickTrigger('[data-test-select-jwt]');
+    assert.dom('.dropdown-options').exists('Dropdown options are shown');
+
+    await selectChoose('[data-test-select-jwt]', 'JWT-Regional');
+    console.log(currentURL());
+    assert.equal(
+      currentURL(),
+      '/settings/tokens?jwtAuthMethod=JWT-Regional',
+      'Selected JWT method is shown'
+    );
+  });
+
   test('when the ott exchange fails an error is shown', async function (assert) {
     await visit('/?ott=fake');
 
@@ -422,6 +584,142 @@ module('Acceptance | tokens', function (hooks) {
       Layout.error.message,
       'Failed to exchange the one-time token.'
     );
+  });
+
+  test('Tokens are shown on the policies index page', async function (assert) {
+    allScenarios.policiesTestCluster(server);
+    // Create an expired token
+    server.create('token', {
+      name: 'Expired Token',
+      id: 'just-expired',
+      policyIds: [server.db.policies[0].name],
+      expirationTime: new Date(new Date().getTime() - 10 * 60 * 1000), // 10 minutes ago
+    });
+
+    window.localStorage.nomadTokenSecret = server.db.tokens[0].secretId;
+    await visit('/policies');
+    assert.dom('[data-test-policy-token-count]').exists();
+    const expectedFirstPolicyTokens = server.db.tokens.filter((token) => {
+      return token.policyIds.includes(server.db.policies[0].name);
+    });
+    assert
+      .dom('[data-test-policy-total-tokens]')
+      .hasText(expectedFirstPolicyTokens.length.toString());
+    assert.dom('[data-test-policy-expired-tokens]').hasText('(1 expired)');
+    window.localStorage.nomadTokenSecret = null;
+  });
+
+  test('Tokens are shown on a policy page', async function (assert) {
+    allScenarios.policiesTestCluster(server);
+    // Create an expired token
+    server.create('token', {
+      name: 'Expired Token',
+      id: 'just-expired',
+      policyIds: [server.db.policies[0].name],
+      expirationTime: new Date(new Date().getTime() - 10 * 60 * 1000), // 10 minutes ago
+    });
+
+    window.localStorage.nomadTokenSecret = server.db.tokens[0].secretId;
+    await visit('/policies');
+
+    await click('[data-test-policy-row]:first-child');
+    assert.equal(currentURL(), `/policies/${server.db.policies[0].name}`);
+
+    const expectedFirstPolicyTokens = server.db.tokens.filter((token) => {
+      return token.policyIds.includes(server.db.policies[0].name);
+    });
+
+    assert
+      .dom('[data-test-policy-token-row]')
+      .exists(
+        { count: expectedFirstPolicyTokens.length },
+        'Expected number of tokens are shown'
+      );
+    assert.dom('[data-test-token-expiration-time]').hasText('10 minutes ago');
+
+    window.localStorage.nomadTokenSecret = null;
+  });
+
+  test('Tokens Deletion', async function (assert) {
+    allScenarios.policiesTestCluster(server);
+    const testPolicy = server.db.policies[0];
+    const existingTokens = server.db.tokens.filter((t) =>
+      t.policyIds.includes(testPolicy.name)
+    );
+    // Create an expired token
+    server.create('token', {
+      name: 'Doomed Token',
+      id: 'enjoying-my-day-here',
+      policyIds: [testPolicy.name],
+    });
+
+    window.localStorage.nomadTokenSecret = server.db.tokens[0].secretId;
+    await visit('/policies');
+
+    await click('[data-test-policy-row]:first-child');
+    assert.equal(currentURL(), `/policies/${testPolicy.name}`);
+    assert
+      .dom('[data-test-policy-token-row]')
+      .exists(
+        { count: existingTokens.length + 1 },
+        'Expected number of tokens are shown'
+      );
+
+    const doomedTokenRow = [...findAll('[data-test-policy-token-row]')].find(
+      (a) => a.textContent.includes('Doomed Token')
+    );
+
+    assert.dom(doomedTokenRow).exists();
+
+    await click(doomedTokenRow.querySelector('button'));
+    assert
+      .dom(doomedTokenRow.querySelector('[data-test-confirm-button]'))
+      .exists();
+    await click(doomedTokenRow.querySelector('[data-test-confirm-button]'));
+    assert.dom('.flash-message.alert-success').exists();
+    assert
+      .dom('[data-test-policy-token-row]')
+      .exists(
+        { count: existingTokens.length },
+        'One fewer token after deletion'
+      );
+    await percySnapshot(assert);
+    window.localStorage.nomadTokenSecret = null;
+  });
+
+  test('Test Token Creation', async function (assert) {
+    allScenarios.policiesTestCluster(server);
+    const testPolicy = server.db.policies[0];
+    const existingTokens = server.db.tokens.filter((t) =>
+      t.policyIds.includes(testPolicy.name)
+    );
+
+    window.localStorage.nomadTokenSecret = server.db.tokens[0].secretId;
+    await visit('/policies');
+
+    await click('[data-test-policy-row]:first-child');
+    assert.equal(currentURL(), `/policies/${testPolicy.name}`);
+
+    assert
+      .dom('[data-test-policy-token-row]')
+      .exists(
+        { count: existingTokens.length },
+        'Expected number of tokens are shown'
+      );
+
+    await click('[data-test-create-test-token]');
+    assert.dom('.flash-message.alert-success').exists();
+    assert
+      .dom('[data-test-policy-token-row]')
+      .exists(
+        { count: existingTokens.length + 1 },
+        'One more token after test token creation'
+      );
+    assert
+      .dom('[data-test-policy-token-row]:last-child [data-test-token-name]')
+      .hasText(`Example Token for ${testPolicy.name}`);
+    await percySnapshot(assert);
+    window.localStorage.nomadTokenSecret = null;
   });
 
   function getHeader({ requestHeaders }, name) {

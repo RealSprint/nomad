@@ -1,10 +1,12 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package executor
 
 import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,9 +23,8 @@ import (
 	"github.com/hashicorp/nomad/client/allocdir"
 	"github.com/hashicorp/nomad/client/lib/fifo"
 	"github.com/hashicorp/nomad/client/lib/resources"
-	"github.com/hashicorp/nomad/client/stats"
 	cstructs "github.com/hashicorp/nomad/client/structs"
-	shelpers "github.com/hashicorp/nomad/helper/stats"
+	"github.com/hashicorp/nomad/helper/stats"
 	"github.com/hashicorp/nomad/plugins/drivers"
 	"github.com/syndtr/gocapability/capability"
 )
@@ -179,14 +180,14 @@ func (nopCloser) Close() error { return nil }
 // Stdout returns a writer for the configured file descriptor
 func (c *ExecCommand) Stdout() (io.WriteCloser, error) {
 	if c.stdout == nil {
-		if c.StdoutPath != "" {
+		if c.StdoutPath != "" && c.StdoutPath != os.DevNull {
 			f, err := fifo.OpenWriter(c.StdoutPath)
 			if err != nil {
 				return nil, fmt.Errorf("failed to create stdout: %v", err)
 			}
 			c.stdout = f
 		} else {
-			c.stdout = nopCloser{ioutil.Discard}
+			c.stdout = nopCloser{io.Discard}
 		}
 	}
 	return c.stdout, nil
@@ -195,14 +196,14 @@ func (c *ExecCommand) Stdout() (io.WriteCloser, error) {
 // Stderr returns a writer for the configured file descriptor
 func (c *ExecCommand) Stderr() (io.WriteCloser, error) {
 	if c.stderr == nil {
-		if c.StderrPath != "" {
+		if c.StderrPath != "" && c.StderrPath != os.DevNull {
 			f, err := fifo.OpenWriter(c.StderrPath)
 			if err != nil {
 				return nil, fmt.Errorf("failed to create stderr: %v", err)
 			}
 			c.stderr = f
 		} else {
-			c.stderr = nopCloser{ioutil.Discard}
+			c.stderr = nopCloser{io.Discard}
 		}
 	}
 	return c.stderr, nil
@@ -257,11 +258,9 @@ type UniversalExecutor struct {
 }
 
 // NewExecutor returns an Executor
-func NewExecutor(logger hclog.Logger) Executor {
+func NewExecutor(logger hclog.Logger, cpuTotalTicks uint64) Executor {
 	logger = logger.Named("executor")
-	if err := shelpers.Init(); err != nil {
-		logger.Error("unable to initialize stats", "error", err)
-	}
+	stats.SetCpuTotalTicks(cpuTotalTicks)
 
 	return &UniversalExecutor{
 		logger:         logger,

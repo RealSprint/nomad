@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: MPL-2.0
+ */
+
 import classic from 'ember-classic-decorator';
 import ApplicationSerializer from './application';
 
@@ -30,6 +35,14 @@ export default class VariableSerializer extends ApplicationSerializer {
       id,
       ...args
     );
+  }
+
+  normalizeDefaultJobTemplate(hash) {
+    return {
+      path: hash.id,
+      isDefaultJobTemplate: true,
+      ...hash,
+    };
   }
 
   // Transform our KeyValues array into an Items object

@@ -1,34 +1,31 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package scheduler
 
 import (
-	"fmt"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/hashicorp/nomad/ci"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	"github.com/hashicorp/nomad/helper/pointer"
 	"github.com/hashicorp/nomad/helper/testlog"
 	"github.com/hashicorp/nomad/helper/uuid"
 	"github.com/hashicorp/nomad/nomad/mock"
 	"github.com/hashicorp/nomad/nomad/state"
 	"github.com/hashicorp/nomad/nomad/structs"
+	"github.com/shoenig/test/must"
+	"github.com/stretchr/testify/require"
 )
 
-func TestMaterializeTaskGroups(t *testing.T) {
-	ci.Parallel(t)
-
-	job := mock.Job()
-	index := materializeTaskGroups(job)
-	require.Equal(t, 10, len(index))
-
-	for i := 0; i < 10; i++ {
-		name := fmt.Sprintf("my-job.web[%d]", i)
-		require.Contains(t, index, name)
-		require.Equal(t, job.TaskGroups[0], index[name])
+func BenchmarkTasksUpdated(b *testing.B) {
+	jobA := mock.BigBenchmarkJob()
+	jobB := jobA.Copy()
+	for n := 0; n < b.N; n++ {
+		if c := tasksUpdated(jobA, jobB, jobA.TaskGroups[0].Name); c.modified {
+			b.Errorf("tasks should be the same")
+		}
 	}
 }
 
@@ -38,518 +35,7 @@ func newNode(name string) *structs.Node {
 	return n
 }
 
-func TestDiffSystemAllocsForNode_Sysbatch_terminal(t *testing.T) {
-	ci.Parallel(t)
-
-	// For a sysbatch job, the scheduler should not re-place an allocation
-	// that has become terminal, unless the job has been updated.
-
-	job := mock.SystemBatchJob()
-	required := materializeTaskGroups(job)
-
-	eligible := map[string]*structs.Node{
-		"node1": newNode("node1"),
-	}
-
-	var live []*structs.Allocation // empty
-
-	tainted := map[string]*structs.Node(nil)
-
-	t.Run("current job", func(t *testing.T) {
-		terminal := structs.TerminalByNodeByName{
-			"node1": map[string]*structs.Allocation{
-				"my-sysbatch.pinger[0]": {
-					ID:           uuid.Generate(),
-					NodeID:       "node1",
-					Name:         "my-sysbatch.pinger[0]",
-					Job:          job,
-					ClientStatus: structs.AllocClientStatusComplete,
-				},
-			},
-		}
-
-		diff := diffSystemAllocsForNode(job, "node1", eligible, nil, tainted, required, live, terminal, true)
-		require.Empty(t, diff.place)
-		require.Empty(t, diff.update)
-		require.Empty(t, diff.stop)
-		require.Empty(t, diff.migrate)
-		require.Empty(t, diff.lost)
-		require.True(t, len(diff.ignore) == 1 && diff.ignore[0].Alloc == terminal["node1"]["my-sysbatch.pinger[0]"])
-	})
-
-	t.Run("outdated job", func(t *testing.T) {
-		previousJob := job.Copy()
-		previousJob.JobModifyIndex -= 1
-		terminal := structs.TerminalByNodeByName{
-			"node1": map[string]*structs.Allocation{
-				"my-sysbatch.pinger[0]": {
-					ID:     uuid.Generate(),
-					NodeID: "node1",
-					Name:   "my-sysbatch.pinger[0]",
-					Job:    previousJob,
-				},
-			},
-		}
-
-		expAlloc := terminal["node1"]["my-sysbatch.pinger[0]"]
-		expAlloc.NodeID = "node1"
-
-		diff := diffSystemAllocsForNode(job, "node1", eligible, nil, tainted, required, live, terminal, true)
-		require.Empty(t, diff.place)
-		require.Len(t, diff.update, 1)
-		require.Empty(t, diff.stop)
-		require.Empty(t, diff.migrate)
-		require.Empty(t, diff.lost)
-		require.Empty(t, diff.ignore)
-	})
-}
-
-func TestDiffSystemAllocsForNode(t *testing.T) {
-	ci.Parallel(t)
-
-	job := mock.Job()
-	required := materializeTaskGroups(job)
-
-	// The "old" job has a previous modify index
-	oldJob := new(structs.Job)
-	*oldJob = *job
-	oldJob.JobModifyIndex -= 1
-
-	eligibleNode := mock.Node()
-	eligibleNode.ID = "zip"
-
-	drainNode := mock.DrainNode()
-
-	deadNode := mock.Node()
-	deadNode.Status = structs.NodeStatusDown
-
-	tainted := map[string]*structs.Node{
-		"dead":      deadNode,
-		"drainNode": drainNode,
-	}
-
-	eligible := map[string]*structs.Node{
-		eligibleNode.ID: eligibleNode,
-	}
-
-	allocs := []*structs.Allocation{
-		// Update the 1st
-		{
-			ID:     uuid.Generate(),
-			NodeID: "zip",
-			Name:   "my-job.web[0]",
-			Job:    oldJob,
-		},
-
-		// Ignore the 2rd
-		{
-			ID:     uuid.Generate(),
-			NodeID: "zip",
-			Name:   "my-job.web[1]",
-			Job:    job,
-		},
-
-		// Evict 11th
-		{
-			ID:     uuid.Generate(),
-			NodeID: "zip",
-			Name:   "my-job.web[10]",
-			Job:    oldJob,
-		},
-
-		// Migrate the 3rd
-		{
-			ID:     uuid.Generate(),
-			NodeID: "drainNode",
-			Name:   "my-job.web[2]",
-			Job:    oldJob,
-			DesiredTransition: structs.DesiredTransition{
-				Migrate: pointer.Of(true),
-			},
-		},
-		// Mark the 4th lost
-		{
-			ID:     uuid.Generate(),
-			NodeID: "dead",
-			Name:   "my-job.web[3]",
-			Job:    oldJob,
-		},
-	}
-
-	// Have three terminal allocs
-	terminal := structs.TerminalByNodeByName{
-		"zip": map[string]*structs.Allocation{
-			"my-job.web[4]": {
-				ID:     uuid.Generate(),
-				NodeID: "zip",
-				Name:   "my-job.web[4]",
-				Job:    job,
-			},
-			"my-job.web[5]": {
-				ID:     uuid.Generate(),
-				NodeID: "zip",
-				Name:   "my-job.web[5]",
-				Job:    job,
-			},
-			"my-job.web[6]": {
-				ID:     uuid.Generate(),
-				NodeID: "zip",
-				Name:   "my-job.web[6]",
-				Job:    job,
-			},
-		},
-	}
-
-	diff := diffSystemAllocsForNode(job, "zip", eligible, nil, tainted, required, allocs, terminal, true)
-
-	// We should update the first alloc
-	require.Len(t, diff.update, 1)
-	require.Equal(t, allocs[0], diff.update[0].Alloc)
-
-	// We should ignore the second alloc
-	require.Len(t, diff.ignore, 1)
-	require.Equal(t, allocs[1], diff.ignore[0].Alloc)
-
-	// We should stop the 3rd alloc
-	require.Len(t, diff.stop, 1)
-	require.Equal(t, allocs[2], diff.stop[0].Alloc)
-
-	// We should migrate the 4rd alloc
-	require.Len(t, diff.migrate, 1)
-	require.Equal(t, allocs[3], diff.migrate[0].Alloc)
-
-	// We should mark the 5th alloc as lost
-	require.Len(t, diff.lost, 1)
-	require.Equal(t, allocs[4], diff.lost[0].Alloc)
-
-	// We should place 6
-	require.Len(t, diff.place, 6)
-
-	// Ensure that the allocations which are replacements of terminal allocs are
-	// annotated.
-	for _, m := range terminal {
-		for _, alloc := range m {
-			for _, tuple := range diff.place {
-				if alloc.Name == tuple.Name {
-					require.Equal(t, alloc, tuple.Alloc)
-				}
-			}
-		}
-	}
-}
-
-// Test the desired diff for an updated system job running on a
-// ineligible node
-func TestDiffSystemAllocsForNode_ExistingAllocIneligibleNode(t *testing.T) {
-	ci.Parallel(t)
-
-	job := mock.Job()
-	job.TaskGroups[0].Count = 1
-	required := materializeTaskGroups(job)
-
-	// The "old" job has a previous modify index
-	oldJob := new(structs.Job)
-	*oldJob = *job
-	oldJob.JobModifyIndex -= 1
-
-	eligibleNode := mock.Node()
-	ineligibleNode := mock.Node()
-	ineligibleNode.SchedulingEligibility = structs.NodeSchedulingIneligible
-
-	tainted := map[string]*structs.Node{}
-
-	eligible := map[string]*structs.Node{
-		eligibleNode.ID: eligibleNode,
-	}
-
-	allocs := []*structs.Allocation{
-		// Update the TG alloc running on eligible node
-		{
-			ID:     uuid.Generate(),
-			NodeID: eligibleNode.ID,
-			Name:   "my-job.web[0]",
-			Job:    oldJob,
-		},
-
-		// Ignore the TG alloc running on ineligible node
-		{
-			ID:     uuid.Generate(),
-			NodeID: ineligibleNode.ID,
-			Name:   "my-job.web[0]",
-			Job:    job,
-		},
-	}
-
-	// No terminal allocs
-	terminal := make(structs.TerminalByNodeByName)
-
-	diff := diffSystemAllocsForNode(job, eligibleNode.ID, eligible, nil, tainted, required, allocs, terminal, true)
-
-	require.Len(t, diff.place, 0)
-	require.Len(t, diff.update, 1)
-	require.Len(t, diff.migrate, 0)
-	require.Len(t, diff.stop, 0)
-	require.Len(t, diff.ignore, 1)
-	require.Len(t, diff.lost, 0)
-}
-
-func TestDiffSystemAllocsForNode_DisconnectedNode(t *testing.T) {
-	ci.Parallel(t)
-
-	// Create job.
-	job := mock.SystemJob()
-	job.TaskGroups[0].MaxClientDisconnect = pointer.Of(time.Hour)
-
-	// Create nodes.
-	readyNode := mock.Node()
-	readyNode.Status = structs.NodeStatusReady
-
-	disconnectedNode := mock.Node()
-	disconnectedNode.Status = structs.NodeStatusDisconnected
-
-	eligibleNodes := map[string]*structs.Node{
-		readyNode.ID: readyNode,
-	}
-
-	taintedNodes := map[string]*structs.Node{
-		disconnectedNode.ID: disconnectedNode,
-	}
-
-	// Create allocs.
-	required := materializeTaskGroups(job)
-	terminal := make(structs.TerminalByNodeByName)
-
-	type diffResultCount struct {
-		place, update, migrate, stop, ignore, lost, disconnecting, reconnecting int
-	}
-
-	testCases := []struct {
-		name    string
-		node    *structs.Node
-		allocFn func(*structs.Allocation)
-		expect  diffResultCount
-	}{
-		{
-			name: "alloc in disconnected client is marked as unknown",
-			node: disconnectedNode,
-			allocFn: func(alloc *structs.Allocation) {
-				alloc.ClientStatus = structs.AllocClientStatusRunning
-			},
-			expect: diffResultCount{
-				disconnecting: 1,
-			},
-		},
-		{
-			name: "disconnected alloc reconnects",
-			node: readyNode,
-			allocFn: func(alloc *structs.Allocation) {
-				alloc.ClientStatus = structs.AllocClientStatusRunning
-
-				alloc.AllocStates = []*structs.AllocState{{
-					Field: structs.AllocStateFieldClientStatus,
-					Value: structs.AllocClientStatusUnknown,
-					Time:  time.Now().Add(-time.Minute),
-				}}
-			},
-			expect: diffResultCount{
-				reconnecting: 1,
-			},
-		},
-		{
-			name: "alloc not reconnecting after it reconnects",
-			node: readyNode,
-			allocFn: func(alloc *structs.Allocation) {
-				alloc.ClientStatus = structs.AllocClientStatusRunning
-
-				alloc.AllocStates = []*structs.AllocState{
-					{
-						Field: structs.AllocStateFieldClientStatus,
-						Value: structs.AllocClientStatusUnknown,
-						Time:  time.Now().Add(-time.Minute),
-					},
-					{
-						Field: structs.AllocStateFieldClientStatus,
-						Value: structs.AllocClientStatusRunning,
-						Time:  time.Now(),
-					},
-				}
-			},
-			expect: diffResultCount{
-				ignore: 1,
-			},
-		},
-		{
-			name: "disconnected alloc is lost after it expires",
-			node: disconnectedNode,
-			allocFn: func(alloc *structs.Allocation) {
-				alloc.ClientStatus = structs.AllocClientStatusUnknown
-
-				alloc.AllocStates = []*structs.AllocState{{
-					Field: structs.AllocStateFieldClientStatus,
-					Value: structs.AllocClientStatusUnknown,
-					Time:  time.Now().Add(-10 * time.Hour),
-				}}
-			},
-			expect: diffResultCount{
-				lost: 1,
-			},
-		},
-		{
-			name: "disconnected allocs are ignored",
-			node: disconnectedNode,
-			allocFn: func(alloc *structs.Allocation) {
-				alloc.ClientStatus = structs.AllocClientStatusUnknown
-
-				alloc.AllocStates = []*structs.AllocState{{
-					Field: structs.AllocStateFieldClientStatus,
-					Value: structs.AllocClientStatusUnknown,
-					Time:  time.Now(),
-				}}
-			},
-			expect: diffResultCount{
-				ignore: 1,
-			},
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			alloc := mock.AllocForNode(tc.node)
-			alloc.JobID = job.ID
-			alloc.Job = job
-			alloc.Name = fmt.Sprintf("%s.%s[0]", job.Name, job.TaskGroups[0].Name)
-
-			if tc.allocFn != nil {
-				tc.allocFn(alloc)
-			}
-
-			got := diffSystemAllocsForNode(
-				job, tc.node.ID, eligibleNodes, nil, taintedNodes,
-				required, []*structs.Allocation{alloc}, terminal, true,
-			)
-
-			assert.Len(t, got.place, tc.expect.place, "place")
-			assert.Len(t, got.update, tc.expect.update, "update")
-			assert.Len(t, got.migrate, tc.expect.migrate, "migrate")
-			assert.Len(t, got.stop, tc.expect.stop, "stop")
-			assert.Len(t, got.ignore, tc.expect.ignore, "ignore")
-			assert.Len(t, got.lost, tc.expect.lost, "lost")
-			assert.Len(t, got.disconnecting, tc.expect.disconnecting, "disconnecting")
-			assert.Len(t, got.reconnecting, tc.expect.reconnecting, "reconnecting")
-		})
-	}
-}
-
-func TestDiffSystemAllocs(t *testing.T) {
-	ci.Parallel(t)
-
-	job := mock.SystemJob()
-
-	drainNode := mock.DrainNode()
-
-	deadNode := mock.Node()
-	deadNode.Status = structs.NodeStatusDown
-
-	tainted := map[string]*structs.Node{
-		deadNode.ID:  deadNode,
-		drainNode.ID: drainNode,
-	}
-
-	// Create three alive nodes.
-	nodes := []*structs.Node{{ID: "foo"}, {ID: "bar"}, {ID: "baz"},
-		{ID: "pipe"}, {ID: drainNode.ID}, {ID: deadNode.ID}}
-
-	// The "old" job has a previous modify index
-	oldJob := new(structs.Job)
-	*oldJob = *job
-	oldJob.JobModifyIndex -= 1
-
-	allocs := []*structs.Allocation{
-		// Update allocation on baz
-		{
-			ID:     uuid.Generate(),
-			NodeID: "baz",
-			Name:   "my-job.web[0]",
-			Job:    oldJob,
-		},
-
-		// Ignore allocation on bar
-		{
-			ID:     uuid.Generate(),
-			NodeID: "bar",
-			Name:   "my-job.web[0]",
-			Job:    job,
-		},
-
-		// Stop allocation on draining node.
-		{
-			ID:     uuid.Generate(),
-			NodeID: drainNode.ID,
-			Name:   "my-job.web[0]",
-			Job:    oldJob,
-			DesiredTransition: structs.DesiredTransition{
-				Migrate: pointer.Of(true),
-			},
-		},
-		// Mark as lost on a dead node
-		{
-			ID:     uuid.Generate(),
-			NodeID: deadNode.ID,
-			Name:   "my-job.web[0]",
-			Job:    oldJob,
-		},
-	}
-
-	// Have three (?) terminal allocs
-	terminal := structs.TerminalByNodeByName{
-		"pipe": map[string]*structs.Allocation{
-			"my-job.web[0]": {
-				ID:     uuid.Generate(),
-				NodeID: "pipe",
-				Name:   "my-job.web[0]",
-				Job:    job,
-			},
-		},
-	}
-
-	diff := diffSystemAllocs(job, nodes, nil, tainted, allocs, terminal, true)
-
-	// We should update the first alloc
-	require.Len(t, diff.update, 1)
-	require.Equal(t, allocs[0], diff.update[0].Alloc)
-
-	// We should ignore the second alloc
-	require.Len(t, diff.ignore, 1)
-	require.Equal(t, allocs[1], diff.ignore[0].Alloc)
-
-	// We should stop the third alloc
-	require.Empty(t, diff.stop)
-
-	// There should be no migrates.
-	require.Len(t, diff.migrate, 1)
-	require.Equal(t, allocs[2], diff.migrate[0].Alloc)
-
-	// We should mark the 5th alloc as lost
-	require.Len(t, diff.lost, 1)
-	require.Equal(t, allocs[3], diff.lost[0].Alloc)
-
-	// We should place 2
-	require.Len(t, diff.place, 2)
-
-	// Ensure that the allocations which are replacements of terminal allocs are
-	// annotated.
-	for _, m := range terminal {
-		for _, alloc := range m {
-			for _, tuple := range diff.place {
-				if alloc.NodeID == tuple.Alloc.NodeID {
-					require.Equal(t, alloc, tuple.Alloc)
-				}
-			}
-		}
-	}
-}
-
-func TestReadyNodesInDCs(t *testing.T) {
+func TestReadyNodesInDCsAndPool(t *testing.T) {
 	ci.Parallel(t)
 
 	state := state.TestStateStore(t)
@@ -560,25 +46,85 @@ func TestReadyNodesInDCs(t *testing.T) {
 	node3.Datacenter = "dc2"
 	node3.Status = structs.NodeStatusDown
 	node4 := mock.DrainNode()
+	node5 := mock.Node()
+	node5.Datacenter = "not-this-dc"
+	node6 := mock.Node()
+	node6.Datacenter = "dc1"
+	node6.NodePool = "other"
+	node7 := mock.Node()
+	node7.Datacenter = "dc2"
+	node7.NodePool = "other"
+	node8 := mock.Node()
+	node8.Datacenter = "dc1"
+	node8.NodePool = "other"
+	node8.Status = structs.NodeStatusDown
+	node9 := mock.DrainNode()
+	node9.Datacenter = "dc2"
+	node9.NodePool = "other"
 
-	require.NoError(t, state.UpsertNode(structs.MsgTypeTestSetup, 1000, node1))
-	require.NoError(t, state.UpsertNode(structs.MsgTypeTestSetup, 1001, node2))
-	require.NoError(t, state.UpsertNode(structs.MsgTypeTestSetup, 1002, node3))
-	require.NoError(t, state.UpsertNode(structs.MsgTypeTestSetup, 1003, node4))
+	must.NoError(t, state.UpsertNode(structs.MsgTypeTestSetup, 1000, node1)) // dc1 ready
+	must.NoError(t, state.UpsertNode(structs.MsgTypeTestSetup, 1001, node2)) // dc2 ready
+	must.NoError(t, state.UpsertNode(structs.MsgTypeTestSetup, 1002, node3)) // dc2 not ready
+	must.NoError(t, state.UpsertNode(structs.MsgTypeTestSetup, 1003, node4)) // dc2 not ready
+	must.NoError(t, state.UpsertNode(structs.MsgTypeTestSetup, 1004, node5)) // ready never match
+	must.NoError(t, state.UpsertNode(structs.MsgTypeTestSetup, 1005, node6)) // dc1 other pool
+	must.NoError(t, state.UpsertNode(structs.MsgTypeTestSetup, 1006, node7)) // dc2 other pool
+	must.NoError(t, state.UpsertNode(structs.MsgTypeTestSetup, 1007, node8)) // dc1 other not ready
+	must.NoError(t, state.UpsertNode(structs.MsgTypeTestSetup, 1008, node9)) // dc2 other not ready
 
-	nodes, notReady, dc, err := readyNodesInDCs(state, []string{"dc1", "dc2"})
-	require.NoError(t, err)
-	require.Equal(t, 2, len(nodes))
-	require.NotEqual(t, node3.ID, nodes[0].ID)
-	require.NotEqual(t, node3.ID, nodes[1].ID)
+	testCases := []struct {
+		name           string
+		datacenters    []string
+		pool           string
+		expectReady    []*structs.Node
+		expectNotReady map[string]struct{}
+		expectIndex    map[string]int
+	}{
+		{
+			name:        "no wildcards in all pool",
+			datacenters: []string{"dc1", "dc2"},
+			pool:        structs.NodePoolAll,
+			expectReady: []*structs.Node{node1, node2, node6, node7},
+			expectNotReady: map[string]struct{}{
+				node3.ID: {}, node4.ID: {}, node8.ID: {}, node9.ID: {}},
+			expectIndex: map[string]int{"dc1": 2, "dc2": 2},
+		},
+		{
+			name:        "with wildcard in all pool",
+			datacenters: []string{"dc*"},
+			pool:        structs.NodePoolAll,
+			expectReady: []*structs.Node{node1, node2, node6, node7},
+			expectNotReady: map[string]struct{}{
+				node3.ID: {}, node4.ID: {}, node8.ID: {}, node9.ID: {}},
+			expectIndex: map[string]int{"dc1": 2, "dc2": 2},
+		},
+		{
+			name:           "no wildcards in default pool",
+			datacenters:    []string{"dc1", "dc2"},
+			pool:           structs.NodePoolDefault,
+			expectReady:    []*structs.Node{node1, node2},
+			expectNotReady: map[string]struct{}{node3.ID: {}, node4.ID: {}},
+			expectIndex:    map[string]int{"dc1": 1, "dc2": 1},
+		},
+		{
+			name:           "with wildcard in default pool",
+			datacenters:    []string{"dc*"},
+			pool:           structs.NodePoolDefault,
+			expectReady:    []*structs.Node{node1, node2},
+			expectNotReady: map[string]struct{}{node3.ID: {}, node4.ID: {}},
+			expectIndex:    map[string]int{"dc1": 1, "dc2": 1},
+		},
+	}
 
-	require.Contains(t, dc, "dc1")
-	require.Equal(t, 1, dc["dc1"])
-	require.Contains(t, dc, "dc2")
-	require.Equal(t, 1, dc["dc2"])
-
-	require.Contains(t, notReady, node3.ID)
-	require.Contains(t, notReady, node4.ID)
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ready, notReady, dcIndex, err := readyNodesInDCsAndPool(state, tc.datacenters, tc.pool)
+			must.NoError(t, err)
+			must.SliceContainsAll(t, tc.expectReady, ready, must.Sprint("expected ready to match"))
+			must.Eq(t, tc.expectNotReady, notReady, must.Sprint("expected not-ready to match"))
+			must.Eq(t, tc.expectIndex, dcIndex, must.Sprint("expected datacenter counts to match"))
+		})
+	}
 }
 
 func TestRetryMax(t *testing.T) {
@@ -693,8 +239,7 @@ func TestTaskUpdatedAffinity(t *testing.T) {
 	j1 := mock.Job()
 	j2 := mock.Job()
 	name := j1.TaskGroups[0].Name
-
-	require.False(t, tasksUpdated(j1, j2, name))
+	must.False(t, tasksUpdated(j1, j2, name).modified)
 
 	// TaskGroup Affinity
 	j2.TaskGroups[0].Affinities = []*structs.Affinity{
@@ -705,7 +250,7 @@ func TestTaskUpdatedAffinity(t *testing.T) {
 			Weight:  100,
 		},
 	}
-	require.True(t, tasksUpdated(j1, j2, name))
+	must.True(t, tasksUpdated(j1, j2, name).modified)
 
 	// TaskGroup Task Affinity
 	j3 := mock.Job()
@@ -717,8 +262,7 @@ func TestTaskUpdatedAffinity(t *testing.T) {
 			Weight:  100,
 		},
 	}
-
-	require.True(t, tasksUpdated(j1, j3, name))
+	must.True(t, tasksUpdated(j1, j3, name).modified)
 
 	j4 := mock.Job()
 	j4.TaskGroups[0].Tasks[0].Affinities = []*structs.Affinity{
@@ -729,8 +273,7 @@ func TestTaskUpdatedAffinity(t *testing.T) {
 			Weight:  100,
 		},
 	}
-
-	require.True(t, tasksUpdated(j1, j4, name))
+	must.True(t, tasksUpdated(j1, j4, name).modified)
 
 	// check different level of same affinity
 	j5 := mock.Job()
@@ -753,8 +296,7 @@ func TestTaskUpdatedAffinity(t *testing.T) {
 			Weight:  100,
 		},
 	}
-
-	require.False(t, tasksUpdated(j5, j6, name))
+	must.False(t, tasksUpdated(j5, j6, name).modified)
 }
 
 func TestTaskUpdatedSpread(t *testing.T) {
@@ -764,7 +306,7 @@ func TestTaskUpdatedSpread(t *testing.T) {
 	j2 := mock.Job()
 	name := j1.TaskGroups[0].Name
 
-	require.False(t, tasksUpdated(j1, j2, name))
+	must.False(t, tasksUpdated(j1, j2, name).modified)
 
 	// TaskGroup Spread
 	j2.TaskGroups[0].Spreads = []*structs.Spread{
@@ -783,7 +325,7 @@ func TestTaskUpdatedSpread(t *testing.T) {
 			},
 		},
 	}
-	require.True(t, tasksUpdated(j1, j2, name))
+	must.True(t, tasksUpdated(j1, j2, name).modified)
 
 	// check different level of same constraint
 	j5 := mock.Job()
@@ -822,31 +364,32 @@ func TestTaskUpdatedSpread(t *testing.T) {
 		},
 	}
 
-	require.False(t, tasksUpdated(j5, j6, name))
+	must.False(t, tasksUpdated(j5, j6, name).modified)
 }
+
 func TestTasksUpdated(t *testing.T) {
 	ci.Parallel(t)
 
 	j1 := mock.Job()
 	j2 := mock.Job()
 	name := j1.TaskGroups[0].Name
-	require.False(t, tasksUpdated(j1, j2, name))
+	must.False(t, tasksUpdated(j1, j2, name).modified)
 
 	j2.TaskGroups[0].Tasks[0].Config["command"] = "/bin/other"
-	require.True(t, tasksUpdated(j1, j2, name))
+	must.True(t, tasksUpdated(j1, j2, name).modified)
 
 	j3 := mock.Job()
 	j3.TaskGroups[0].Tasks[0].Name = "foo"
-	require.True(t, tasksUpdated(j1, j3, name))
+	must.True(t, tasksUpdated(j1, j3, name).modified)
 
 	j4 := mock.Job()
 	j4.TaskGroups[0].Tasks[0].Driver = "foo"
-	require.True(t, tasksUpdated(j1, j4, name))
+	must.True(t, tasksUpdated(j1, j4, name).modified)
 
 	j5 := mock.Job()
 	j5.TaskGroups[0].Tasks = append(j5.TaskGroups[0].Tasks,
 		j5.TaskGroups[0].Tasks[0])
-	require.True(t, tasksUpdated(j1, j5, name))
+	must.True(t, tasksUpdated(j1, j5, name).modified)
 
 	j6 := mock.Job()
 	j6.TaskGroups[0].Networks[0].DynamicPorts = []structs.Port{
@@ -854,15 +397,15 @@ func TestTasksUpdated(t *testing.T) {
 		{Label: "https", Value: 0},
 		{Label: "admin", Value: 0},
 	}
-	require.True(t, tasksUpdated(j1, j6, name))
+	must.True(t, tasksUpdated(j1, j6, name).modified)
 
 	j7 := mock.Job()
 	j7.TaskGroups[0].Tasks[0].Env["NEW_ENV"] = "NEW_VALUE"
-	require.True(t, tasksUpdated(j1, j7, name))
+	must.True(t, tasksUpdated(j1, j7, name).modified)
 
 	j8 := mock.Job()
 	j8.TaskGroups[0].Tasks[0].User = "foo"
-	require.True(t, tasksUpdated(j1, j8, name))
+	must.True(t, tasksUpdated(j1, j8, name).modified)
 
 	j9 := mock.Job()
 	j9.TaskGroups[0].Tasks[0].Artifacts = []*structs.TaskArtifact{
@@ -870,15 +413,15 @@ func TestTasksUpdated(t *testing.T) {
 			GetterSource: "http://foo.com/bar",
 		},
 	}
-	require.True(t, tasksUpdated(j1, j9, name))
+	must.True(t, tasksUpdated(j1, j9, name).modified)
 
 	j10 := mock.Job()
 	j10.TaskGroups[0].Tasks[0].Meta["baz"] = "boom"
-	require.True(t, tasksUpdated(j1, j10, name))
+	must.True(t, tasksUpdated(j1, j10, name).modified)
 
 	j11 := mock.Job()
 	j11.TaskGroups[0].Tasks[0].Resources.CPU = 1337
-	require.True(t, tasksUpdated(j1, j11, name))
+	must.True(t, tasksUpdated(j1, j11, name).modified)
 
 	j11d1 := mock.Job()
 	j11d1.TaskGroups[0].Tasks[0].Resources.Devices = structs.ResourceDevices{
@@ -894,38 +437,38 @@ func TestTasksUpdated(t *testing.T) {
 			Count: 2,
 		},
 	}
-	require.True(t, tasksUpdated(j11d1, j11d2, name))
+	must.True(t, tasksUpdated(j11d1, j11d2, name).modified)
 
 	j13 := mock.Job()
 	j13.TaskGroups[0].Networks[0].DynamicPorts[0].Label = "foobar"
-	require.True(t, tasksUpdated(j1, j13, name))
+	must.True(t, tasksUpdated(j1, j13, name).modified)
 
 	j14 := mock.Job()
 	j14.TaskGroups[0].Networks[0].ReservedPorts = []structs.Port{{Label: "foo", Value: 1312}}
-	require.True(t, tasksUpdated(j1, j14, name))
+	must.True(t, tasksUpdated(j1, j14, name).modified)
 
 	j15 := mock.Job()
 	j15.TaskGroups[0].Tasks[0].Vault = &structs.Vault{Policies: []string{"foo"}}
-	require.True(t, tasksUpdated(j1, j15, name))
+	must.True(t, tasksUpdated(j1, j15, name).modified)
 
 	j16 := mock.Job()
 	j16.TaskGroups[0].EphemeralDisk.Sticky = true
-	require.True(t, tasksUpdated(j1, j16, name))
+	must.True(t, tasksUpdated(j1, j16, name).modified)
 
 	// Change group meta
 	j17 := mock.Job()
 	j17.TaskGroups[0].Meta["j17_test"] = "roll_baby_roll"
-	require.True(t, tasksUpdated(j1, j17, name))
+	must.True(t, tasksUpdated(j1, j17, name).modified)
 
 	// Change job meta
 	j18 := mock.Job()
 	j18.Meta["j18_test"] = "roll_baby_roll"
-	require.True(t, tasksUpdated(j1, j18, name))
+	must.True(t, tasksUpdated(j1, j18, name).modified)
 
 	// Change network mode
 	j19 := mock.Job()
 	j19.TaskGroups[0].Networks[0].Mode = "bridge"
-	require.True(t, tasksUpdated(j1, j19, name))
+	must.True(t, tasksUpdated(j1, j19, name).modified)
 
 	// Change cores resource
 	j20 := mock.Job()
@@ -934,7 +477,7 @@ func TestTasksUpdated(t *testing.T) {
 	j21 := mock.Job()
 	j21.TaskGroups[0].Tasks[0].Resources.CPU = 0
 	j21.TaskGroups[0].Tasks[0].Resources.Cores = 4
-	require.True(t, tasksUpdated(j20, j21, name))
+	must.True(t, tasksUpdated(j20, j21, name).modified)
 
 	// Compare identical Template wait configs
 	j22 := mock.Job()
@@ -955,10 +498,10 @@ func TestTasksUpdated(t *testing.T) {
 			},
 		},
 	}
-	require.False(t, tasksUpdated(j22, j23, name))
+	must.False(t, tasksUpdated(j22, j23, name).modified)
 	// Compare changed Template wait configs
 	j23.TaskGroups[0].Tasks[0].Templates[0].Wait.Max = pointer.Of(10 * time.Second)
-	require.True(t, tasksUpdated(j22, j23, name))
+	must.True(t, tasksUpdated(j22, j23, name).modified)
 
 	// Add a volume
 	j24 := mock.Job()
@@ -969,12 +512,12 @@ func TestTasksUpdated(t *testing.T) {
 			Type:   "csi",
 			Source: "test-volume[0]",
 		}}
-	require.True(t, tasksUpdated(j24, j25, name))
+	must.True(t, tasksUpdated(j24, j25, name).modified)
 
 	// Alter a volume
 	j26 := j25.Copy()
 	j26.TaskGroups[0].Volumes["myvolume"].ReadOnly = true
-	require.True(t, tasksUpdated(j25, j26, name))
+	must.True(t, tasksUpdated(j25, j26, name).modified)
 
 	// Alter a CSI plugin
 	j27 := mock.Job()
@@ -984,7 +527,7 @@ func TestTasksUpdated(t *testing.T) {
 	}
 	j28 := j27.Copy()
 	j28.TaskGroups[0].Tasks[0].CSIPluginConfig.Type = "monolith"
-	require.True(t, tasksUpdated(j27, j28, name))
+	must.True(t, tasksUpdated(j27, j28, name).modified)
 
 	// Compare identical Template ErrMissingKey
 	j29 := mock.Job()
@@ -999,11 +542,11 @@ func TestTasksUpdated(t *testing.T) {
 			ErrMissingKey: false,
 		},
 	}
-	require.False(t, tasksUpdated(j29, j30, name))
+	must.False(t, tasksUpdated(j29, j30, name).modified)
 
 	// Compare changed Template ErrMissingKey
 	j30.TaskGroups[0].Tasks[0].Templates[0].ErrMissingKey = true
-	require.True(t, tasksUpdated(j29, j30, name))
+	must.True(t, tasksUpdated(j29, j30, name).modified)
 }
 
 func TestTasksUpdated_connectServiceUpdated(t *testing.T) {
@@ -1033,8 +576,8 @@ func TestTasksUpdated_connectServiceUpdated(t *testing.T) {
 		}, {
 			Name: "service2",
 		}}
-		updated := connectServiceUpdated(servicesA, servicesB)
-		require.False(t, updated)
+		updated := connectServiceUpdated(servicesA, servicesB).modified
+		must.False(t, updated)
 	})
 
 	t.Run("service connect tags updated", func(t *testing.T) {
@@ -1049,8 +592,8 @@ func TestTasksUpdated_connectServiceUpdated(t *testing.T) {
 				},
 			},
 		}}
-		updated := connectServiceUpdated(servicesA, servicesB)
-		require.False(t, updated)
+		updated := connectServiceUpdated(servicesA, servicesB).modified
+		must.False(t, updated)
 	})
 
 	t.Run("service connect port updated", func(t *testing.T) {
@@ -1066,8 +609,8 @@ func TestTasksUpdated_connectServiceUpdated(t *testing.T) {
 				},
 			},
 		}}
-		updated := connectServiceUpdated(servicesA, servicesB)
-		require.True(t, updated)
+		updated := connectServiceUpdated(servicesA, servicesB).modified
+		must.True(t, updated)
 	})
 
 	t.Run("service port label updated", func(t *testing.T) {
@@ -1082,13 +625,14 @@ func TestTasksUpdated_connectServiceUpdated(t *testing.T) {
 				},
 			},
 		}}
-		updated := connectServiceUpdated(servicesA, servicesB)
-		require.True(t, updated)
+		updated := connectServiceUpdated(servicesA, servicesB).modified
+		must.True(t, updated)
 	})
 }
 
 func TestNetworkUpdated(t *testing.T) {
 	ci.Parallel(t)
+
 	cases := []struct {
 		name    string
 		a       []*structs.NetworkResource
@@ -1145,49 +689,11 @@ func TestNetworkUpdated(t *testing.T) {
 		},
 	}
 
-	for i := range cases {
-		c := cases[i]
-		t.Run(c.name, func(tc *testing.T) {
-			tc.Parallel()
-			require.Equal(tc, c.updated, networkUpdated(c.a, c.b), "unexpected network updated result")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must.Eq(t, tc.updated, networkUpdated(tc.a, tc.b).modified)
 		})
 	}
-}
-
-func TestEvictAndPlace_LimitLessThanAllocs(t *testing.T) {
-	ci.Parallel(t)
-
-	_, ctx := testContext(t)
-	allocs := []allocTuple{
-		{Alloc: &structs.Allocation{ID: uuid.Generate()}},
-		{Alloc: &structs.Allocation{ID: uuid.Generate()}},
-		{Alloc: &structs.Allocation{ID: uuid.Generate()}},
-		{Alloc: &structs.Allocation{ID: uuid.Generate()}},
-	}
-	diff := &diffResult{}
-
-	limit := 2
-	require.True(t, evictAndPlace(ctx, diff, allocs, "", &limit), "evictAndReplace() should have returned true")
-	require.Zero(t, limit, "evictAndReplace() should decremented limit; got %v; want 0", limit)
-	require.Equal(t, 2, len(diff.place), "evictAndReplace() didn't insert into diffResult properly: %v", diff.place)
-}
-
-func TestEvictAndPlace_LimitEqualToAllocs(t *testing.T) {
-	ci.Parallel(t)
-
-	_, ctx := testContext(t)
-	allocs := []allocTuple{
-		{Alloc: &structs.Allocation{ID: uuid.Generate()}},
-		{Alloc: &structs.Allocation{ID: uuid.Generate()}},
-		{Alloc: &structs.Allocation{ID: uuid.Generate()}},
-		{Alloc: &structs.Allocation{ID: uuid.Generate()}},
-	}
-	diff := &diffResult{}
-
-	limit := 4
-	require.False(t, evictAndPlace(ctx, diff, allocs, "", &limit), "evictAndReplace() should have returned false")
-	require.Zero(t, limit, "evictAndReplace() should decremented limit; got %v; want 0", limit)
-	require.Equal(t, 4, len(diff.place), "evictAndReplace() didn't insert into diffResult properly: %v", diff.place)
 }
 
 func TestSetStatus(t *testing.T) {
@@ -1512,22 +1018,176 @@ func TestInplaceUpdate_Success(t *testing.T) {
 	}
 }
 
-func TestEvictAndPlace_LimitGreaterThanAllocs(t *testing.T) {
+func TestInplaceUpdate_WildcardDatacenters(t *testing.T) {
 	ci.Parallel(t)
 
-	_, ctx := testContext(t)
-	allocs := []allocTuple{
-		{Alloc: &structs.Allocation{ID: uuid.Generate()}},
-		{Alloc: &structs.Allocation{ID: uuid.Generate()}},
-		{Alloc: &structs.Allocation{ID: uuid.Generate()}},
-		{Alloc: &structs.Allocation{ID: uuid.Generate()}},
-	}
-	diff := &diffResult{}
+	store, ctx := testContext(t)
+	eval := mock.Eval()
+	job := mock.Job()
+	job.Datacenters = []string{"*"}
 
-	limit := 6
-	require.False(t, evictAndPlace(ctx, diff, allocs, "", &limit))
-	require.Equal(t, 2, limit, "evictAndReplace() should decremented limit")
-	require.Equal(t, 4, len(diff.place), "evictAndReplace() didn't insert into diffResult properly: %v", diff.place)
+	node := mock.Node()
+	must.NoError(t, store.UpsertNode(structs.MsgTypeTestSetup, 900, node))
+
+	// Register an alloc
+	alloc := mock.AllocForNode(node)
+	alloc.Job = job
+	alloc.JobID = job.ID
+	must.NoError(t, store.UpsertJobSummary(1000, mock.JobSummary(alloc.JobID)))
+	must.NoError(t, store.UpsertAllocs(structs.MsgTypeTestSetup, 1001, []*structs.Allocation{alloc}))
+
+	updates := []allocTuple{{Alloc: alloc, TaskGroup: job.TaskGroups[0]}}
+	stack := NewGenericStack(false, ctx)
+	unplaced, inplace := inplaceUpdate(ctx, eval, job, stack, updates)
+
+	must.Len(t, 1, inplace,
+		must.Sprintf("inplaceUpdate should have an inplace update"))
+	must.Len(t, 0, unplaced)
+	must.MapNotEmpty(t, ctx.plan.NodeAllocation,
+		must.Sprintf("inplaceUpdate should have an inplace update"))
+}
+
+func TestInplaceUpdate_NodePools(t *testing.T) {
+	ci.Parallel(t)
+
+	store, ctx := testContext(t)
+	eval := mock.Eval()
+	job := mock.Job()
+	job.Datacenters = []string{"*"}
+
+	node1 := mock.Node()
+	must.NoError(t, store.UpsertNode(structs.MsgTypeTestSetup, 1000, node1))
+
+	node2 := mock.Node()
+	node2.NodePool = "other"
+	must.NoError(t, store.UpsertNode(structs.MsgTypeTestSetup, 1001, node2))
+
+	// Register an alloc
+	alloc1 := mock.AllocForNode(node1)
+	alloc1.Job = job
+	alloc1.JobID = job.ID
+	must.NoError(t, store.UpsertJobSummary(1002, mock.JobSummary(alloc1.JobID)))
+
+	alloc2 := mock.AllocForNode(node2)
+	alloc2.Job = job
+	alloc2.JobID = job.ID
+	must.NoError(t, store.UpsertJobSummary(1003, mock.JobSummary(alloc2.JobID)))
+
+	t.Logf("alloc1=%s alloc2=%s", alloc1.ID, alloc2.ID)
+
+	must.NoError(t, store.UpsertAllocs(structs.MsgTypeTestSetup, 1004,
+		[]*structs.Allocation{alloc1, alloc2}))
+
+	updates := []allocTuple{
+		{Alloc: alloc1, TaskGroup: job.TaskGroups[0]},
+		{Alloc: alloc2, TaskGroup: job.TaskGroups[0]},
+	}
+	stack := NewGenericStack(false, ctx)
+	destructive, inplace := inplaceUpdate(ctx, eval, job, stack, updates)
+
+	must.Len(t, 1, inplace, must.Sprint("should have an inplace update"))
+	must.Eq(t, alloc1.ID, inplace[0].Alloc.ID)
+	must.Len(t, 1, ctx.plan.NodeAllocation[node1.ID],
+		must.Sprint("NodeAllocation should have an inplace update for node1"))
+
+	// note that NodeUpdate with the new alloc won't be populated here yet
+	must.Len(t, 1, destructive, must.Sprint("should have a destructive update"))
+	must.Eq(t, alloc2.ID, destructive[0].Alloc.ID)
+}
+
+func TestUtil_connectUpdated(t *testing.T) {
+	ci.Parallel(t)
+
+	t.Run("both nil", func(t *testing.T) {
+		must.False(t, connectUpdated(nil, nil).modified)
+	})
+
+	t.Run("one nil", func(t *testing.T) {
+		must.True(t, connectUpdated(nil, new(structs.ConsulConnect)).modified)
+	})
+
+	t.Run("native differ", func(t *testing.T) {
+		a := &structs.ConsulConnect{Native: true}
+		b := &structs.ConsulConnect{Native: false}
+		must.True(t, connectUpdated(a, b).modified)
+	})
+
+	t.Run("gateway differ", func(t *testing.T) {
+		a := &structs.ConsulConnect{Gateway: &structs.ConsulGateway{
+			Ingress: new(structs.ConsulIngressConfigEntry),
+		}}
+		b := &structs.ConsulConnect{Gateway: &structs.ConsulGateway{
+			Terminating: new(structs.ConsulTerminatingConfigEntry),
+		}}
+		must.True(t, connectUpdated(a, b).modified)
+	})
+
+	t.Run("sidecar task differ", func(t *testing.T) {
+		a := &structs.ConsulConnect{SidecarTask: &structs.SidecarTask{
+			Driver: "exec",
+		}}
+		b := &structs.ConsulConnect{SidecarTask: &structs.SidecarTask{
+			Driver: "docker",
+		}}
+		must.True(t, connectUpdated(a, b).modified)
+	})
+
+	t.Run("sidecar service differ", func(t *testing.T) {
+		a := &structs.ConsulConnect{SidecarService: &structs.ConsulSidecarService{
+			Port: "1111",
+		}}
+		b := &structs.ConsulConnect{SidecarService: &structs.ConsulSidecarService{
+			Port: "2222",
+		}}
+		must.True(t, connectUpdated(a, b).modified)
+	})
+
+	t.Run("same", func(t *testing.T) {
+		a := new(structs.ConsulConnect)
+		b := new(structs.ConsulConnect)
+		must.False(t, connectUpdated(a, b).modified)
+	})
+}
+
+func TestUtil_connectSidecarServiceUpdated(t *testing.T) {
+	ci.Parallel(t)
+
+	t.Run("both nil", func(t *testing.T) {
+		require.False(t, connectSidecarServiceUpdated(nil, nil).modified)
+	})
+
+	t.Run("one nil", func(t *testing.T) {
+		require.True(t, connectSidecarServiceUpdated(nil, new(structs.ConsulSidecarService)).modified)
+	})
+
+	t.Run("ports differ", func(t *testing.T) {
+		a := &structs.ConsulSidecarService{Port: "1111"}
+		b := &structs.ConsulSidecarService{Port: "2222"}
+		require.True(t, connectSidecarServiceUpdated(a, b).modified)
+	})
+
+	t.Run("same", func(t *testing.T) {
+		a := &structs.ConsulSidecarService{Port: "1111"}
+		b := &structs.ConsulSidecarService{Port: "1111"}
+		require.False(t, connectSidecarServiceUpdated(a, b).modified)
+	})
+}
+
+func TestTasksUpdated_Identity(t *testing.T) {
+	ci.Parallel(t)
+
+	j1 := mock.Job()
+	name := j1.TaskGroups[0].Name
+	j1.TaskGroups[0].Tasks[0].Identity = nil
+
+	j2 := j1.Copy()
+
+	must.False(t, tasksUpdated(j1, j2, name).modified)
+
+	// Set identity on j1 and assert update
+	j1.TaskGroups[0].Tasks[0].Identity = &structs.WorkloadIdentity{}
+
+	must.True(t, tasksUpdated(j1, j2, name).modified)
 }
 
 func TestTaskGroupConstraints(t *testing.T) {
@@ -1746,82 +1406,4 @@ func TestUtil_UpdateNonTerminalAllocsToLost(t *testing.T) {
 	}
 	expected = []string{}
 	require.True(t, reflect.DeepEqual(allocsLost, expected), "actual: %v, expected: %v", allocsLost, expected)
-}
-
-func TestUtil_connectUpdated(t *testing.T) {
-	ci.Parallel(t)
-
-	t.Run("both nil", func(t *testing.T) {
-		require.False(t, connectUpdated(nil, nil))
-	})
-
-	t.Run("one nil", func(t *testing.T) {
-		require.True(t, connectUpdated(nil, new(structs.ConsulConnect)))
-	})
-
-	t.Run("native differ", func(t *testing.T) {
-		a := &structs.ConsulConnect{Native: true}
-		b := &structs.ConsulConnect{Native: false}
-		require.True(t, connectUpdated(a, b))
-	})
-
-	t.Run("gateway differ", func(t *testing.T) {
-		a := &structs.ConsulConnect{Gateway: &structs.ConsulGateway{
-			Ingress: new(structs.ConsulIngressConfigEntry),
-		}}
-		b := &structs.ConsulConnect{Gateway: &structs.ConsulGateway{
-			Terminating: new(structs.ConsulTerminatingConfigEntry),
-		}}
-		require.True(t, connectUpdated(a, b))
-	})
-
-	t.Run("sidecar task differ", func(t *testing.T) {
-		a := &structs.ConsulConnect{SidecarTask: &structs.SidecarTask{
-			Driver: "exec",
-		}}
-		b := &structs.ConsulConnect{SidecarTask: &structs.SidecarTask{
-			Driver: "docker",
-		}}
-		require.True(t, connectUpdated(a, b))
-	})
-
-	t.Run("sidecar service differ", func(t *testing.T) {
-		a := &structs.ConsulConnect{SidecarService: &structs.ConsulSidecarService{
-			Port: "1111",
-		}}
-		b := &structs.ConsulConnect{SidecarService: &structs.ConsulSidecarService{
-			Port: "2222",
-		}}
-		require.True(t, connectUpdated(a, b))
-	})
-
-	t.Run("same", func(t *testing.T) {
-		a := new(structs.ConsulConnect)
-		b := new(structs.ConsulConnect)
-		require.False(t, connectUpdated(a, b))
-	})
-}
-
-func TestUtil_connectSidecarServiceUpdated(t *testing.T) {
-	ci.Parallel(t)
-
-	t.Run("both nil", func(t *testing.T) {
-		require.False(t, connectSidecarServiceUpdated(nil, nil))
-	})
-
-	t.Run("one nil", func(t *testing.T) {
-		require.True(t, connectSidecarServiceUpdated(nil, new(structs.ConsulSidecarService)))
-	})
-
-	t.Run("ports differ", func(t *testing.T) {
-		a := &structs.ConsulSidecarService{Port: "1111"}
-		b := &structs.ConsulSidecarService{Port: "2222"}
-		require.True(t, connectSidecarServiceUpdated(a, b))
-	})
-
-	t.Run("same", func(t *testing.T) {
-		a := &structs.ConsulSidecarService{Port: "1111"}
-		b := &structs.ConsulSidecarService{Port: "1111"}
-		require.False(t, connectSidecarServiceUpdated(a, b))
-	})
 }

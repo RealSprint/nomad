@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package config
 
 import (
@@ -54,6 +57,7 @@ func TestConsulConfig_Merge(t *testing.T) {
 		Auth:                 "1",
 		EnableSSL:            &no,
 		VerifySSL:            &no,
+		GRPCCAFile:           "1",
 		CAFile:               "1",
 		CertFile:             "1",
 		KeyFile:              "1",
@@ -81,6 +85,7 @@ func TestConsulConfig_Merge(t *testing.T) {
 		Auth:                 "2",
 		EnableSSL:            &yes,
 		VerifySSL:            &yes,
+		GRPCCAFile:           "2",
 		CAFile:               "2",
 		CertFile:             "2",
 		KeyFile:              "2",
@@ -108,6 +113,7 @@ func TestConsulConfig_Merge(t *testing.T) {
 		Auth:                 "2",
 		EnableSSL:            &yes,
 		VerifySSL:            &yes,
+		GRPCCAFile:           "2",
 		CAFile:               "2",
 		CertFile:             "2",
 		KeyFile:              "2",

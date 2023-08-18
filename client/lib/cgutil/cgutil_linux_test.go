@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 //go:build linux
 
 package cgutil
@@ -126,4 +129,13 @@ func TestUtil_CopyCpuset(t *testing.T) {
 		require.NoError(t, readErr)
 		require.Equal(t, "0-1", strings.TrimSpace(value))
 	})
+}
+
+func TestUtil_MaybeDisableMemorySwappiness(t *testing.T) {
+	ci.Parallel(t)
+
+	// will return 0 on any reasonable kernel (both cgroups v1 and v2)
+	value := MaybeDisableMemorySwappiness()
+	must.NotNil(t, value)
+	must.Eq(t, 0, *value)
 }

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package structs
 
 import (
@@ -102,7 +105,32 @@ type VolumeRequest struct {
 	PerAlloc       bool
 }
 
-func (v *VolumeRequest) Validate(taskGroupCount, canaries int) error {
+func (v *VolumeRequest) Equal(o *VolumeRequest) bool {
+	if v == nil || o == nil {
+		return v == o
+	}
+	switch {
+	case v.Name != o.Name:
+		return false
+	case v.Type != o.Type:
+		return false
+	case v.Source != o.Source:
+		return false
+	case v.ReadOnly != o.ReadOnly:
+		return false
+	case v.AccessMode != o.AccessMode:
+		return false
+	case v.AttachmentMode != o.AttachmentMode:
+		return false
+	case !v.MountOptions.Equal(o.MountOptions):
+		return false
+	case v.PerAlloc != o.PerAlloc:
+		return false
+	}
+	return true
+}
+
+func (v *VolumeRequest) Validate(jobType string, taskGroupCount, canaries int) error {
 	if !(v.Type == VolumeTypeHost ||
 		v.Type == VolumeTypeCSI) {
 		return fmt.Errorf("volume has unrecognized type %s", v.Type)
@@ -116,6 +144,14 @@ func (v *VolumeRequest) Validate(taskGroupCount, canaries int) error {
 	if v.Source == "" {
 		addErr("volume has an empty source")
 	}
+	if v.PerAlloc {
+		if jobType == JobTypeSystem || jobType == JobTypeSysBatch {
+			addErr("volume cannot be per_alloc for system or sysbatch jobs")
+		}
+		if canaries > 0 {
+			addErr("volume cannot be per_alloc when canaries are in use")
+		}
+	}
 
 	switch v.Type {
 
@@ -128,9 +164,6 @@ func (v *VolumeRequest) Validate(taskGroupCount, canaries int) error {
 		}
 		if v.MountOptions != nil {
 			addErr("host volumes cannot have mount options")
-		}
-		if v.PerAlloc {
-			addErr("host volumes do not support per_alloc")
 		}
 
 	case VolumeTypeCSI:
@@ -170,11 +203,6 @@ func (v *VolumeRequest) Validate(taskGroupCount, canaries int) error {
 		case CSIVolumeAccessModeMultiNodeMultiWriter:
 			// note: we intentionally allow read-only mount of this mode
 		}
-
-		if v.PerAlloc && canaries > 0 {
-			addErr("volume cannot be per_alloc when canaries are in use")
-		}
-
 	}
 
 	return mErr.ErrorOrNil()
@@ -192,6 +220,14 @@ func (v *VolumeRequest) Copy() *VolumeRequest {
 	}
 
 	return nv
+}
+
+func (v *VolumeRequest) VolumeID(tgName string) string {
+	source := v.Source
+	if v.PerAlloc {
+		source = source + AllocSuffix(tgName)
+	}
+	return source
 }
 
 func CopyMapVolumeRequest(s map[string]*VolumeRequest) map[string]*VolumeRequest {
@@ -214,6 +250,23 @@ type VolumeMount struct {
 	Destination     string
 	ReadOnly        bool
 	PropagationMode string
+}
+
+func (v *VolumeMount) Equal(o *VolumeMount) bool {
+	if v == nil || o == nil {
+		return v == o
+	}
+	switch {
+	case v.Volume != o.Volume:
+		return false
+	case v.Destination != o.Destination:
+		return false
+	case v.ReadOnly != o.ReadOnly:
+		return false
+	case v.PropagationMode != o.PropagationMode:
+		return false
+	}
+	return true
 }
 
 func (v *VolumeMount) Copy() *VolumeMount {

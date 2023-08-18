@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package structs
 
 import (
@@ -24,7 +27,7 @@ import (
 	"strings"
 	"time"
 
-	jwt "github.com/golang-jwt/jwt/v4"
+	jwt "github.com/golang-jwt/jwt/v5"
 	"github.com/hashicorp/cronexpr"
 	"github.com/hashicorp/go-msgpack/codec"
 	"github.com/hashicorp/go-multierror"
@@ -44,14 +47,15 @@ import (
 	psstructs "github.com/hashicorp/nomad/plugins/shared/structs"
 	"github.com/miekg/dns"
 	"github.com/mitchellh/copystructure"
+	"github.com/ryanuber/go-glob"
 	"golang.org/x/crypto/blake2b"
 	"golang.org/x/exp/maps"
 	"golang.org/x/exp/slices"
 )
 
 var (
-	// validPolicyName is used to validate a policy name
-	validPolicyName = regexp.MustCompile("^[a-zA-Z0-9-]{1,128}$")
+	// ValidPolicyName is used to validate a policy name
+	ValidPolicyName = regexp.MustCompile("^[a-zA-Z0-9-]{1,128}$")
 
 	// b32 is a lowercase base32 encoding for use in URL friendly service hashes
 	b32 = base32.NewEncoding(strings.ToLower("abcdefghijklmnopqrstuvwxyz234567"))
@@ -119,6 +123,10 @@ const (
 	ACLRolesDeleteByIDRequestType                MessageType = 54
 	ACLAuthMethodsUpsertRequestType              MessageType = 55
 	ACLAuthMethodsDeleteRequestType              MessageType = 56
+	ACLBindingRulesUpsertRequestType             MessageType = 57
+	ACLBindingRulesDeleteRequestType             MessageType = 58
+	NodePoolUpsertRequestType                    MessageType = 59
+	NodePoolDeleteRequestType                    MessageType = 60
 
 	// Namespace types were moved from enterprise and therefore start at 64
 	NamespaceUpsertRequestType MessageType = 64
@@ -126,6 +134,11 @@ const (
 )
 
 const (
+	// SystemInitializationType is used for messages that initialize parts of
+	// the system, such as the state store. These messages are not included in
+	// the event stream.
+	SystemInitializationType MessageType = 127
+
 	// IgnoreUnknownTypeFlag is set along with a MessageType
 	// to indicate that the message type can be safely ignored
 	// if it is not recognized. This is for future proofing, so
@@ -188,6 +201,11 @@ const (
 	// DefaultBlockingRPCQueryTime is the amount of time we block waiting for a change
 	// if no time is specified. Previously we would wait the MaxBlockingRPCQueryTime.
 	DefaultBlockingRPCQueryTime = 300 * time.Second
+
+	// RateMetric constants are used as labels in RPC rate metrics
+	RateMetricRead  = "read"
+	RateMetricList  = "list"
+	RateMetricWrite = "write"
 )
 
 var (
@@ -273,7 +291,8 @@ type QueryOptions struct {
 	// If set, used as prefix for resource list searches
 	Prefix string
 
-	// AuthToken is secret portion of the ACL token used for the request
+	// AuthToken is secret portion of the ACL token or workload identity used for
+	// the request.
 	AuthToken string
 
 	// Filter specifies the go-bexpr filter expression to be used for
@@ -339,6 +358,10 @@ func (q QueryOptions) IsRead() bool {
 
 func (q QueryOptions) AllowStaleRead() bool {
 	return q.AllowStale
+}
+
+func (q *QueryOptions) GetAuthToken() string {
+	return q.AuthToken
 }
 
 func (q *QueryOptions) SetIdentity(identity *AuthenticatedIdentity) {
@@ -447,6 +470,10 @@ func (w WriteRequest) AllowStaleRead() bool {
 	return false
 }
 
+func (w *WriteRequest) GetAuthToken() string {
+	return w.AuthToken
+}
+
 func (w *WriteRequest) SetIdentity(identity *AuthenticatedIdentity) {
 	w.identity = identity
 }
@@ -459,11 +486,19 @@ func (w WriteRequest) GetIdentity() *AuthenticatedIdentity {
 // return a wrapper around the various elements that can be resolved as an
 // identity. RPC handlers will use the relevant fields for performing
 // authorization.
+//
+// Keeping these fields independent rather than merging them into an ephemeral
+// ACLToken makes the original of the credential clear to RPC handlers, who may
+// have different behavior for internal vs external origins.
 type AuthenticatedIdentity struct {
+	// ACLToken authenticated. Claims will be nil if this is set.
 	ACLToken *ACLToken
-	Claims   *IdentityClaims
+
+	// Claims authenticated by workload identity. ACLToken will be nil if this is
+	// set.
+	Claims *IdentityClaims
+
 	ClientID string
-	ServerID string
 	TLSName  string
 	RemoteIP net.IP
 }
@@ -480,6 +515,38 @@ func (ai *AuthenticatedIdentity) GetClaims() *IdentityClaims {
 		return nil
 	}
 	return ai.Claims
+}
+
+func (ai *AuthenticatedIdentity) String() string {
+	if ai == nil {
+		return "unauthenticated"
+	}
+	if ai.ACLToken != nil {
+		return "token:" + ai.ACLToken.AccessorID
+	}
+	if ai.Claims != nil {
+		return "alloc:" + ai.Claims.AllocationID
+	}
+	if ai.ClientID != "" {
+		return "client:" + ai.ClientID
+	}
+	return ai.TLSName + ":" + ai.RemoteIP.String()
+}
+
+func (ai *AuthenticatedIdentity) IsExpired(now time.Time) bool {
+	// Only ACLTokens currently support expiry so return unexpired if there isn't
+	// one.
+	if ai.ACLToken == nil {
+		return false
+	}
+
+	return ai.ACLToken.IsExpired(now)
+}
+
+type RequestWithIdentity interface {
+	GetAuthToken() string
+	SetIdentity(identity *AuthenticatedIdentity)
+	GetIdentity() *AuthenticatedIdentity
 }
 
 // QueryMeta allows a query response to include potentially
@@ -514,6 +581,11 @@ type WriteMeta struct {
 type NodeRegisterRequest struct {
 	Node      *Node
 	NodeEvent *NodeEvent
+
+	// CreateNodePool is used to indicate that the node's node pool should be
+	// create along with the node registration if it doesn't exist.
+	CreateNodePool bool
+
 	WriteRequest
 }
 
@@ -634,6 +706,9 @@ type NodeSpecificRequest struct {
 // JobRegisterRequest is used for Job.Register endpoint
 // to register a job as being a schedulable entity.
 type JobRegisterRequest struct {
+	Submission *JobSubmission
+
+	// Job is the parsed job, no matter what form the input was in.
 	Job *Job
 
 	// If EnforceIndex is set then the job will only be registered if the passed
@@ -730,6 +805,23 @@ type JobEvaluateRequest struct {
 // EvalOptions is used to encapsulate options when forcing a job evaluation
 type EvalOptions struct {
 	ForceReschedule bool
+}
+
+// JobSubmissionRequest is used to query a JobSubmission object associated with a
+// job at a specific version.
+type JobSubmissionRequest struct {
+	JobID   string
+	Version uint64
+
+	QueryOptions
+}
+
+// JobSubmissionResponse contains a JobSubmission object, which may be nil
+// if no submission data is available.
+type JobSubmissionResponse struct {
+	Submission *JobSubmission
+
+	QueryMeta
 }
 
 // JobSpecificRequest is used when we just need to specify a target job
@@ -2027,6 +2119,9 @@ type Node struct {
 	// together for the purpose of determining scheduling pressure.
 	NodeClass string
 
+	// NodePool is the node pool the node belongs to.
+	NodePool string
+
 	// ComputedClass is a unique id that identifies nodes with a common set of
 	// attributes and capabilities.
 	ComputedClass string
@@ -2070,6 +2165,14 @@ type Node struct {
 	// LastDrain contains metadata about the most recent drain operation
 	LastDrain *DrainMetadata
 
+	// LastMissedHeartbeatIndex stores the Raft index when the node last missed
+	// a heartbeat. It resets to zero once the node is marked as ready again.
+	LastMissedHeartbeatIndex uint64
+
+	// LastAllocUpdateIndex stores the Raft index of the last time the node
+	// updatedd its allocations status.
+	LastAllocUpdateIndex uint64
+
 	// Raft Indexes
 	CreateIndex uint64
 	ModifyIndex uint64
@@ -2106,6 +2209,10 @@ func (n *Node) Ready() bool {
 func (n *Node) Canonicalize() {
 	if n == nil {
 		return
+	}
+
+	if n.NodePool == "" {
+		n.NodePool = NodePoolDefault
 	}
 
 	// Ensure SchedulingEligibility is correctly set whenever draining so the plan applier and other scheduling logic
@@ -2162,6 +2269,17 @@ func (n *Node) Copy() *Node {
 	nn.HostNetworks = helper.DeepCopyMap(n.HostNetworks)
 	nn.LastDrain = nn.LastDrain.Copy()
 	return &nn
+}
+
+// UnresponsiveStatus returns true if the node is a status where it is not
+// communicating with the server.
+func (n *Node) UnresponsiveStatus() bool {
+	switch n.Status {
+	case NodeStatusDown, NodeStatusDisconnected:
+		return true
+	default:
+		return false
+	}
 }
 
 // TerminalStatus returns if the current status is terminal and
@@ -2235,6 +2353,31 @@ func (n *Node) ComparableResources() *ComparableResources {
 	}
 }
 
+func (n *Node) IsInAnyDC(datacenters []string) bool {
+	for _, dc := range datacenters {
+		if glob.Glob(dc, n.Datacenter) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsInPool returns true if the node is in the pool argument or if the pool
+// argument is the special "all" pool
+func (n *Node) IsInPool(pool string) bool {
+	return pool == NodePoolAll || n.NodePool == pool
+}
+
+// HasEvent returns true if the node has the given message in its events list.
+func (n *Node) HasEvent(msg string) bool {
+	for _, ev := range n.Events {
+		if ev.Message == msg {
+			return true
+		}
+	}
+	return false
+}
+
 // Stub returns a summarized version of the node
 func (n *Node) Stub(fields *NodeStubFields) *NodeListStub {
 
@@ -2246,6 +2389,7 @@ func (n *Node) Stub(fields *NodeStubFields) *NodeListStub {
 		Datacenter:            n.Datacenter,
 		Name:                  n.Name,
 		NodeClass:             n.NodeClass,
+		NodePool:              n.NodePool,
 		Version:               n.Attributes["nomad.version"],
 		Drain:                 n.DrainStrategy != nil,
 		SchedulingEligibility: n.SchedulingEligibility,
@@ -2283,6 +2427,7 @@ type NodeListStub struct {
 	Attributes            map[string]string `json:",omitempty"`
 	Datacenter            string
 	Name                  string
+	NodePool              string
 	NodeClass             string
 	Version               string
 	Drain                 bool
@@ -2618,7 +2763,39 @@ type AllocatedPortMapping struct {
 	HostIP string
 }
 
+func (m *AllocatedPortMapping) Copy() *AllocatedPortMapping {
+	return &AllocatedPortMapping{
+		Label:  m.Label,
+		Value:  m.Value,
+		To:     m.To,
+		HostIP: m.HostIP,
+	}
+}
+
+func (m *AllocatedPortMapping) Equal(o *AllocatedPortMapping) bool {
+	if m == nil || o == nil {
+		return m == o
+	}
+	switch {
+	case m.Label != o.Label:
+		return false
+	case m.Value != o.Value:
+		return false
+	case m.To != o.To:
+		return false
+	case m.HostIP != o.HostIP:
+		return false
+	}
+	return true
+}
+
 type AllocatedPorts []AllocatedPortMapping
+
+func (p AllocatedPorts) Equal(o AllocatedPorts) bool {
+	return slices.EqualFunc(p, o, func(a, b AllocatedPortMapping) bool {
+		return a.Equal(&b)
+	})
+}
 
 func (p AllocatedPorts) Get(label string) (AllocatedPortMapping, bool) {
 	for _, port := range p {
@@ -2631,7 +2808,7 @@ func (p AllocatedPorts) Get(label string) (AllocatedPortMapping, bool) {
 }
 
 type Port struct {
-	// Label is the key for HCL port stanzas: port "foo" {}
+	// Label is the key for HCL port blocks: port "foo" {}
 	Label string
 
 	// Value is the static or dynamic port value. For dynamic ports this
@@ -2655,18 +2832,39 @@ type DNSConfig struct {
 	Options  []string
 }
 
+func (d *DNSConfig) Equal(o *DNSConfig) bool {
+	if d == nil || o == nil {
+		return d == o
+	}
+
+	switch {
+	case !slices.Equal(d.Servers, o.Servers):
+		return false
+	case !slices.Equal(d.Searches, o.Searches):
+		return false
+	case !slices.Equal(d.Options, o.Options):
+		return false
+	}
+
+	return true
+}
+
 func (d *DNSConfig) Copy() *DNSConfig {
 	if d == nil {
 		return nil
 	}
-	newD := new(DNSConfig)
-	newD.Servers = make([]string, len(d.Servers))
-	copy(newD.Servers, d.Servers)
-	newD.Searches = make([]string, len(d.Searches))
-	copy(newD.Searches, d.Searches)
-	newD.Options = make([]string, len(d.Options))
-	copy(newD.Options, d.Options)
-	return newD
+	return &DNSConfig{
+		Servers:  slices.Clone(d.Servers),
+		Searches: slices.Clone(d.Searches),
+		Options:  slices.Clone(d.Options),
+	}
+}
+
+func (d *DNSConfig) IsZero() bool {
+	if d == nil {
+		return true
+	}
+	return len(d.Options) == 0 || len(d.Searches) == 0 || len(d.Servers) == 0
 }
 
 // NetworkResource is used to represent available network
@@ -2943,7 +3141,7 @@ type NodeResources struct {
 
 	// Networks is the node's bridge network and default interface. It is
 	// only used when scheduling jobs with a deprecated
-	// task.resources.network stanza.
+	// task.resources.network block.
 	Networks Networks
 
 	// MinDynamicPort and MaxDynamicPort represent the inclusive port range
@@ -4092,17 +4290,19 @@ const (
 	// JobMinPriority is the minimum allowed priority
 	JobMinPriority = 1
 
-	// JobDefaultPriority is the default priority if not
-	// not specified.
+	// JobDefaultPriority is the default priority if not specified.
 	JobDefaultPriority = 50
 
-	// JobMaxPriority is the maximum allowed priority
-	JobMaxPriority = 100
+	// JobDefaultMaxPriority is the default maximum allowed priority
+	JobDefaultMaxPriority = 100
+
+	// JobMaxPriority is the maximum allowed configuration value for maximum job priority
+	JobMaxPriority = math.MaxInt16 - 1
 
 	// CoreJobPriority should be higher than any user
 	// specified job so that it gets priority. This is important
 	// for the system to remain healthy.
-	CoreJobPriority = JobMaxPriority * 2
+	CoreJobPriority = math.MaxInt16
 
 	// JobTrackedVersions is the number of historic job versions that are
 	// kept.
@@ -4112,6 +4312,67 @@ const (
 	// kept for a single task group.
 	JobTrackedScalingEvents = 20
 )
+
+// A JobSubmission contains the original job specification, along with the Variables
+// submitted with the job.
+type JobSubmission struct {
+	// Source contains the original job definition (may be hc1, hcl2, or json)
+	Source string
+
+	// Format indicates whether the original job was hcl1, hcl2, or json.
+	Format string
+
+	// VariableFlags contain the CLI "-var" flag arguments as submitted with the
+	// job (hcl2 only).
+	VariableFlags map[string]string
+
+	// Variables contains the opaque variable blob that was input from the
+	// webUI (hcl2 only).
+	Variables string
+
+	// Namespace is managed internally, do not set.
+	//
+	// The namespace the associated job belongs to.
+	Namespace string
+
+	// JobID is managed internally, not set.
+	//
+	// The job.ID field.
+	JobID string
+
+	// Version is managed internally, not set.
+	//
+	// The version of the Job this submission is associated with.
+	Version uint64
+
+	// JobModifyIndex is managed internally, not set.
+	//
+	// The raft index the Job this submission is associated with.
+	JobModifyIndex uint64
+}
+
+// Hash returns a value representative of the intended uniquness of a
+// JobSubmission in the job_submission state store table (namespace, jobID, version).
+func (js *JobSubmission) Hash() string {
+	return fmt.Sprintf("%s \x00 %s \x00 %d", js.Namespace, js.JobID, js.Version)
+}
+
+// Copy creates a deep copy of js.
+func (js *JobSubmission) Copy() *JobSubmission {
+	if js == nil {
+		return nil
+	}
+	return &JobSubmission{
+		Source:         js.Source,
+		Format:         js.Format,
+		VariableFlags:  maps.Clone(js.VariableFlags),
+		Variables:      js.Variables,
+		Namespace:      js.Namespace,
+		JobID:          js.JobID,
+		Version:        js.Version,
+		JobModifyIndex: js.JobModifyIndex,
+	}
+}
 
 // Job is the scope of a scheduling request to Nomad. It is the largest
 // scoped object, and is a named collection of task groups. Each task group
@@ -4159,6 +4420,14 @@ type Job struct {
 	// Datacenters contains all the datacenters this job is allowed to span
 	Datacenters []string
 
+	// NodePool specifies the node pool this job is allowed to run on.
+	//
+	// An empty value is allowed during job registration, in which case the
+	// namespace default node pool is used in Enterprise and the 'default' node
+	// pool in OSS. But a node pool must be set before the job is stored, so
+	// that will happen in the admission mutators.
+	NodePool string
+
 	// Constraints can be specified at a job level and apply to
 	// all the task groups and tasks.
 	Constraints []*Constraint
@@ -4176,7 +4445,7 @@ type Job struct {
 	TaskGroups []*TaskGroup
 
 	// See agent.ApiJobToStructJob
-	// Update provides defaults for the TaskGroup Update stanzas
+	// Update provides defaults for the TaskGroup Update blocks
 	Update UpdateStrategy
 
 	Multiregion *Multiregion
@@ -4235,7 +4504,7 @@ type Job struct {
 	// of a deployment and can be manually set via APIs. This field is updated
 	// when the status of a corresponding deployment transitions to Failed
 	// or Successful. This field is not meaningful for jobs that don't have an
-	// update stanza.
+	// update block.
 	Stable bool
 
 	// Version is a monotonically increasing version number that is incremented
@@ -4303,6 +4572,10 @@ func (j *Job) Canonicalize() {
 	// Ensure the job is in a namespace.
 	if j.Namespace == "" {
 		j.Namespace = DefaultNamespace
+	}
+
+	if len(j.Datacenters) == 0 {
+		j.Datacenters = []string{"*"}
 	}
 
 	for _, tg := range j.TaskGroups {
@@ -4378,9 +4651,6 @@ func (j *Job) Validate() error {
 	default:
 		mErr.Errors = append(mErr.Errors, fmt.Errorf("Invalid job type: %q", j.Type))
 	}
-	if j.Priority < JobMinPriority || j.Priority > JobMaxPriority {
-		mErr.Errors = append(mErr.Errors, fmt.Errorf("Job priority must be between [%d, %d]", JobMinPriority, JobMaxPriority))
-	}
 	if len(j.Datacenters) == 0 && !j.IsMultiregion() {
 		mErr.Errors = append(mErr.Errors, errors.New("Missing job datacenters"))
 	} else {
@@ -4390,6 +4660,7 @@ func (j *Job) Validate() error {
 			}
 		}
 	}
+
 	if len(j.TaskGroups) == 0 {
 		mErr.Errors = append(mErr.Errors, errors.New("Missing job task groups"))
 	}
@@ -4401,7 +4672,7 @@ func (j *Job) Validate() error {
 	}
 	if j.Type == JobTypeSystem {
 		if j.Affinities != nil {
-			mErr.Errors = append(mErr.Errors, fmt.Errorf("System jobs may not have an affinity stanza"))
+			mErr.Errors = append(mErr.Errors, fmt.Errorf("System jobs may not have an affinity block"))
 		}
 	} else {
 		for idx, affinity := range j.Affinities {
@@ -4414,7 +4685,7 @@ func (j *Job) Validate() error {
 
 	if j.Type == JobTypeSystem {
 		if j.Spreads != nil {
-			mErr.Errors = append(mErr.Errors, fmt.Errorf("System jobs may not have a spread stanza"))
+			mErr.Errors = append(mErr.Errors, fmt.Errorf("System jobs may not have a spread block"))
 		}
 	} else {
 		for idx, spread := range j.Spreads {
@@ -4600,6 +4871,7 @@ func (j *Job) Stub(summary *JobSummary, fields *JobStubFields) *JobListStub {
 		ParentID:          j.ParentID,
 		Name:              j.Name,
 		Datacenters:       j.Datacenters,
+		NodePool:          j.NodePool,
 		Multiregion:       j.Multiregion,
 		Type:              j.Type,
 		Priority:          j.Priority,
@@ -4792,6 +5064,7 @@ type JobListStub struct {
 	Name              string
 	Namespace         string `json:",omitempty"`
 	Datacenters       []string
+	NodePool          string
 	Multiregion       *Multiregion
 	Type              string
 	Priority          int
@@ -5002,6 +5275,12 @@ func (u *UpdateStrategy) IsEmpty() bool {
 		return true
 	}
 
+	// When the Job is transformed from api to struct, the Update Strategy block is
+	// copied into the existing task groups, the only things that are passed along
+	// are MaxParallel and Stagger, because they are enforced at job level.
+	// That is why checking if MaxParallel is zero is enough to know if the
+	// update block is empty.
+
 	return u.MaxParallel == 0
 }
 
@@ -5046,6 +5325,7 @@ func (m *Multiregion) Copy() *Multiregion {
 			Name:        region.Name,
 			Count:       region.Count,
 			Datacenters: []string{},
+			NodePool:    region.NodePool,
 			Meta:        map[string]string{},
 		}
 		copyRegion.Datacenters = append(copyRegion.Datacenters, region.Datacenters...)
@@ -5066,6 +5346,7 @@ type MultiregionRegion struct {
 	Name        string
 	Count       int
 	Datacenters []string
+	NodePool    string
 	Meta        map[string]string
 }
 
@@ -5083,6 +5364,10 @@ type Namespace struct {
 
 	// Capabilities is the set of capabilities allowed for this namespace
 	Capabilities *NamespaceCapabilities
+
+	// NodePoolConfiguration is the namespace configuration for handling node
+	// pools.
+	NodePoolConfiguration *NamespaceNodePoolConfiguration
 
 	// Meta is the set of metadata key/value pairs that attached to the namespace
 	Meta map[string]string
@@ -5103,6 +5388,28 @@ type NamespaceCapabilities struct {
 	DisabledTaskDrivers []string
 }
 
+// NamespaceNodePoolConfiguration stores configuration about node pools for a
+// namespace.
+type NamespaceNodePoolConfiguration struct {
+	// Default is the node pool used by jobs in this namespace that don't
+	// specify a node pool of their own.
+	Default string
+
+	// Allowed specifies the node pools that are allowed to be used by jobs in
+	// this namespace. By default, all node pools are allowed. If an empty list
+	// is provided only the namespace's default node pool is allowed. This field
+	// supports wildcard globbing through the use of `*` for multi-character
+	// matching. This field cannot be used with Denied.
+	Allowed []string
+
+	// Denied specifies the node pools that are not allowed to be used by jobs
+	// in this namespace. This field supports wildcard globbing through the use
+	// of `*` for multi-character matching. If specified, any node pool is
+	// allowed to be used, except for those that match any of these patterns.
+	// This field cannot be used with Allowed.
+	Denied []string
+}
+
 func (n *Namespace) Validate() error {
 	var mErr multierror.Error
 
@@ -5114,6 +5421,16 @@ func (n *Namespace) Validate() error {
 	if len(n.Description) > maxNamespaceDescriptionLength {
 		err := fmt.Errorf("description longer than %d", maxNamespaceDescriptionLength)
 		mErr.Errors = append(mErr.Errors, err)
+	}
+
+	err := n.NodePoolConfiguration.Validate()
+	switch e := err.(type) {
+	case *multierror.Error:
+		for _, npErr := range e.Errors {
+			mErr.Errors = append(mErr.Errors, fmt.Errorf("invalid node pool configuration: %v", npErr))
+		}
+	case error:
+		mErr.Errors = append(mErr.Errors, fmt.Errorf("invalid node pool configuration: %v", e))
 	}
 
 	return mErr.ErrorOrNil()
@@ -5137,6 +5454,15 @@ func (n *Namespace) SetHash() []byte {
 		}
 		for _, driver := range n.Capabilities.DisabledTaskDrivers {
 			_, _ = hash.Write([]byte(driver))
+		}
+	}
+	if n.NodePoolConfiguration != nil {
+		_, _ = hash.Write([]byte(n.NodePoolConfiguration.Default))
+		for _, pool := range n.NodePoolConfiguration.Allowed {
+			_, _ = hash.Write([]byte(pool))
+		}
+		for _, pool := range n.NodePoolConfiguration.Denied {
+			_, _ = hash.Write([]byte(pool))
 		}
 	}
 
@@ -5170,6 +5496,12 @@ func (n *Namespace) Copy() *Namespace {
 		c.EnabledTaskDrivers = slices.Clone(n.Capabilities.EnabledTaskDrivers)
 		c.DisabledTaskDrivers = slices.Clone(n.Capabilities.DisabledTaskDrivers)
 		nc.Capabilities = c
+	}
+	if n.NodePoolConfiguration != nil {
+		np := new(NamespaceNodePoolConfiguration)
+		*np = *n.NodePoolConfiguration
+		np.Allowed = slices.Clone(n.NodePoolConfiguration.Allowed)
+		np.Denied = slices.Clone(n.NodePoolConfiguration.Denied)
 	}
 	if n.Meta != nil {
 		nc.Meta = make(map[string]string, len(n.Meta))
@@ -6353,6 +6685,10 @@ func (tg *TaskGroup) Canonicalize(job *Job) {
 		tg.EphemeralDisk = DefaultEphemeralDisk()
 	}
 
+	if job.Type == JobTypeSystem && tg.Count == 0 {
+		tg.Count = 1
+	}
+
 	if tg.Scaling != nil {
 		tg.Scaling.Canonicalize()
 	}
@@ -6373,15 +6709,27 @@ func (tg *TaskGroup) Canonicalize(job *Job) {
 // NomadServices returns a list of all group and task - level services in tg that
 // are making use of the nomad service provider.
 func (tg *TaskGroup) NomadServices() []*Service {
+	return tg.filterServices(func(s *Service) bool {
+		return s.Provider == ServiceProviderNomad
+	})
+}
+
+func (tg *TaskGroup) ConsulServices() []*Service {
+	return tg.filterServices(func(s *Service) bool {
+		return s.Provider == ServiceProviderConsul || s.Provider == ""
+	})
+}
+
+func (tg *TaskGroup) filterServices(f func(s *Service) bool) []*Service {
 	var services []*Service
 	for _, service := range tg.Services {
-		if service.Provider == ServiceProviderNomad {
+		if f(service) {
 			services = append(services, service)
 		}
 	}
 	for _, task := range tg.Tasks {
 		for _, service := range task.Services {
-			if service.Provider == ServiceProviderNomad {
+			if f(service) {
 				services = append(services, service)
 			}
 		}
@@ -6421,7 +6769,7 @@ func (tg *TaskGroup) Validate(j *Job) error {
 	}
 	if j.Type == JobTypeSystem {
 		if tg.Affinities != nil {
-			mErr.Errors = append(mErr.Errors, fmt.Errorf("System jobs may not have an affinity stanza"))
+			mErr.Errors = append(mErr.Errors, fmt.Errorf("System jobs may not have an affinity block"))
 		}
 	} else {
 		for idx, affinity := range tg.Affinities {
@@ -6442,7 +6790,7 @@ func (tg *TaskGroup) Validate(j *Job) error {
 
 	if j.Type == JobTypeSystem {
 		if tg.Spreads != nil {
-			mErr.Errors = append(mErr.Errors, fmt.Errorf("System jobs may not have a spread stanza"))
+			mErr.Errors = append(mErr.Errors, fmt.Errorf("System jobs may not have a spread block"))
 		}
 	} else {
 		for idx, spread := range tg.Spreads {
@@ -6528,7 +6876,7 @@ func (tg *TaskGroup) Validate(j *Job) error {
 		canaries = tg.Update.Canary
 	}
 	for name, volReq := range tg.Volumes {
-		if err := volReq.Validate(tg.Count, canaries); err != nil {
+		if err := volReq.Validate(j.Type, tg.Count, canaries); err != nil {
 			mErr.Errors = append(mErr.Errors, fmt.Errorf(
 				"Task group volume validation for %s failed: %v", name, err))
 		}
@@ -6560,20 +6908,7 @@ func (tg *TaskGroup) Validate(j *Job) error {
 
 	// Validate the tasks
 	for _, task := range tg.Tasks {
-		// Validate the task does not reference undefined volume mounts
-		for i, mnt := range task.VolumeMounts {
-			if mnt.Volume == "" {
-				mErr.Errors = append(mErr.Errors, fmt.Errorf("Task %s has a volume mount (%d) referencing an empty volume", task.Name, i))
-				continue
-			}
-
-			if _, ok := tg.Volumes[mnt.Volume]; !ok {
-				mErr.Errors = append(mErr.Errors, fmt.Errorf("Task %s has a volume mount (%d) referencing undefined volume %s", task.Name, i, mnt.Volume))
-				continue
-			}
-		}
-
-		if err := task.Validate(tg.EphemeralDisk, j.Type, tg.Services, tg.Networks); err != nil {
+		if err := task.Validate(j.Type, tg); err != nil {
 			outer := fmt.Errorf("Task %s validation failed: %v", task.Name, err)
 			mErr.Errors = append(mErr.Errors, outer)
 		}
@@ -6783,7 +7118,7 @@ func (tg *TaskGroup) validateServices() error {
 		mErr.Errors = append(mErr.Errors,
 			fmt.Errorf(
 				"Services are not unique: %s",
-				idDuplicateSet.String(
+				idDuplicateSet.StringFunc(
 					func(u unique) string {
 						s := u.task + "->" + u.name
 						if u.port != "" {
@@ -6997,6 +7332,7 @@ const (
 type LogConfig struct {
 	MaxFiles      int
 	MaxFileSizeMB int
+	Disabled      bool
 }
 
 func (l *LogConfig) Equal(o *LogConfig) bool {
@@ -7012,6 +7348,10 @@ func (l *LogConfig) Equal(o *LogConfig) bool {
 		return false
 	}
 
+	if l.Disabled != o.Disabled {
+		return false
+	}
+
 	return true
 }
 
@@ -7022,6 +7362,7 @@ func (l *LogConfig) Copy() *LogConfig {
 	return &LogConfig{
 		MaxFiles:      l.MaxFiles,
 		MaxFileSizeMB: l.MaxFileSizeMB,
+		Disabled:      l.Disabled,
 	}
 }
 
@@ -7030,18 +7371,28 @@ func DefaultLogConfig() *LogConfig {
 	return &LogConfig{
 		MaxFiles:      10,
 		MaxFileSizeMB: 10,
+		Disabled:      false,
 	}
 }
 
-// Validate returns an error if the log config specified are less than
-// the minimum allowed.
-func (l *LogConfig) Validate() error {
+// Validate returns an error if the log config specified are less than the
+// minimum allowed. Note that because we have a non-zero default MaxFiles and
+// MaxFileSizeMB, we can't validate that they're unset if Disabled=true
+func (l *LogConfig) Validate(disk *EphemeralDisk) error {
 	var mErr multierror.Error
 	if l.MaxFiles < 1 {
 		mErr.Errors = append(mErr.Errors, fmt.Errorf("minimum number of files is 1; got %d", l.MaxFiles))
 	}
 	if l.MaxFileSizeMB < 1 {
 		mErr.Errors = append(mErr.Errors, fmt.Errorf("minimum file size is 1MB; got %d", l.MaxFileSizeMB))
+	}
+	if disk != nil {
+		logUsage := (l.MaxFiles * l.MaxFileSizeMB)
+		if disk.SizeMB <= logUsage {
+			mErr.Errors = append(mErr.Errors,
+				fmt.Errorf("log storage (%d MB) must be less than requested disk capacity (%d MB)",
+					logUsage, disk.SizeMB))
+		}
 	}
 	return mErr.ErrorOrNil()
 }
@@ -7133,6 +7484,10 @@ type Task struct {
 
 	// CSIPluginConfig is used to configure the plugin supervisor for the task.
 	CSIPluginConfig *TaskCSIPluginConfig
+
+	// Identity controls if and how the workload identity is exposed to
+	// tasks similar to the Vault block.
+	Identity *WorkloadIdentity
 }
 
 // UsesConnect is for conveniently detecting if the Task is able to make use
@@ -7193,6 +7548,7 @@ func (t *Task) Copy() *Task {
 	nt.Meta = maps.Clone(nt.Meta)
 	nt.DispatchPayload = nt.DispatchPayload.Copy()
 	nt.Lifecycle = nt.Lifecycle.Copy()
+	nt.Identity = nt.Identity.Copy()
 
 	if t.Artifacts != nil {
 		artifacts := make([]*TaskArtifact, 0, len(t.Artifacts))
@@ -7267,7 +7623,7 @@ func (t *Task) GoString() string {
 }
 
 // Validate is used to check a task for reasonable configuration
-func (t *Task) Validate(ephemeralDisk *EphemeralDisk, jobType string, tgServices []*Service, tgNetworks Networks) error {
+func (t *Task) Validate(jobType string, tg *TaskGroup) error {
 	var mErr multierror.Error
 	if t.Name == "" {
 		mErr.Errors = append(mErr.Errors, errors.New("Missing task name"))
@@ -7284,6 +7640,20 @@ func (t *Task) Validate(ephemeralDisk *EphemeralDisk, jobType string, tgServices
 	}
 	if t.KillTimeout < 0 {
 		mErr.Errors = append(mErr.Errors, errors.New("KillTimeout must be a positive value"))
+	} else {
+		// Validate the group's update strategy does not conflict with the
+		// task's kill_timeout for service jobs.
+		//
+		// progress_deadline = 0 has a special meaning so it should not be
+		// validated against the task's kill_timeout.
+		conflictsWithProgressDeadline := jobType == JobTypeService &&
+			tg.Update != nil &&
+			tg.Update.ProgressDeadline > 0 &&
+			t.KillTimeout > tg.Update.ProgressDeadline
+		if conflictsWithProgressDeadline {
+			mErr.Errors = append(mErr.Errors, fmt.Errorf("KillTimout (%s) longer than the group's ProgressDeadline (%s)",
+				t.KillTimeout, tg.Update.ProgressDeadline))
+		}
 	}
 	if t.ShutdownDelay < 0 {
 		mErr.Errors = append(mErr.Errors, errors.New("ShutdownDelay must be a positive value"))
@@ -7299,10 +7669,11 @@ func (t *Task) Validate(ephemeralDisk *EphemeralDisk, jobType string, tgServices
 	// Validate the log config
 	if t.LogConfig == nil {
 		mErr.Errors = append(mErr.Errors, errors.New("Missing Log Config"))
-	} else if err := t.LogConfig.Validate(); err != nil {
+	} else if err := t.LogConfig.Validate(tg.EphemeralDisk); err != nil {
 		mErr.Errors = append(mErr.Errors, err)
 	}
 
+	// Validate constraints and affinities.
 	for idx, constr := range t.Constraints {
 		if err := constr.Validate(); err != nil {
 			outer := fmt.Errorf("Constraint %d validation failed: %s", idx+1, err)
@@ -7318,7 +7689,7 @@ func (t *Task) Validate(ephemeralDisk *EphemeralDisk, jobType string, tgServices
 
 	if jobType == JobTypeSystem {
 		if t.Affinities != nil {
-			mErr.Errors = append(mErr.Errors, fmt.Errorf("System jobs may not have an affinity stanza"))
+			mErr.Errors = append(mErr.Errors, fmt.Errorf("System jobs may not have an affinity block"))
 		}
 	} else {
 		for idx, affinity := range t.Affinities {
@@ -7330,19 +7701,11 @@ func (t *Task) Validate(ephemeralDisk *EphemeralDisk, jobType string, tgServices
 	}
 
 	// Validate Services
-	if err := validateServices(t, tgNetworks); err != nil {
+	if err := validateServices(t, tg.Networks); err != nil {
 		mErr.Errors = append(mErr.Errors, err)
 	}
 
-	if t.LogConfig != nil && ephemeralDisk != nil {
-		logUsage := (t.LogConfig.MaxFiles * t.LogConfig.MaxFileSizeMB)
-		if ephemeralDisk.SizeMB <= logUsage {
-			mErr.Errors = append(mErr.Errors,
-				fmt.Errorf("log storage (%d MB) must be less than requested disk capacity (%d MB)",
-					logUsage, ephemeralDisk.SizeMB))
-		}
-	}
-
+	// Validate artifacts.
 	for idx, artifact := range t.Artifacts {
 		if err := artifact.Validate(); err != nil {
 			outer := fmt.Errorf("Artifact %d validation failed: %v", idx+1, err)
@@ -7350,12 +7713,14 @@ func (t *Task) Validate(ephemeralDisk *EphemeralDisk, jobType string, tgServices
 		}
 	}
 
+	// Validate Vault.
 	if t.Vault != nil {
 		if err := t.Vault.Validate(); err != nil {
 			mErr.Errors = append(mErr.Errors, fmt.Errorf("Vault validation failed: %v", err))
 		}
 	}
 
+	// Validate templates.
 	destinations := make(map[string]int, len(t.Templates))
 	for idx, tmpl := range t.Templates {
 		if err := tmpl.Validate(); err != nil {
@@ -7388,16 +7753,16 @@ func (t *Task) Validate(ephemeralDisk *EphemeralDisk, jobType string, tgServices
 
 	// Validation for TaskKind field which is used for Consul Connect integration
 	if t.Kind.IsConnectProxy() {
-		// This task is a Connect proxy so it should not have service stanzas
+		// This task is a Connect proxy so it should not have service blocks
 		if len(t.Services) > 0 {
-			mErr.Errors = append(mErr.Errors, fmt.Errorf("Connect proxy task must not have a service stanza"))
+			mErr.Errors = append(mErr.Errors, fmt.Errorf("Connect proxy task must not have a service block"))
 		}
 		if t.Leader {
 			mErr.Errors = append(mErr.Errors, fmt.Errorf("Connect proxy task must not have leader set"))
 		}
 
 		// Ensure the proxy task has a corresponding service entry
-		serviceErr := ValidateConnectProxyService(t.Kind.Value(), tgServices)
+		serviceErr := ValidateConnectProxyService(t.Kind.Value(), tg.Services)
 		if serviceErr != nil {
 			mErr.Errors = append(mErr.Errors, serviceErr)
 		}
@@ -7407,6 +7772,13 @@ func (t *Task) Validate(ephemeralDisk *EphemeralDisk, jobType string, tgServices
 	for idx, vm := range t.VolumeMounts {
 		if !MountPropagationModeIsValid(vm.PropagationMode) {
 			mErr.Errors = append(mErr.Errors, fmt.Errorf("Volume Mount (%d) has an invalid propagation mode: \"%s\"", idx, vm.PropagationMode))
+		}
+
+		// Validate the task does not reference undefined volume mounts
+		if vm.Volume == "" {
+			mErr.Errors = append(mErr.Errors, fmt.Errorf("Volume Mount (%d) references an empty volume", idx))
+		} else if _, ok := tg.Volumes[vm.Volume]; !ok {
+			mErr.Errors = append(mErr.Errors, fmt.Errorf("Volume Mount (%d) references undefined volume %s", idx, vm.Volume))
 		}
 	}
 
@@ -7583,7 +7955,7 @@ func (t *Task) Warnings() error {
 
 	// Validate the resources
 	if t.Resources != nil && t.Resources.IOPS != 0 {
-		mErr.Errors = append(mErr.Errors, fmt.Errorf("IOPS has been deprecated as of Nomad 0.9.0. Please remove IOPS from resource stanza."))
+		mErr.Errors = append(mErr.Errors, fmt.Errorf("IOPS has been deprecated as of Nomad 0.9.0. Please remove IOPS from resource block."))
 	}
 
 	if t.Resources != nil && len(t.Resources.Networks) != 0 {
@@ -7824,6 +8196,47 @@ func DefaultTemplate() *Template {
 	}
 }
 
+func (t *Template) Equal(o *Template) bool {
+	if t == nil || o == nil {
+		return t == o
+	}
+	switch {
+	case t.SourcePath != o.SourcePath:
+		return false
+	case t.DestPath != o.DestPath:
+		return false
+	case t.EmbeddedTmpl != o.EmbeddedTmpl:
+		return false
+	case t.ChangeMode != o.ChangeMode:
+		return false
+	case t.ChangeSignal != o.ChangeSignal:
+		return false
+	case !t.ChangeScript.Equal(o.ChangeScript):
+		return false
+	case t.Splay != o.Splay:
+		return false
+	case t.Perms != o.Perms:
+		return false
+	case !pointer.Eq(t.Uid, o.Uid):
+		return false
+	case !pointer.Eq(t.Gid, o.Gid):
+		return false
+	case t.LeftDelim != o.LeftDelim:
+		return false
+	case t.RightDelim != o.RightDelim:
+		return false
+	case t.Envvars != o.Envvars:
+		return false
+	case t.VaultGrace != o.VaultGrace:
+		return false
+	case !t.Wait.Equal(o.Wait):
+		return false
+	case t.ErrMissingKey != o.ErrMissingKey:
+		return false
+	}
+	return true
+}
+
 func (t *Template) Copy() *Template {
 	if t == nil {
 		return nil
@@ -7910,7 +8323,7 @@ func (t *Template) Warnings() error {
 
 	// Deprecation notice for vault_grace
 	if t.VaultGrace != 0 {
-		mErr.Errors = append(mErr.Errors, fmt.Errorf("VaultGrace has been deprecated as of Nomad 0.11 and ignored since Vault 0.5. Please remove VaultGrace / vault_grace from template stanza."))
+		mErr.Errors = append(mErr.Errors, fmt.Errorf("VaultGrace has been deprecated as of Nomad 0.11 and ignored since Vault 0.5. Please remove VaultGrace / vault_grace from template block."))
 	}
 
 	return mErr.ErrorOrNil()
@@ -7935,18 +8348,33 @@ type ChangeScript struct {
 	FailOnError bool
 }
 
+func (cs *ChangeScript) Equal(o *ChangeScript) bool {
+	if cs == nil || o == nil {
+		return cs == o
+	}
+	switch {
+	case cs.Command != o.Command:
+		return false
+	case !slices.Equal(cs.Args, o.Args):
+		return false
+	case cs.Timeout != o.Timeout:
+		return false
+	case cs.FailOnError != o.FailOnError:
+		return false
+	}
+	return true
+}
+
 func (cs *ChangeScript) Copy() *ChangeScript {
 	if cs == nil {
 		return nil
 	}
-
-	ncs := new(ChangeScript)
-	*ncs = *cs
-
-	// args is a slice!
-	ncs.Args = slices.Clone(cs.Args)
-
-	return ncs
+	return &ChangeScript{
+		Command:     cs.Command,
+		Args:        slices.Clone(cs.Args),
+		Timeout:     cs.Timeout,
+		FailOnError: cs.FailOnError,
+	}
 }
 
 // Validate makes sure all the required fields of ChangeScript are present
@@ -7990,22 +8418,15 @@ func (wc *WaitConfig) Copy() *WaitConfig {
 }
 
 func (wc *WaitConfig) Equal(o *WaitConfig) bool {
-	if wc.Min == nil && o.Min != nil {
+	if wc == nil || o == nil {
+		return wc == o
+	}
+	switch {
+	case !pointer.Eq(wc.Min, o.Min):
+		return false
+	case !pointer.Eq(wc.Max, o.Max):
 		return false
 	}
-
-	if wc.Max == nil && o.Max != nil {
-		return false
-	}
-
-	if wc.Min != nil && (o.Min == nil || *wc.Min != *o.Min) {
-		return false
-	}
-
-	if wc.Max != nil && (o.Max == nil || *wc.Max != *o.Max) {
-		return false
-	}
-
 	return true
 }
 
@@ -8066,6 +8487,16 @@ func (h *TaskHandle) Copy() *TaskHandle {
 	}
 	copy(newTH.DriverState, h.DriverState)
 	return &newTH
+}
+
+func (h *TaskHandle) Equal(o *TaskHandle) bool {
+	if h == nil || o == nil {
+		return h == o
+	}
+	if h.Version != o.Version {
+		return false
+	}
+	return bytes.Equal(h.DriverState, o.DriverState)
 }
 
 // Set of possible states for a task.
@@ -8145,6 +8576,37 @@ func (ts *TaskState) Copy() *TaskState {
 // service or system allocation.
 func (ts *TaskState) Successful() bool {
 	return ts.State == TaskStateDead && !ts.Failed
+}
+
+func (ts *TaskState) Equal(o *TaskState) bool {
+	if ts.State != o.State {
+		return false
+	}
+	if ts.Failed != o.Failed {
+		return false
+	}
+	if ts.Restarts != o.Restarts {
+		return false
+	}
+	if ts.LastRestart != o.LastRestart {
+		return false
+	}
+	if ts.StartedAt != o.StartedAt {
+		return false
+	}
+	if ts.FinishedAt != o.FinishedAt {
+		return false
+	}
+	if !slices.EqualFunc(ts.Events, o.Events, func(ts, o *TaskEvent) bool {
+		return ts.Equal(o)
+	}) {
+		return false
+	}
+	if !ts.TaskHandle.Equal(o.TaskHandle) {
+		return false
+	}
+
+	return true
 }
 
 const (
@@ -8248,6 +8710,10 @@ const (
 	// TaskWaitingShuttingDownDelay indicates that the task is waiting for
 	// shutdown delay before being TaskKilled
 	TaskWaitingShuttingDownDelay = "Waiting for shutdown delay"
+
+	// TaskSkippingShutdownDelay indicates that the task operation was
+	// configured to ignore the shutdown delay value set for the tas.
+	TaskSkippingShutdownDelay = "Skipping shutdown delay"
 )
 
 // TaskEvent is an event that effects the state of a task and contains meta-data
@@ -8475,6 +8941,31 @@ func (e *TaskEvent) GoString() string {
 	return fmt.Sprintf("%v - %v", e.Time, e.Type)
 }
 
+// Equal on TaskEvent ignores the deprecated fields
+func (e *TaskEvent) Equal(o *TaskEvent) bool {
+	if e == nil || o == nil {
+		return e == o
+	}
+
+	if e.Type != o.Type {
+		return false
+	}
+	if e.Time != o.Time {
+		return false
+	}
+	if e.Message != o.Message {
+		return false
+	}
+	if e.DisplayMessage != o.DisplayMessage {
+		return false
+	}
+	if !maps.Equal(e.Details, o.Details) {
+		return false
+	}
+
+	return true
+}
+
 // SetDisplayMessage sets the display message of TaskEvent
 func (e *TaskEvent) SetDisplayMessage(msg string) *TaskEvent {
 	e.DisplayMessage = msg
@@ -8666,6 +9157,25 @@ type TaskArtifact struct {
 	// RelativeDest is the download destination given relative to the task's
 	// directory.
 	RelativeDest string
+}
+
+func (ta *TaskArtifact) Equal(o *TaskArtifact) bool {
+	if ta == nil || o == nil {
+		return ta == o
+	}
+	switch {
+	case ta.GetterSource != o.GetterSource:
+		return false
+	case !maps.Equal(ta.GetterOptions, o.GetterOptions):
+		return false
+	case !maps.Equal(ta.GetterHeaders, o.GetterHeaders):
+		return false
+	case ta.GetterMode != o.GetterMode:
+		return false
+	case ta.RelativeDest != o.RelativeDest:
+		return false
+	}
+	return true
 }
 
 func (ta *TaskArtifact) Copy() *TaskArtifact {
@@ -8934,19 +9444,38 @@ SETEQUALS:
 
 // Affinity is used to score placement options based on a weight
 type Affinity struct {
-	LTarget string // Left-hand target
-	RTarget string // Right-hand target
-	Operand string // Affinity operand (<=, <, =, !=, >, >=), set_contains_all, set_contains_any
-	Weight  int8   // Weight applied to nodes that match the affinity. Can be negative
+	LTarget               string // Left-hand target
+	RTarget               string // Right-hand target
+	Operand               string // Affinity operand (<=, <, =, !=, >, >=), set_contains_all, set_contains_any
+	Weight                int8   // Weight applied to nodes that match the affinity. Can be negative
+	NormalizeNodeAffinity bool
 }
 
-// Equal checks if two affinities are equal.
-func (a *Affinity) Equal(o *Affinity) bool {
+// Equals checks if two affinities are equal.
+func (a *Affinity) Equals(o *Affinity) bool {
 	return a == o ||
 		a.LTarget == o.LTarget &&
 			a.RTarget == o.RTarget &&
 			a.Operand == o.Operand &&
-			a.Weight == o.Weight
+			a.Weight == o.Weight &&
+			a.NormalizeNodeAffinity == o.NormalizeNodeAffinity
+}
+
+func (a *Affinity) Equal(o *Affinity) bool {
+	if a == nil || o == nil {
+		return a == o
+	}
+	switch {
+	case a.LTarget != o.LTarget:
+		return false
+	case a.RTarget != o.RTarget:
+		return false
+	case a.Operand != o.Operand:
+		return false
+	case a.Weight != o.Weight:
+		return false
+	}
+	return true
 }
 
 func (a *Affinity) Copy() *Affinity {
@@ -8954,15 +9483,16 @@ func (a *Affinity) Copy() *Affinity {
 		return nil
 	}
 	return &Affinity{
-		LTarget: a.LTarget,
-		RTarget: a.RTarget,
-		Operand: a.Operand,
-		Weight:  a.Weight,
+		LTarget:               a.LTarget,
+		RTarget:               a.RTarget,
+		Operand:               a.Operand,
+		Weight:                a.Weight,
+		NormalizeNodeAffinity: a.NormalizeNodeAffinity,
 	}
 }
 
 func (a *Affinity) String() string {
-	return fmt.Sprintf("%s %s %s %v", a.LTarget, a.Operand, a.RTarget, a.Weight)
+	return fmt.Sprintf("%s %s %s %v %t", a.LTarget, a.Operand, a.RTarget, a.Weight, a.NormalizeNodeAffinity)
 }
 
 func (a *Affinity) Validate() error {
@@ -9030,6 +9560,21 @@ type Spread struct {
 	str string
 }
 
+func (s *Spread) Equal(o *Spread) bool {
+	if s == nil || o == nil {
+		return s == o
+	}
+	switch {
+	case s.Attribute != o.Attribute:
+		return false
+	case s.Weight != o.Weight:
+		return false
+	case !slices.EqualFunc(s.SpreadTarget, o.SpreadTarget, func(a, b *SpreadTarget) bool { return a.Equal(b) }):
+		return false
+	}
+	return true
+}
+
 type Affinities []*Affinity
 
 // Equal compares Affinities as a set
@@ -9080,7 +9625,7 @@ func (s *Spread) Validate() error {
 		mErr.Errors = append(mErr.Errors, errors.New("Missing spread attribute"))
 	}
 	if s.Weight <= 0 || s.Weight > 100 {
-		mErr.Errors = append(mErr.Errors, errors.New("Spread stanza must have a positive weight from 0 to 100"))
+		mErr.Errors = append(mErr.Errors, errors.New("Spread block must have a positive weight from 0 to 100"))
 	}
 	seen := make(map[string]struct{})
 	sumPercent := uint32(0)
@@ -9134,6 +9679,19 @@ func (s *SpreadTarget) String() string {
 	return s.str
 }
 
+func (s *SpreadTarget) Equal(o *SpreadTarget) bool {
+	if s == nil || o == nil {
+		return s == o
+	}
+	switch {
+	case s.Value != o.Value:
+		return false
+	case s.Percent != o.Percent:
+		return false
+	}
+	return true
+}
+
 // EphemeralDisk is an ephemeral disk object
 type EphemeralDisk struct {
 	// Sticky indicates whether the allocation is sticky to a node
@@ -9152,6 +9710,21 @@ func DefaultEphemeralDisk() *EphemeralDisk {
 	return &EphemeralDisk{
 		SizeMB: 300,
 	}
+}
+
+func (d *EphemeralDisk) Equal(o *EphemeralDisk) bool {
+	if d == nil || o == nil {
+		return d == o
+	}
+	switch {
+	case d.Sticky != o.Sticky:
+		return false
+	case d.SizeMB != o.SizeMB:
+		return false
+	case d.Migrate != o.Migrate:
+		return false
+	}
+	return true
 }
 
 // Validate validates EphemeralDisk
@@ -9198,6 +9771,10 @@ type Vault struct {
 	// variable
 	Env bool
 
+	// DisableFile marks whether the Vault Token should be exposed in the file
+	// vault_token in the task's secrets directory.
+	DisableFile bool
+
 	// ChangeMode is used to configure the task's behavior when the Vault
 	// token changes because the original token could not be renewed in time.
 	ChangeMode string
@@ -9207,11 +9784,25 @@ type Vault struct {
 	ChangeSignal string
 }
 
-func DefaultVaultBlock() *Vault {
-	return &Vault{
-		Env:        true,
-		ChangeMode: VaultChangeModeRestart,
+func (v *Vault) Equal(o *Vault) bool {
+	if v == nil || o == nil {
+		return v == o
 	}
+	switch {
+	case !slices.Equal(v.Policies, o.Policies):
+		return false
+	case v.Namespace != o.Namespace:
+		return false
+	case v.Env != o.Env:
+		return false
+	case v.DisableFile != o.DisableFile:
+		return false
+	case v.ChangeMode != o.ChangeMode:
+		return false
+	case v.ChangeSignal != o.ChangeSignal:
+		return false
+	}
+	return true
 }
 
 // Copy returns a copy of this Vault block.
@@ -9482,6 +10073,14 @@ func (d *Deployment) GoString() string {
 	return base
 }
 
+// GetNamespace implements the NamespaceGetter interface, required for pagination.
+func (d *Deployment) GetNamespace() string {
+	if d == nil {
+		return ""
+	}
+	return d.Namespace
+}
+
 // DeploymentState tracks the state of a deployment for a given task group.
 type DeploymentState struct {
 	// AutoRevert marks whether the task group has indicated the job should be
@@ -9574,6 +10173,46 @@ func (rt *RescheduleTracker) Copy() *RescheduleTracker {
 	}
 	nt.Events = rescheduleEvents
 	return nt
+}
+
+func (rt *RescheduleTracker) RescheduleEligible(reschedulePolicy *ReschedulePolicy, failTime time.Time) bool {
+	if reschedulePolicy == nil {
+		return false
+	}
+	attempts := reschedulePolicy.Attempts
+	enabled := attempts > 0 || reschedulePolicy.Unlimited
+	if !enabled {
+		return false
+	}
+	if reschedulePolicy.Unlimited {
+		return true
+	}
+	// Early return true if there are no attempts yet and the number of allowed attempts is > 0
+	if (rt == nil || len(rt.Events) == 0) && attempts > 0 {
+		return true
+	}
+	attempted, _ := rt.rescheduleInfo(reschedulePolicy, failTime)
+	return attempted < attempts
+}
+
+func (rt *RescheduleTracker) rescheduleInfo(reschedulePolicy *ReschedulePolicy, failTime time.Time) (int, int) {
+	if reschedulePolicy == nil {
+		return 0, 0
+	}
+	attempts := reschedulePolicy.Attempts
+	interval := reschedulePolicy.Interval
+
+	attempted := 0
+	if rt != nil && attempts > 0 {
+		for j := len(rt.Events) - 1; j >= 0; j-- {
+			lastAttempt := rt.Events[j].RescheduleTime
+			timeDiff := failTime.UTC().UnixNano() - lastAttempt
+			if timeDiff < interval.Nanoseconds() {
+				attempted += 1
+			}
+		}
+	}
+	return attempted, attempts
 }
 
 // RescheduleEvent is used to keep track of previous attempts at rescheduling an allocation
@@ -10010,47 +10649,11 @@ func (a *Allocation) ShouldReschedule(reschedulePolicy *ReschedulePolicy, failTi
 // RescheduleEligible returns if the allocation is eligible to be rescheduled according
 // to its ReschedulePolicy and the current state of its reschedule trackers
 func (a *Allocation) RescheduleEligible(reschedulePolicy *ReschedulePolicy, failTime time.Time) bool {
-	if reschedulePolicy == nil {
-		return false
-	}
-	attempts := reschedulePolicy.Attempts
-	enabled := attempts > 0 || reschedulePolicy.Unlimited
-	if !enabled {
-		return false
-	}
-	if reschedulePolicy.Unlimited {
-		return true
-	}
-	// Early return true if there are no attempts yet and the number of allowed attempts is > 0
-	if (a.RescheduleTracker == nil || len(a.RescheduleTracker.Events) == 0) && attempts > 0 {
-		return true
-	}
-	attempted, _ := a.rescheduleInfo(reschedulePolicy, failTime)
-	return attempted < attempts
-}
-
-func (a *Allocation) rescheduleInfo(reschedulePolicy *ReschedulePolicy, failTime time.Time) (int, int) {
-	if reschedulePolicy == nil {
-		return 0, 0
-	}
-	attempts := reschedulePolicy.Attempts
-	interval := reschedulePolicy.Interval
-
-	attempted := 0
-	if a.RescheduleTracker != nil && attempts > 0 {
-		for j := len(a.RescheduleTracker.Events) - 1; j >= 0; j-- {
-			lastAttempt := a.RescheduleTracker.Events[j].RescheduleTime
-			timeDiff := failTime.UTC().UnixNano() - lastAttempt
-			if timeDiff < interval.Nanoseconds() {
-				attempted += 1
-			}
-		}
-	}
-	return attempted, attempts
+	return a.RescheduleTracker.RescheduleEligible(reschedulePolicy, failTime)
 }
 
 func (a *Allocation) RescheduleInfo() (int, int) {
-	return a.rescheduleInfo(a.ReschedulePolicy(), a.LastEventTime())
+	return a.RescheduleTracker.rescheduleInfo(a.ReschedulePolicy(), a.LastEventTime())
 }
 
 // LastEventTime is the time of the last task event in the allocation.
@@ -10108,7 +10711,7 @@ func (a *Allocation) nextRescheduleTime(failTime time.Time, reschedulePolicy *Re
 	rescheduleEligible := reschedulePolicy.Unlimited || (reschedulePolicy.Attempts > 0 && a.RescheduleTracker == nil)
 	if reschedulePolicy.Attempts > 0 && a.RescheduleTracker != nil && a.RescheduleTracker.Events != nil {
 		// Check for eligibility based on the interval if max attempts is set
-		attempted, attempts := a.rescheduleInfo(reschedulePolicy, failTime)
+		attempted, attempts := a.RescheduleTracker.rescheduleInfo(reschedulePolicy, failTime)
 		rescheduleEligible = attempted < attempts && nextDelay < reschedulePolicy.Interval
 	}
 	return nextRescheduleTime, rescheduleEligible
@@ -10319,13 +10922,8 @@ func (a *Allocation) ShouldMigrate() bool {
 		return false
 	}
 
-	// We won't migrate any data is the user hasn't enabled migration or the
-	// disk is not marked as sticky
-	if !tg.EphemeralDisk.Migrate || !tg.EphemeralDisk.Sticky {
-		return false
-	}
-
-	return true
+	// We won't migrate any data if the user hasn't enabled migration
+	return tg.EphemeralDisk.Migrate
 }
 
 // SetEventDisplayMessages populates the display message if its not already set,
@@ -10411,6 +11009,7 @@ func (a *Allocation) Stub(fields *AllocStubFields) *AllocListStub {
 		TaskStates:            a.TaskStates,
 		DeploymentStatus:      a.DeploymentStatus,
 		FollowupEvalID:        a.FollowupEvalID,
+		NextAllocation:        a.NextAllocation,
 		RescheduleTracker:     a.RescheduleTracker,
 		PreemptedAllocations:  a.PreemptedAllocations,
 		PreemptedByAllocation: a.PreemptedByAllocation,
@@ -10514,10 +11113,10 @@ func (a *Allocation) ToIdentityClaims(job *Job) *IdentityClaims {
 		JobID:        a.JobID,
 		AllocationID: a.ID,
 		RegisteredClaims: jwt.RegisteredClaims{
-			// TODO: in Nomad 1.5.0 we'll have a refresh loop to
-			// prevent allocation identities from expiring before the
-			// allocation is terminal. Once that's implemented, add an
-			// ExpiresAt here ExpiresAt: &jwt.NumericDate{},
+			// TODO: implement a refresh loop to prevent allocation identities from
+			// expiring before the allocation is terminal. Once that's implemented,
+			// add an ExpiresAt here ExpiresAt: &jwt.NumericDate{}
+			// https://github.com/hashicorp/nomad/issues/16258
 			NotBefore: now,
 			IssuedAt:  now,
 		},
@@ -10573,6 +11172,7 @@ type AllocListStub struct {
 	TaskStates            map[string]*TaskState
 	DeploymentStatus      *AllocDeploymentStatus
 	FollowupEvalID        string
+	NextAllocation        string
 	RescheduleTracker     *RescheduleTracker
 	PreemptedAllocations  []string
 	PreemptedByAllocation string
@@ -10587,6 +11187,12 @@ type AllocListStub struct {
 // method will be removed in a future release.
 func (a *AllocListStub) SetEventDisplayMessages() {
 	setDisplayMsg(a.TaskStates)
+}
+
+// RescheduleEligible returns if the allocation is eligible to be rescheduled according
+// to its ReschedulePolicy and the current state of its reschedule trackers
+func (a *AllocListStub) RescheduleEligible(reschedulePolicy *ReschedulePolicy, failTime time.Time) bool {
+	return a.RescheduleTracker.RescheduleEligible(reschedulePolicy, failTime)
 }
 
 func setDisplayMsg(taskStates map[string]*TaskState) {
@@ -10624,6 +11230,9 @@ type AllocMetric struct {
 
 	// NodesFiltered is the number of nodes filtered due to a constraint
 	NodesFiltered int
+
+	// NodesInPool is the number of nodes in the node pool used by the job.
+	NodesInPool int
 
 	// NodesAvailable is the number of nodes available for evaluation per DC.
 	NodesAvailable map[string]int
@@ -10870,6 +11479,41 @@ func (a *AllocNetworkStatus) Copy() *AllocNetworkStatus {
 	}
 }
 
+func (a *AllocNetworkStatus) Equal(o *AllocNetworkStatus) bool {
+	// note: this accounts for when DNSConfig is non-nil but empty
+	switch {
+	case a == nil && o.IsZero():
+		return true
+	case o == nil && a.IsZero():
+		return true
+	case a == nil || o == nil:
+		return a == o
+	}
+
+	switch {
+	case a.InterfaceName != o.InterfaceName:
+		return false
+	case a.Address != o.Address:
+		return false
+	case !a.DNS.Equal(o.DNS):
+		return false
+	}
+	return true
+}
+
+func (a *AllocNetworkStatus) IsZero() bool {
+	if a == nil {
+		return true
+	}
+	if a.InterfaceName != "" || a.Address != "" {
+		return false
+	}
+	if !a.DNS.IsZero() {
+		return false
+	}
+	return true
+}
+
 // NetworkStatus is an interface satisfied by alloc runner, for acquiring the
 // network status of an allocation.
 type NetworkStatus interface {
@@ -10944,6 +11588,24 @@ func (a *AllocDeploymentStatus) Copy() *AllocDeploymentStatus {
 	}
 
 	return c
+}
+
+func (a *AllocDeploymentStatus) Equal(o *AllocDeploymentStatus) bool {
+	if a == nil || o == nil {
+		return a == o
+	}
+
+	switch {
+	case !pointer.Eq(a.Healthy, o.Healthy):
+		return false
+	case a.Timestamp != o.Timestamp:
+		return false
+	case a.Canary != o.Canary:
+		return false
+	case a.ModifyIndex != o.ModifyIndex:
+		return false
+	}
+	return true
 }
 
 const (
@@ -11821,6 +12483,7 @@ type KeyringRequest struct {
 type RecoverableError struct {
 	Err         string
 	Recoverable bool
+	wrapped     error
 }
 
 // NewRecoverableError is used to wrap an error and mark it as recoverable or
@@ -11833,6 +12496,7 @@ func NewRecoverableError(e error, recoverable bool) error {
 	return &RecoverableError{
 		Err:         e.Error(),
 		Recoverable: recoverable,
+		wrapped:     e,
 	}
 }
 
@@ -11853,6 +12517,10 @@ func (r *RecoverableError) IsRecoverable() bool {
 
 func (r *RecoverableError) IsUnrecoverable() bool {
 	return !r.Recoverable
+}
+
+func (r *RecoverableError) Unwrap() error {
+	return r.wrapped
 }
 
 // Recoverable is an interface for errors to implement to indicate whether or
@@ -11973,7 +12641,7 @@ func (a *ACLPolicy) Stub() *ACLPolicyListStub {
 
 func (a *ACLPolicy) Validate() error {
 	var mErr multierror.Error
-	if !validPolicyName.MatchString(a.Name) {
+	if !ValidPolicyName.MatchString(a.Name) {
 		err := fmt.Errorf("invalid name '%s'", a.Name)
 		mErr.Errors = append(mErr.Errors, err)
 	}

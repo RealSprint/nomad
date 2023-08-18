@@ -1,11 +1,13 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package api
 
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
-	"io/ioutil"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -162,7 +164,7 @@ type SchedulerSetConfigurationResponse struct {
 }
 
 // SchedulerAlgorithm is an enum string that encapsulates the valid options for a
-// SchedulerConfiguration stanza's SchedulerAlgorithm. These modes will allow the
+// SchedulerConfiguration block's SchedulerAlgorithm. These modes will allow the
 // scheduler to be user-selectable.
 type SchedulerAlgorithm string
 
@@ -192,7 +194,7 @@ func (op *Operator) SchedulerGetConfiguration(q *QueryOptions) (*SchedulerConfig
 // SchedulerSetConfiguration is used to set the current Scheduler configuration.
 func (op *Operator) SchedulerSetConfiguration(conf *SchedulerConfiguration, q *WriteOptions) (*SchedulerSetConfigurationResponse, *WriteMeta, error) {
 	var out SchedulerSetConfigurationResponse
-	wm, err := op.c.write("/v1/operator/scheduler/configuration", conf, &out, q)
+	wm, err := op.c.put("/v1/operator/scheduler/configuration", conf, &out, q)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -204,7 +206,7 @@ func (op *Operator) SchedulerSetConfiguration(conf *SchedulerConfiguration, q *W
 // true on success or false on failures.
 func (op *Operator) SchedulerCASConfiguration(conf *SchedulerConfiguration, q *WriteOptions) (*SchedulerSetConfigurationResponse, *WriteMeta, error) {
 	var out SchedulerSetConfigurationResponse
-	wm, err := op.c.write("/v1/operator/scheduler/configuration?cas="+strconv.FormatUint(conf.ModifyIndex, 10), conf, &out, q)
+	wm, err := op.c.put("/v1/operator/scheduler/configuration?cas="+strconv.FormatUint(conf.ModifyIndex, 10), conf, &out, q)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -229,7 +231,7 @@ func (op *Operator) Snapshot(q *QueryOptions) (io.ReadCloser, error) {
 
 	cr, err := newChecksumValidatingReader(resp.Body, digest)
 	if err != nil {
-		io.Copy(ioutil.Discard, resp.Body)
+		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 
 		return nil, err
@@ -241,7 +243,7 @@ func (op *Operator) Snapshot(q *QueryOptions) (io.ReadCloser, error) {
 // SnapshotRestore is used to restore a running nomad cluster to an original
 // state.
 func (op *Operator) SnapshotRestore(in io.Reader, q *WriteOptions) (*WriteMeta, error) {
-	wm, err := op.c.write("/v1/operator/snapshot", in, nil, q)
+	wm, err := op.c.put("/v1/operator/snapshot", in, nil, q)
 	if err != nil {
 		return nil, err
 	}
@@ -339,13 +341,15 @@ func (op *Operator) LicenseGet(q *QueryOptions) (*LicenseReply, *QueryMeta, erro
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == 204 {
+	if resp.StatusCode == http.StatusNoContent {
 		return nil, nil, errors.New("Nomad Enterprise only endpoint")
 	}
 
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, nil, fmt.Errorf("Unexpected response code: %d (%s)", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil, newUnexpectedResponseError(
+			fromHTTPResponse(resp),
+			withExpectedStatuses([]int{http.StatusOK, http.StatusNoContent}),
+		)
 	}
 
 	err = json.NewDecoder(resp.Body).Decode(&reply)

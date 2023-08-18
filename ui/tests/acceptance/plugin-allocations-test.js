@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: MPL-2.0
+ */
+
 /* eslint-disable qunit/require-expect */
 import { module, test } from 'qunit';
 import { currentURL } from '@ember/test-helpers';
@@ -14,6 +19,7 @@ module('Acceptance | plugin allocations', function (hooks) {
   let plugin;
 
   hooks.beforeEach(function () {
+    server.create('node-pool');
     server.create('node');
     window.localStorage.clear();
   });

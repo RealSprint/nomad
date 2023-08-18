@@ -1,9 +1,11 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package executor
 
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -145,7 +147,7 @@ func TestExecutor_Isolation_PID_and_IPC_hostMode(t *testing.T) {
 	execCmd.ModePID = "host" // disable PID namespace
 	execCmd.ModeIPC = "host" // disable IPC namespace
 
-	executor := NewExecutorWithIsolation(testlog.HCLogger(t))
+	executor := NewExecutorWithIsolation(testlog.HCLogger(t), 0)
 	defer executor.Shutdown("SIGKILL", 0)
 
 	ps, err := executor.Launch(execCmd)
@@ -188,7 +190,7 @@ func TestExecutor_IsolationAndConstraints(t *testing.T) {
 	execCmd.ModePID = "private"
 	execCmd.ModeIPC = "private"
 
-	executor := NewExecutorWithIsolation(testlog.HCLogger(t))
+	executor := NewExecutorWithIsolation(testlog.HCLogger(t), 0)
 	defer executor.Shutdown("SIGKILL", 0)
 
 	ps, err := executor.Launch(execCmd)
@@ -207,7 +209,7 @@ func TestExecutor_IsolationAndConstraints(t *testing.T) {
 	r.NoError(err)
 
 	memLimits := filepath.Join(state.CgroupPaths["memory"], "memory.limit_in_bytes")
-	data, err := ioutil.ReadFile(memLimits)
+	data, err := os.ReadFile(memLimits)
 	r.NoError(err)
 
 	expectedMemLim := strconv.Itoa(int(execCmd.Resources.NomadResources.Memory.MemoryMB * 1024 * 1024))
@@ -242,6 +244,7 @@ etc/
 lib/
 lib64/
 local/
+private/
 proc/
 secrets/
 sys/
@@ -279,7 +282,7 @@ func TestExecutor_CgroupPaths(t *testing.T) {
 
 	execCmd.ResourceLimits = true
 
-	executor := NewExecutorWithIsolation(testlog.HCLogger(t))
+	executor := NewExecutorWithIsolation(testlog.HCLogger(t), 0)
 	defer executor.Shutdown("SIGKILL", 0)
 
 	ps, err := executor.Launch(execCmd)
@@ -341,7 +344,7 @@ func TestExecutor_CgroupPathsAreDestroyed(t *testing.T) {
 
 	execCmd.ResourceLimits = true
 
-	executor := NewExecutorWithIsolation(testlog.HCLogger(t))
+	executor := NewExecutorWithIsolation(testlog.HCLogger(t), 0)
 	defer executor.Shutdown("SIGKILL", 0)
 
 	ps, err := executor.Launch(execCmd)
@@ -391,7 +394,7 @@ func TestExecutor_CgroupPathsAreDestroyed(t *testing.T) {
 	executor.Shutdown("SIGKILL", 0)
 
 	// test that the cgroup paths are not visible
-	tmpFile, err := ioutil.TempFile("", "")
+	tmpFile, err := os.CreateTemp("", "")
 	require.NoError(err)
 	defer os.Remove(tmpFile.Name())
 
@@ -544,7 +547,7 @@ func TestExecutor_EscapeContainer(t *testing.T) {
 
 	execCmd.ResourceLimits = true
 
-	executor := NewExecutorWithIsolation(testlog.HCLogger(t))
+	executor := NewExecutorWithIsolation(testlog.HCLogger(t), 0)
 	defer executor.Shutdown("SIGKILL", 0)
 
 	_, err := executor.Launch(execCmd)
@@ -594,7 +597,7 @@ func TestExecutor_DoesNotInheritOomScoreAdj(t *testing.T) {
 	execCmd.Cmd = "/bin/bash"
 	execCmd.Args = []string{"-c", "cat /proc/self/oom_score_adj"}
 
-	executor := NewExecutorWithIsolation(testlog.HCLogger(t))
+	executor := NewExecutorWithIsolation(testlog.HCLogger(t), 0)
 	defer executor.Shutdown("SIGKILL", 0)
 
 	_, err = executor.Launch(execCmd)
@@ -629,26 +632,39 @@ func TestExecutor_Capabilities(t *testing.T) {
 	testutil.ExecCompatible(t)
 
 	cases := []struct {
-		user string
-		caps string
+		user         string
+		capAdd       []string
+		capDrop      []string
+		capsExpected string
 	}{
 		{
 			user: "nobody",
-			caps: `
-CapInh: 0000000000000000
-CapPrm: 0000000000000000
-CapEff: 0000000000000000
+			capsExpected: `
+CapInh: 00000000a80405fb
+CapPrm: 00000000a80405fb
+CapEff: 00000000a80405fb
 CapBnd: 00000000a80405fb
-CapAmb: 0000000000000000`,
+CapAmb: 00000000a80405fb`,
 		},
 		{
 			user: "root",
-			caps: `
+			capsExpected: `
 CapInh: 0000000000000000
 CapPrm: 0000003fffffffff
 CapEff: 0000003fffffffff
 CapBnd: 0000003fffffffff
 CapAmb: 0000000000000000`,
+		},
+		{
+			user:    "nobody",
+			capDrop: []string{"all"},
+			capAdd:  []string{"net_bind_service"},
+			capsExpected: `
+CapInh: 0000000000000400
+CapPrm: 0000000000000400
+CapEff: 0000000000000400
+CapBnd: 0000000000000400
+CapAmb: 0000000000000400`,
 		},
 	}
 
@@ -663,9 +679,19 @@ CapAmb: 0000000000000000`,
 			execCmd.ResourceLimits = true
 			execCmd.Cmd = "/bin/bash"
 			execCmd.Args = []string{"-c", "cat /proc/$$/status"}
-			execCmd.Capabilities = capabilities.NomadDefaults().Slice(true)
 
-			executor := NewExecutorWithIsolation(testlog.HCLogger(t))
+			capsBasis := capabilities.NomadDefaults()
+			capsAllowed := capsBasis.Slice(true)
+			if c.capDrop != nil || c.capAdd != nil {
+				calcCaps, err := capabilities.Calculate(
+					capsBasis, capsAllowed, c.capAdd, c.capDrop)
+				require.NoError(t, err)
+				execCmd.Capabilities = calcCaps
+			} else {
+				execCmd.Capabilities = capsAllowed
+			}
+
+			executor := NewExecutorWithIsolation(testlog.HCLogger(t), 0)
 			defer executor.Shutdown("SIGKILL", 0)
 
 			_, err := executor.Launch(execCmd)
@@ -691,7 +717,7 @@ CapAmb: 0000000000000000`,
 				return s
 			}
 
-			expected := canonical(c.caps)
+			expected := canonical(c.capsExpected)
 			tu.WaitForResult(func() (bool, error) {
 				output := canonical(testExecCmd.stdout.String())
 				if !strings.Contains(output, expected) {
@@ -713,7 +739,7 @@ func TestExecutor_ClientCleanup(t *testing.T) {
 	execCmd, allocDir := testExecCmd.command, testExecCmd.allocDir
 	defer allocDir.Destroy()
 
-	executor := NewExecutorWithIsolation(testlog.HCLogger(t))
+	executor := NewExecutorWithIsolation(testlog.HCLogger(t), 0)
 	defer executor.Shutdown("", 0)
 
 	// Need to run a command which will produce continuous output but not
@@ -824,7 +850,7 @@ func TestUniversalExecutor_NoCgroup(t *testing.T) {
 	ci.Parallel(t)
 	testutil.ExecCompatible(t)
 
-	expectedBytes, err := ioutil.ReadFile("/proc/self/cgroup")
+	expectedBytes, err := os.ReadFile("/proc/self/cgroup")
 	require.NoError(t, err)
 
 	expected := strings.TrimSpace(string(expectedBytes))
@@ -838,7 +864,7 @@ func TestUniversalExecutor_NoCgroup(t *testing.T) {
 	execCmd.BasicProcessCgroup = false
 	execCmd.ResourceLimits = false
 
-	executor := NewExecutor(testlog.HCLogger(t))
+	executor := NewExecutor(testlog.HCLogger(t), 0)
 	defer executor.Shutdown("SIGKILL", 0)
 
 	_, err = executor.Launch(execCmd)

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package command
 
 import (
@@ -57,6 +60,16 @@ func (a *ACLAuthMethodCommand) Name() string { return "acl auth-method" }
 // Run satisfies the cli.Command Run function.
 func (a *ACLAuthMethodCommand) Run(_ []string) int { return cli.RunResultHelp }
 
+// outputAuthMethod can be used to output the auth method to the UI within the
+// passed meta object.
+func outputAuthMethod(meta Meta, authMethod *api.ACLAuthMethod) {
+	meta.Ui.Output(formatAuthMethod(authMethod))
+	if authMethod.Config != nil {
+		meta.Ui.Output(meta.Colorize().Color("\n[bold]Auth Method Config[reset]\n"))
+		meta.Ui.Output(formatAuthMethodConfig(authMethod.Config))
+	}
+}
+
 // formatAuthMethod formats and converts the ACL auth method API object into a
 // string KV representation suitable for console output.
 func formatAuthMethod(authMethod *api.ACLAuthMethod) string {
@@ -66,38 +79,39 @@ func formatAuthMethod(authMethod *api.ACLAuthMethod) string {
 		fmt.Sprintf("Locality|%s", authMethod.TokenLocality),
 		fmt.Sprintf("MaxTokenTTL|%s", authMethod.MaxTokenTTL.String()),
 		fmt.Sprintf("Default|%t", authMethod.Default),
+		fmt.Sprintf("Create Index|%d", authMethod.CreateIndex),
+		fmt.Sprintf("Modify Index|%d", authMethod.ModifyIndex),
 	}
-
-	if authMethod.Config != nil {
-		out = append(out, formatAuthMethodConfig(authMethod.Config)...)
-	}
-	out = append(out,
-		[]string{fmt.Sprintf("Create Index|%d", authMethod.CreateIndex),
-			fmt.Sprintf("Modify Index|%d", authMethod.ModifyIndex),
-		}...,
-	)
-
 	return formatKV(out)
 }
 
-func formatAuthMethodConfig(config *api.ACLAuthMethodConfig) []string {
-	return []string{
+func formatAuthMethodConfig(config *api.ACLAuthMethodConfig) string {
+	out := []string{
+		fmt.Sprintf("JWT Validation Public Keys|%s", strings.Join(config.JWTValidationPubKeys, ",")),
+		fmt.Sprintf("JWKS URL|%s", config.JWKSURL),
 		fmt.Sprintf("OIDC Discovery URL|%s", config.OIDCDiscoveryURL),
 		fmt.Sprintf("OIDC Client ID|%s", config.OIDCClientID),
 		fmt.Sprintf("OIDC Client Secret|%s", config.OIDCClientSecret),
+		fmt.Sprintf("OIDC Scopes|%s", strings.Join(config.OIDCScopes, ",")),
 		fmt.Sprintf("Bound audiences|%s", strings.Join(config.BoundAudiences, ",")),
+		fmt.Sprintf("Bound issuer|%s", strings.Join(config.BoundIssuer, ",")),
 		fmt.Sprintf("Allowed redirects URIs|%s", strings.Join(config.AllowedRedirectURIs, ",")),
 		fmt.Sprintf("Discovery CA pem|%s", strings.Join(config.DiscoveryCaPem, ",")),
+		fmt.Sprintf("JWKS CA cert|%s", config.JWKSCACert),
 		fmt.Sprintf("Signing algorithms|%s", strings.Join(config.SigningAlgs, ",")),
-		fmt.Sprintf("Claim mappings|%s", formatMap(config.ClaimMappings)),
-		fmt.Sprintf("List claim mappings|%s", formatMap(config.ListClaimMappings)),
-	}
-}
-
-func formatMap(m map[string]string) string {
-	out := []string{}
-	for k, v := range m {
-		out = append(out, fmt.Sprintf("%s/%s", k, v))
+		fmt.Sprintf("Expiration Leeway|%s", config.ExpirationLeeway.String()),
+		fmt.Sprintf("NotBefore Leeway|%s", config.NotBeforeLeeway.String()),
+		fmt.Sprintf("ClockSkew Leeway|%s", config.ClockSkewLeeway.String()),
+		fmt.Sprintf("Claim mappings|%s", strings.Join(formatMap(config.ClaimMappings), "; ")),
+		fmt.Sprintf("List claim mappings|%s", strings.Join(formatMap(config.ListClaimMappings), "; ")),
 	}
 	return formatKV(out)
+}
+
+func formatMap(m map[string]string) []string {
+	out := []string{}
+	for k, v := range m {
+		out = append(out, fmt.Sprintf("{%s: %s}", k, v))
+	}
+	return out
 }

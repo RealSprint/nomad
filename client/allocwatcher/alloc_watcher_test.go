@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package allocwatcher
 
 import (
@@ -5,7 +8,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -255,7 +258,7 @@ func TestPrevAlloc_StreamAllocDir_Error(t *testing.T) {
 	}
 
 	// Assert streamAllocDir fails
-	err = prevAlloc.streamAllocDir(context.Background(), ioutil.NopCloser(tarBuf), dest)
+	err = prevAlloc.streamAllocDir(context.Background(), io.NopCloser(tarBuf), dest)
 	if err == nil {
 		t.Fatalf("expected an error from streamAllocDir")
 	}

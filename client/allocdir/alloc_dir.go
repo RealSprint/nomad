@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package allocdir
 
 import (
@@ -5,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -57,6 +59,10 @@ var (
 	// TaskSecrets is the name of the secret directory inside each task
 	// directory
 	TaskSecrets = "secrets"
+
+	// TaskPrivate is the name of the private directory inside each task
+	// directory
+	TaskPrivate = "private"
 
 	// TaskDirs is the set of directories created in each tasks directory.
 	TaskDirs = map[string]os.FileMode{TmpDirName: os.ModeSticky | 0777}
@@ -304,6 +310,13 @@ func (d *AllocDir) UnmountAll() error {
 			}
 		}
 
+		if pathExists(dir.PrivateDir) {
+			if err := removeSecretDir(dir.PrivateDir); err != nil {
+				mErr.Errors = append(mErr.Errors,
+					fmt.Errorf("failed to remove the private dir %q: %v", dir.PrivateDir, err))
+			}
+		}
+
 		// Unmount dev/ and proc/ have been mounted.
 		if err := dir.unmountSpecialDirs(); err != nil {
 			mErr.Errors = append(mErr.Errors, err)
@@ -357,12 +370,16 @@ func (d *AllocDir) List(path string) ([]*cstructs.AllocFileInfo, error) {
 	}
 
 	p := filepath.Join(d.AllocDir, path)
-	finfos, err := ioutil.ReadDir(p)
+	finfos, err := os.ReadDir(p)
 	if err != nil {
 		return []*cstructs.AllocFileInfo{}, err
 	}
 	files := make([]*cstructs.AllocFileInfo, len(finfos))
-	for idx, info := range finfos {
+	for idx, file := range finfos {
+		info, err := file.Info()
+		if err != nil {
+			return []*cstructs.AllocFileInfo{}, err
+		}
 		files[idx] = &cstructs.AllocFileInfo{
 			Name:     info.Name(),
 			IsDir:    info.IsDir(),
@@ -440,6 +457,10 @@ func (d *AllocDir) ReadAt(path string, offset int64) (io.ReadCloser, error) {
 		if filepath.HasPrefix(p, dir.SecretsDir) {
 			d.mu.RUnlock()
 			return nil, fmt.Errorf("Reading secret file prohibited: %s", path)
+		}
+		if filepath.HasPrefix(p, dir.PrivateDir) {
+			d.mu.RUnlock()
+			return nil, fmt.Errorf("Reading private file prohibited: %s", path)
 		}
 	}
 	d.mu.RUnlock()

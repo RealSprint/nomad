@@ -1,10 +1,15 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package structs
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
+	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/nomad/ci"
 	"github.com/hashicorp/nomad/helper/pointer"
 	"github.com/hashicorp/nomad/helper/uuid"
@@ -713,7 +718,7 @@ func TestACLRole_Copy(t *testing.T) {
 		{
 			name: "general 1",
 			inputACLRole: &ACLRole{
-				Name:        fmt.Sprintf("acl-role"),
+				Name:        "acl-role",
 				Description: "mocked-test-acl-role",
 				Policies: []*ACLRolePolicyLink{
 					{Name: "mocked-test-policy-1"},
@@ -1039,6 +1044,45 @@ func TestACLAuthMethod_Validate(t *testing.T) {
 	}
 }
 
+func TestACLAuthMethod_Merge(t *testing.T) {
+	ci.Parallel(t)
+
+	name := fmt.Sprintf("acl-auth-method-%s", uuid.Short())
+
+	maxTokenTTL, _ := time.ParseDuration("3600s")
+	am1 := &ACLAuthMethod{
+		Name:          name,
+		TokenLocality: "global",
+	}
+	am2 := &ACLAuthMethod{
+		Name:          name,
+		Type:          "OIDC",
+		TokenLocality: "locality",
+		MaxTokenTTL:   maxTokenTTL,
+		Default:       true,
+		Config: &ACLAuthMethodConfig{
+			OIDCDiscoveryURL:    "http://example.com",
+			OIDCClientID:        "mock",
+			OIDCClientSecret:    "very secret secret",
+			BoundAudiences:      []string{"audience1", "audience2"},
+			AllowedRedirectURIs: []string{"foo", "bar"},
+			DiscoveryCaPem:      []string{"foo"},
+			SigningAlgs:         []string{"bar"},
+			ClaimMappings:       map[string]string{"foo": "bar"},
+			ListClaimMappings:   map[string]string{"foo": "bar"},
+		},
+		CreateTime:  time.Now().UTC(),
+		CreateIndex: 10,
+		ModifyIndex: 10,
+	}
+
+	am1.Merge(am2)
+	must.Eq(t, am1.TokenLocality, "global")
+	minTTL, _ := time.ParseDuration("10s")
+	maxTTL, _ := time.ParseDuration("10h")
+	must.NoError(t, am1.Validate(minTTL, maxTTL))
+}
+
 func TestACLAuthMethodConfig_Copy(t *testing.T) {
 	ci.Parallel(t)
 
@@ -1046,6 +1090,7 @@ func TestACLAuthMethodConfig_Copy(t *testing.T) {
 		OIDCDiscoveryURL:    "http://example.com",
 		OIDCClientID:        "mock",
 		OIDCClientSecret:    "very secret secret",
+		OIDCScopes:          []string{"groups"},
 		BoundAudiences:      []string{"audience1", "audience2"},
 		AllowedRedirectURIs: []string{"foo", "bar"},
 		DiscoveryCaPem:      []string{"foo"},
@@ -1060,4 +1105,433 @@ func TestACLAuthMethodConfig_Copy(t *testing.T) {
 	amc3 := amc1.Copy()
 	amc3.AllowedRedirectURIs = []string{"new", "urls"}
 	must.NotEq(t, amc1, amc3)
+}
+
+func TestACLAuthMethod_Canonicalize(t *testing.T) {
+	now := time.Now().UTC()
+	tests := []struct {
+		name        string
+		inputMethod *ACLAuthMethod
+	}{
+		{
+			"no create time or modify time set",
+			&ACLAuthMethod{},
+		},
+		{
+			"create time set to now, modify time not set",
+			&ACLAuthMethod{CreateTime: now},
+		},
+		{
+			"both create time and modify time set",
+			&ACLAuthMethod{CreateTime: now, ModifyTime: now.Add(time.Hour)},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			existing := tt.inputMethod.Copy()
+			tt.inputMethod.Canonicalize()
+			if existing.CreateTime.IsZero() {
+				must.NotEq(t, time.Time{}, tt.inputMethod.CreateTime)
+			} else {
+				must.Eq(t, existing.CreateTime, tt.inputMethod.CreateTime)
+			}
+			if existing.ModifyTime.IsZero() {
+				must.NotEq(t, time.Time{}, tt.inputMethod.ModifyTime)
+			}
+		})
+	}
+}
+
+func TestACLAuthMethod_TokenLocalityIsGlobal(t *testing.T) {
+	ci.Parallel(t)
+
+	globalAuthMethod := &ACLAuthMethod{TokenLocality: "global"}
+	must.True(t, globalAuthMethod.TokenLocalityIsGlobal())
+
+	localAuthMethod := &ACLAuthMethod{TokenLocality: "local"}
+	must.False(t, localAuthMethod.TokenLocalityIsGlobal())
+}
+
+func TestACLBindingRule_Canonicalize(t *testing.T) {
+	ci.Parallel(t)
+
+	testCases := []struct {
+		name                string
+		inputACLBindingRule *ACLBindingRule
+	}{
+		{
+			name:                "new binding rule",
+			inputACLBindingRule: &ACLBindingRule{},
+		},
+		{
+			name: "existing binding rule",
+			inputACLBindingRule: &ACLBindingRule{
+				ID:         "some-random-uuid",
+				CreateTime: time.Now().UTC(),
+				ModifyTime: time.Now().UTC(),
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+
+			// Make a copy, so we can compare the modified object to it.
+			copiedBindingRule := tc.inputACLBindingRule.Copy()
+
+			tc.inputACLBindingRule.Canonicalize()
+
+			if copiedBindingRule.ID == "" {
+				must.NotEq(t, "", tc.inputACLBindingRule.ID)
+				must.NotEq(t, copiedBindingRule.CreateTime, tc.inputACLBindingRule.CreateTime)
+				must.NotEq(t, copiedBindingRule.ModifyTime, tc.inputACLBindingRule.ModifyTime)
+			} else {
+				must.Eq(t, copiedBindingRule.ID, tc.inputACLBindingRule.ID)
+				must.Eq(t, copiedBindingRule.CreateTime, tc.inputACLBindingRule.CreateTime)
+				must.NotEq(t, copiedBindingRule.ModifyTime, tc.inputACLBindingRule.ModifyTime)
+			}
+		})
+	}
+}
+
+func TestACLBindingRule_Validate(t *testing.T) {
+	ci.Parallel(t)
+
+	testCases := []struct {
+		name                string
+		inputACLBindingRule *ACLBindingRule
+		expectedError       error
+	}{
+		{
+			name: "valid policy type rule",
+			inputACLBindingRule: &ACLBindingRule{
+				Description: "some short description",
+				AuthMethod:  "auth0",
+				Selector:    "group_name in list.groups",
+				BindType:    ACLBindingRuleBindTypePolicy,
+				BindName:    "some-policy-name",
+			},
+			expectedError: nil,
+		},
+		{
+			name: "invalid policy type rule",
+			inputACLBindingRule: &ACLBindingRule{
+				Description: "some short description",
+				AuthMethod:  "auth0",
+				Selector:    "group_name in list.groups",
+				BindType:    ACLBindingRuleBindTypePolicy,
+				BindName:    "",
+			},
+			expectedError: &multierror.Error{
+				Errors: []error{
+					errors.New("bind name is missing"),
+				},
+			},
+		},
+		{
+			name: "valid role type rule",
+			inputACLBindingRule: &ACLBindingRule{
+				Description: "some short description",
+				AuthMethod:  "auth0",
+				Selector:    "group_name in list.groups",
+				BindType:    ACLBindingRuleBindTypeRole,
+				BindName:    "some-role-name",
+			},
+			expectedError: nil,
+		},
+		{
+			name: "invalid role type rule",
+			inputACLBindingRule: &ACLBindingRule{
+				Description: "some short description",
+				AuthMethod:  "auth0",
+				Selector:    "group_name in list.groups",
+				BindType:    ACLBindingRuleBindTypeRole,
+				BindName:    "",
+			},
+			expectedError: &multierror.Error{
+				Errors: []error{
+					errors.New("bind name is missing"),
+				},
+			},
+		},
+		{
+			name: "valid management type rule",
+			inputACLBindingRule: &ACLBindingRule{
+				Description: "some short description",
+				AuthMethod:  "auth0",
+				Selector:    "group_name in list.groups",
+				BindType:    ACLBindingRuleBindTypeManagement,
+				BindName:    "",
+			},
+			expectedError: nil,
+		},
+		{
+			name: "invalid management type rule",
+			inputACLBindingRule: &ACLBindingRule{
+				Description: "some short description",
+				AuthMethod:  "auth0",
+				Selector:    "group_name in list.groups",
+				BindType:    ACLBindingRuleBindTypeManagement,
+				BindName:    "some-name",
+			},
+			expectedError: &multierror.Error{
+				Errors: []error{
+					errors.New("bind name should be empty"),
+				},
+			},
+		},
+		{
+			name: "invalid selector",
+			inputACLBindingRule: &ACLBindingRule{
+				Description: "some short description",
+				AuthMethod:  "auth0",
+				Selector:    "group-name in list.groups",
+				BindType:    ACLBindingRuleBindTypePolicy,
+				BindName:    "some-policy-name",
+			},
+			expectedError: &multierror.Error{
+				Errors: []error{
+					errors.New("selector is invalid: 1:6 (5): no match found, expected: \"!=\", \".\", \"==\", \"[\", [ \\t\\r\\n] or [a-zA-Z0-9_/]"),
+				},
+			},
+		},
+		{
+			name: "invalid all",
+			inputACLBindingRule: &ACLBindingRule{
+				Description: uuid.Generate() + uuid.Generate() + uuid.Generate() +
+					uuid.Generate() + uuid.Generate() + uuid.Generate() +
+					uuid.Generate() + uuid.Generate(),
+				AuthMethod: "",
+				Selector:   "group-name in list.groups",
+				BindType:   "",
+				BindName:   "",
+			},
+			expectedError: &multierror.Error{
+				Errors: []error{
+					errors.New("auth method is missing"),
+					errors.New("description longer than 256"),
+					errors.New("bind type is missing"),
+					errors.New("selector is invalid: 1:6 (5): no match found, expected: \"!=\", \".\", \"==\", \"[\", [ \\t\\r\\n] or [a-zA-Z0-9_/]"),
+				},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			must.Eq(t, tc.expectedError, tc.inputACLBindingRule.Validate())
+		})
+	}
+}
+
+func TestACLBindingRule_Merge(t *testing.T) {
+	ci.Parallel(t)
+
+	id := uuid.Short()
+	br := &ACLBindingRule{
+		ID:          id,
+		Description: "old description",
+		AuthMethod:  "example-acl-auth-method",
+		BindType:    "rule",
+		BindName:    "bind name",
+		CreateTime:  time.Now().UTC(),
+		CreateIndex: 10,
+		ModifyIndex: 10,
+	}
+
+	// make a description update
+	br_description_update := &ACLBindingRule{
+		ID:          id,
+		Description: "new description",
+	}
+	br_description_update.Merge(br)
+	must.Eq(t, br_description_update.Description, "new description")
+	must.Eq(t, br_description_update.BindType, "rule")
+}
+
+func TestACLBindingRule_SetHash(t *testing.T) {
+	ci.Parallel(t)
+
+	bindingRule := &ACLBindingRule{
+		ID:         uuid.Generate(),
+		AuthMethod: "okta",
+	}
+	out1 := bindingRule.SetHash()
+	must.NotNil(t, out1)
+	must.NotNil(t, bindingRule.Hash)
+	must.Eq(t, out1, bindingRule.Hash)
+
+	bindingRule.Description = "my lovely rule"
+	out2 := bindingRule.SetHash()
+	must.NotNil(t, out2)
+	must.NotNil(t, bindingRule.Hash)
+	must.Eq(t, out2, bindingRule.Hash)
+	must.NotEq(t, out1, out2)
+}
+
+func TestACLBindingRule_Equal(t *testing.T) {
+	ci.Parallel(t)
+
+	aclBindingRule1 := &ACLBindingRule{
+		ID:          uuid.Short(),
+		Description: "mocked-acl-binding-rule",
+		AuthMethod:  "auth0",
+		Selector:    "engineering in list.roles",
+		BindType:    "role-id",
+		BindName:    "eng-ro",
+		CreateTime:  time.Now().UTC(),
+		ModifyTime:  time.Now().UTC(),
+		CreateIndex: 10,
+		ModifyIndex: 10,
+	}
+	aclBindingRule1.SetHash()
+
+	// Create a second binding rule, and modify this from the first.
+	aclBindingRule2 := aclBindingRule1.Copy()
+	aclBindingRule2.Description = ""
+	aclBindingRule2.SetHash()
+
+	testCases := []struct {
+		name    string
+		method1 *ACLBindingRule
+		method2 *ACLBindingRule
+		want    bool
+	}{
+		{"one nil", aclBindingRule1, &ACLBindingRule{}, false},
+		{"both nil", &ACLBindingRule{}, &ACLBindingRule{}, true},
+		{"not equal", aclBindingRule1, aclBindingRule2, false},
+		{"equal", aclBindingRule2, aclBindingRule2.Copy(), true},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.method1.Equal(tc.method2)
+			must.Eq(t, got, tc.want)
+		})
+	}
+}
+
+func TestACLBindingRule_Copy(t *testing.T) {
+	ci.Parallel(t)
+
+	aclBindingRule1 := &ACLBindingRule{
+		ID:          uuid.Short(),
+		Description: "mocked-acl-binding-rule",
+		AuthMethod:  "auth0",
+		Selector:    "engineering in list.roles",
+		BindType:    "role-id",
+		BindName:    "eng-ro",
+		CreateTime:  time.Now().UTC(),
+		ModifyTime:  time.Now().UTC(),
+		CreateIndex: 10,
+		ModifyIndex: 10,
+	}
+	aclBindingRule1.SetHash()
+
+	aclBindingRule2 := aclBindingRule1.Copy()
+	must.Eq(t, aclBindingRule1, aclBindingRule2)
+
+	aclBindingRule3 := aclBindingRule1.Copy()
+	aclBindingRule3.Description = ""
+	aclBindingRule3.SetHash()
+	must.NotEq(t, aclBindingRule1, aclBindingRule3)
+}
+
+func TestACLBindingRule_Stub(t *testing.T) {
+	ci.Parallel(t)
+
+	aclBindingRule := ACLBindingRule{
+		ID:          "some-uuid",
+		Description: "my-binding-rule",
+		AuthMethod:  "auth0",
+		Selector:    "some selector.pattern",
+		BindType:    "role",
+		BindName:    "some-role-id-or-name",
+		CreateTime:  time.Now().UTC(),
+		ModifyTime:  time.Now().UTC(),
+		CreateIndex: 1309,
+		ModifyIndex: 9031,
+	}
+	aclBindingRule.SetHash()
+
+	must.Eq(t, &ACLBindingRuleListStub{
+		ID:          "some-uuid",
+		Description: "my-binding-rule",
+		AuthMethod:  "auth0",
+		Hash:        aclBindingRule.Hash,
+		CreateIndex: 1309,
+		ModifyIndex: 9031,
+	}, aclBindingRule.Stub())
+}
+
+func Test_ACLBindingRulesUpsertRequest(t *testing.T) {
+	ci.Parallel(t)
+
+	req := ACLBindingRulesUpsertRequest{}
+	require.False(t, req.IsRead())
+}
+
+func Test_ACLBindingRulesDeleteRequest(t *testing.T) {
+	ci.Parallel(t)
+
+	req := ACLBindingRulesDeleteRequest{}
+	require.False(t, req.IsRead())
+}
+
+func Test_ACLBindingRulesListRequest(t *testing.T) {
+	ci.Parallel(t)
+
+	req := ACLBindingRulesListRequest{}
+	require.True(t, req.IsRead())
+}
+
+func Test_ACLBindingRulesRequest(t *testing.T) {
+	ci.Parallel(t)
+
+	req := ACLBindingRulesRequest{}
+	require.True(t, req.IsRead())
+}
+
+func Test_ACLBindingRuleRequest(t *testing.T) {
+	ci.Parallel(t)
+
+	req := ACLBindingRuleRequest{}
+	require.True(t, req.IsRead())
+}
+
+func TestACLOIDCAuthURLRequest(t *testing.T) {
+	ci.Parallel(t)
+
+	req := &ACLOIDCAuthURLRequest{}
+	must.False(t, req.IsRead())
+}
+
+func TestACLOIDCAuthURLRequest_Validate(t *testing.T) {
+	ci.Parallel(t)
+
+	testRequest := &ACLOIDCAuthURLRequest{}
+	err := testRequest.Validate()
+	must.Error(t, err)
+	must.StrContains(t, err.Error(), "missing auth method name")
+	must.StrContains(t, err.Error(), "missing client nonce")
+	must.StrContains(t, err.Error(), "missing redirect URI")
+}
+
+func TestACLOIDCCompleteAuthRequest(t *testing.T) {
+	ci.Parallel(t)
+
+	req := &ACLOIDCCompleteAuthRequest{}
+	must.False(t, req.IsRead())
+}
+
+func TestACLOIDCCompleteAuthRequest_Validate(t *testing.T) {
+	ci.Parallel(t)
+
+	testRequest := &ACLOIDCCompleteAuthRequest{}
+	err := testRequest.Validate()
+	must.Error(t, err)
+	must.StrContains(t, err.Error(), "missing auth method name")
+	must.StrContains(t, err.Error(), "missing client nonce")
+	must.StrContains(t, err.Error(), "missing state")
+	must.StrContains(t, err.Error(), "missing code")
+	must.StrContains(t, err.Error(), "missing redirect URI")
 }

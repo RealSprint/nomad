@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 //go:build linux
 
 package cgutil
@@ -8,6 +11,7 @@ import (
 	"path/filepath"
 
 	"github.com/hashicorp/go-hclog"
+	"github.com/hashicorp/nomad/helper/pointer"
 	"github.com/hashicorp/nomad/helper/uuid"
 	"github.com/opencontainers/runc/libcontainer/cgroups"
 	lcc "github.com/opencontainers/runc/libcontainer/configs"
@@ -18,7 +22,19 @@ import (
 // cgroups.v1
 //
 // This is a read-only value.
-var UseV2 = cgroups.IsCgroup2UnifiedMode()
+var UseV2 = safelyDetectUnifiedMode()
+
+// Currently it is possible for the runc utility function to panic
+// https://github.com/opencontainers/runc/pull/3745
+func safelyDetectUnifiedMode() (result bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			result = false
+		}
+	}()
+	result = cgroups.IsCgroup2UnifiedMode()
+	return
+}
 
 // GetCgroupParent returns the mount point under the root cgroup in which Nomad
 // will create cgroups. If parent is not set, an appropriate name for the version
@@ -132,4 +148,27 @@ func CopyCpuset(source, destination string) error {
 	}
 
 	return nil
+}
+
+// MaybeDisableMemorySwappiness will disable memory swappiness, if that controller
+// is available. Always the case for cgroups v2, but is not always the case on
+// very old kernels with cgroups v1.
+func MaybeDisableMemorySwappiness() *uint64 {
+	bypass := (*uint64)(nil)
+	zero := pointer.Of[uint64](0)
+
+	// cgroups v2 always set zero
+	if UseV2 {
+		return zero
+	}
+
+	// cgroups v1 detect if swappiness is supported by attempting to write to
+	// the nomad parent cgroup swappiness interface
+	e := &editor{fromRoot: "memory/nomad"}
+	err := e.write("memory.swappiness", "0")
+	if err != nil {
+		return bypass
+	}
+
+	return zero
 }
