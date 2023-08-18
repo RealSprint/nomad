@@ -2,6 +2,7 @@
 
 ## Creating a release
 
+- Apply the rs-nomad-patch.patch
 - Trigger the release-workflow appropriate release branch (`release/1.3.1-rs-1` for example)
 - Download the zipped amd64 binary from the build workflow
 - Unzip it (it's double zipped for some reason)

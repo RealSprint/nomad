@@ -1,0 +1,1207 @@
+diff --git a/.github/workflows/build.yml b/.github/workflows/build.yml
+index fa8ac6d39c..2709c95511 100644
+--- a/.github/workflows/build.yml
++++ b/.github/workflows/build.yml
+@@ -74,65 +74,13 @@ jobs:
+           name: metadata.json
+           path: ${{ steps.generate-metadata-file.outputs.filepath }}
+ 
+-  build-other:
+-    needs: [get-go-version, get-product-version]
+-    runs-on: [ custom, linux, xxl, 20.04 ]
+-    strategy:
+-      matrix:
+-        goos: [windows]
+-        goarch: ["amd64"]
+-      fail-fast: true
+-
+-    name: Go ${{ needs.get-go-version.outputs.go-version }} ${{ matrix.goos }} ${{ matrix.goarch }} build
+-
+-    steps:
+-      - uses: actions/checkout@8e5e7e5ab8b370d6c329ec480221332ada57f0ab # v3.5.2
+-        with:
+-          ref: ${{ github.event.inputs.build-ref }}
+-      - name: Setup go
+-        uses: actions/setup-go@4d34df0c2316fe8122ab82dc22947d607c0c91f9 # v4.0.0
+-        with:
+-          go-version: ${{ needs.get-go-version.outputs.go-version }}
+-
+-      - name: Build dependencies
+-        run: make deps
+-
+-      - name: Setup node and yarn
+-        uses: actions/setup-node@64ed1c7eab4cce3362f8c340dee64e5eaeef8f7c # v3.6.0
+-        with:
+-          node-version: "18"
+-          cache-dependency-path: "ui/yarn.lock"
+-
+-      - name: Install Yarn
+-        run: |
+-          npm install -g yarn
+-
+-      - name: Build prerelease
+-        run: make prerelease
+-        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.make-prerelease == 'true' }}
+-
+-      - name: Build
+-        env:
+-          GOOS: ${{ matrix.goos }}
+-          GOARCH: ${{ matrix.goarch }}
+-          GO_TAGS: ${{ env.GO_TAGS }}
+-          CGO_ENABLED: 1
+-        run: |
+-          go clean -cache
+-          make pkg/${{ matrix.goos }}_${{ matrix.goarch }}.zip
+-          mv pkg/${{ matrix.goos }}_${{ matrix.goarch }}.zip ${{ env.PKG_NAME }}_${{ needs.get-product-version.outputs.product-version }}_${{ matrix.goos }}_${{ matrix.goarch }}.zip
+-      - uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce # v3.1.2
+-        with:
+-          name: ${{ env.PKG_NAME }}_${{ needs.get-product-version.outputs.product-version }}_${{ matrix.goos }}_${{ matrix.goarch }}.zip
+-          path: ${{ env.PKG_NAME }}_${{ needs.get-product-version.outputs.product-version }}_${{ matrix.goos }}_${{ matrix.goarch }}.zip
+-
+   build-linux:
+     needs: [get-go-version, get-product-version]
+-    runs-on: [ custom, linux, xxl, 20.04 ]
++    runs-on: [ ubuntu-20.04 ]
+     strategy:
+       matrix:
+         goos: [linux]
+-        goarch: ["arm", "arm64", "amd64"]
++        goarch: ["amd64"]
+       fail-fast: true
+ 
+     name: Go ${{ needs.get-go-version.outputs.go-version }} ${{ matrix.goos }} ${{ matrix.goarch }} build
+@@ -231,143 +179,6 @@ jobs:
+           name: ${{ env.DEB_PACKAGE }}
+           path: out/${{ env.DEB_PACKAGE }}
+ 
+-  build-darwin:
+-    needs: [get-go-version, get-product-version]
+-    runs-on: ${{ endsWith(github.repository, '-enterprise') && fromJSON('["self-hosted", "ondemand", "macos"]') || 'macos-latest' }}
+-    strategy:
+-      matrix:
+-        goos: [darwin]
+-        goarch: ["arm64", "amd64"]
+-      fail-fast: true
+-
+-    name: Go ${{ needs.get-go-version.outputs.go-version }} ${{ matrix.goos }} ${{ matrix.goarch }} build
+-
+-    steps:
+-      - uses: actions/checkout@8e5e7e5ab8b370d6c329ec480221332ada57f0ab # v3.5.2
+-        with:
+-          ref: ${{ github.event.inputs.build-ref }}
+-
+-      - uses: ./.github/actions/vault-secrets
+-        with:
+-          paths: |-
+-            kv/data/github/hashicorp/nomad-enterprise/gha ELEVATED_GITHUB_TOKEN ;
+-      - name: Git config token
+-        if: endsWith(github.repository, '-enterprise')
+-        run: git config --global url.'https://${{ env.ELEVATED_GITHUB_TOKEN }}@github.com'.insteadOf 'https://github.com'
+-
+-      - name: Setup go
+-        uses: actions/setup-go@4d34df0c2316fe8122ab82dc22947d607c0c91f9 # v4.0.0
+-        with:
+-          go-version: ${{ needs.get-go-version.outputs.go-version }}
+-
+-      - name: Build dependencies
+-        run: make deps
+-
+-      - name: Setup node and yarn
+-        uses: actions/setup-node@64ed1c7eab4cce3362f8c340dee64e5eaeef8f7c # v3.6.0
+-        with:
+-          node-version: "18"
+-          cache-dependency-path: "ui/yarn.lock"
+-
+-      - name: Install Yarn
+-        run: |
+-          npm install -g yarn
+-
+-      - name: Build prerelease
+-        run: make prerelease
+-        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.make-prerelease == 'true' }}
+-
+-      - name: Build
+-        env:
+-          GOOS: ${{ matrix.goos }}
+-          GOARCH: ${{ matrix.goarch }}
+-          GO_TAGS: "${{ env.GO_TAGS }} netcgo"
+-          CGO_ENABLED: 1
+-        run: |
+-          go clean -cache
+-          make pkg/${{ matrix.goos }}_${{ matrix.goarch }}.zip
+-          mv pkg/${{ matrix.goos }}_${{ matrix.goarch }}.zip ${{ env.PKG_NAME }}_${{ needs.get-product-version.outputs.product-version }}_${{ matrix.goos }}_${{ matrix.goarch }}.zip
+-      - uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce # v3.1.2
+-        with:
+-          name: ${{ env.PKG_NAME }}_${{ needs.get-product-version.outputs.product-version }}_${{ matrix.goos }}_${{ matrix.goarch }}.zip
+-          path: ${{ env.PKG_NAME }}_${{ needs.get-product-version.outputs.product-version }}_${{ matrix.goos }}_${{ matrix.goarch }}.zip
+-
+-  build-docker:
+-    name: Docker ${{ matrix.arch }} build
+-    needs:
+-      - get-product-version
+-      - build-linux
+-    runs-on: [ custom, linux, xxl, 20.04 ]
+-    strategy:
+-      matrix:
+-        arch: ["arm64", "amd64"]
+-    env:
+-      version: ${{needs.get-product-version.outputs.product-version}}
+-      revision: ${{github.sha}}
+-    steps:
+-      - uses: actions/checkout@8e5e7e5ab8b370d6c329ec480221332ada57f0ab # v3.5.2
+-      - name: Set revision
+-        if: "${{ github.event.inputs.build-ref != '' }}"
+-        run: |
+-          echo "revision=${{ github.event.inputs.build-ref }}" >> "$GITHUB_ENV"
+-      - name: Docker Build (Action)
+-        uses: hashicorp/actions-docker-build@v1
+-        with:
+-          smoke_test: |
+-            TEST_VERSION="$(docker run "${IMAGE_NAME}" version | awk '/Nomad v/{print $2}')"
+-            if [ "${TEST_VERSION}" != "v${version}" ]; then
+-              echo "Test FAILED"
+-              exit 1
+-            fi
+-            echo "Test PASSED"
+-          version: ${{env.version}}
+-          revision: ${{env.revision}}
+-          target: release
+-          arch: ${{matrix.arch}}
+-          tags: |
+-            docker.io/hashicorp/${{env.PKG_NAME}}:${{env.version}}
+-          dev_tags: |
+-            docker.io/hashicorppreview/${{ env.PKG_NAME }}:${{ env.version }}-dev
+-            docker.io/hashicorppreview/${{ env.PKG_NAME }}:${{ env.version }}-${{env.revision}}
+-
+-  minimum-os:
+-    name: OS Compatibility
+-    # A quick smoke test of our binaries on our minimum target OS (RHEL 7). Why RHEL 7? Because the glibc version is that old (2.17).
+-    needs:
+-      - get-go-version
+-      - get-product-version
+-      - build-linux
+-    runs-on: ubuntu-22.04
+-    strategy:
+-      fail-fast: false
+-      # Note: Ideally we'd test all our target archs, unfortunately availability of containers of these OS's vary.
+-      # For instance there is no ubi7 image for arm64 (there is on ubi8), RHBZ#1728771. And none at all for arm.
+-      # So we have to settle for only being able to validate where we can, which is just amd64.
+-      matrix:
+-        goos: [linux]
+-        goarch: [amd64]
+-    steps:
+-      - uses: actions/setup-go@4d34df0c2316fe8122ab82dc22947d607c0c91f9 # v4.0.0
+-        with:
+-          go-version: ${{needs.get-go-version.outputs.go-version}}
+-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3.0.2
+-        with:
+-          name: ${{ env.PKG_NAME }}_${{ needs.get-product-version.outputs.product-version }}_${{ matrix.goos }}_${{ matrix.goarch }}.zip
+-      - name: Test binary
+-        env:
+-          artifact_name: ${{ env.PKG_NAME }}_${{ needs.get-product-version.outputs.product-version }}_${{ matrix.goos }}_${{ matrix.goarch }}.zip
+-        run: |
+-          echo "::group::Unpack and Prep"
+-          docker pull registry.access.redhat.com/ubi7/ubi-minimal:7.9-1057
+-          unzip "$artifact_name"
+-          echo "::group::Diagnostics"
+-          echo "CGO related build information:"
+-          go version -m ./nomad | grep CGO
+-          echo "GLIBC links:"
+-          go tool nm ./nomad | grep -i glibc | cut -d @ -f 2-3 | sort --version-sort | uniq
+-          echo "::group::Smoke test binary"
+-          docker run --rm -v "$PWD:/src" registry.access.redhat.com/ubi7/ubi-minimal:7.9-1057 /src/nomad version
+-
+ permissions:
+   contents: read
+   id-token: write
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+index 976d73e8d1..3046d1f984 100644
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -46,12 +46,6 @@ jobs:
+           chmod +x "${local_bin}/semver"
+           echo "${local_bin}" >> "$GITHUB_PATH"
+ 
+-      - name: Validate release version
+-        run: |-
+-          if [ "$(semver validate ${{ github.event.inputs.version }})" == "invalid" ]; then
+-            echo "::error::Version ${{ github.event.inputs.version }} is invalid"
+-            exit 1
+-          fi
+       - uses: actions/checkout@8e5e7e5ab8b370d6c329ec480221332ada57f0ab # v3.5.2
+       - uses: ./.github/actions/vault-secrets
+         with:
+diff --git a/.github/workflows/test-core.yaml b/.github/workflows/test-core.yaml
+index 381a387fa0..e1e2c034a9 100644
+--- a/.github/workflows/test-core.yaml
++++ b/.github/workflows/test-core.yaml
+@@ -73,7 +73,7 @@ jobs:
+     strategy:
+       fail-fast: false
+       matrix:
+-        os: [ubuntu-22.04, macos-11, windows-2019]
++        os: [ubuntu-22.04]
+     runs-on: ${{matrix.os}}
+     timeout-minutes: 20
+     steps:
+@@ -85,7 +85,7 @@ jobs:
+           make dev
+   tests-api:
+     needs: [mods]
+-    runs-on: [custom, xl, 22.04]
++    runs-on: [ubuntu-22.04]
+     timeout-minutes: 8
+     steps:
+       - uses: actions/checkout@8e5e7e5ab8b370d6c329ec480221332ada57f0ab # v3.5.2
+diff --git a/.github/workflows/test-ui.yml b/.github/workflows/test-ui.yml
+deleted file mode 100644
+index e4578ed49a..0000000000
+--- a/.github/workflows/test-ui.yml
++++ /dev/null
+@@ -1,108 +0,0 @@
+-name: test-ui
+-on:
+-  pull_request:
+-    paths-ignore:
+-      - 'README.md'
+-      - 'CHANGELOG.md'
+-      - '.changelog/**'
+-      - '.tours/**'
+-      - 'contributing/**'
+-      - 'demo/**'
+-      - 'dev/**'
+-      - 'e2e/**'
+-      - 'integrations/**'
+-      - 'pkg/**'
+-      - 'scripts/**'
+-      - 'terraform/**'
+-      - 'website/**'
+-  push:
+-    branches:
+-      - main
+-      - release/**
+-      - test-ui
+-    paths-ignore:
+-      - 'README.md'
+-      - 'CHANGELOG.md'
+-      - '.changelog/**'
+-      - '.tours/**'
+-      - 'contributing/**'
+-      - 'demo/**'
+-      - 'dev/**'
+-      - 'e2e/**'
+-      - 'integrations/**'
+-      - 'pkg/**'
+-      - 'scripts/**'
+-      - 'terraform/**'
+-      - 'website/**'
+-
+-jobs:
+-  pre-test:
+-    runs-on: ubuntu-latest
+-    timeout-minutes: 30
+-    defaults:
+-      run:
+-        working-directory: ui
+-    outputs:
+-      nonce: ${{ steps.nonce.outputs.nonce }}
+-    steps:
+-      - uses: actions/checkout@8e5e7e5ab8b370d6c329ec480221332ada57f0ab # v3.5.2
+-      - uses: ./.github/actions/setup-js
+-      - name: lint:js
+-        run: yarn run lint:js
+-      - name: lint:hbs
+-        run: yarn run lint:hbs
+-      - id: nonce
+-        name: nonce
+-        run: echo "nonce=${{ github.run_id }}-$(date +%s)" >> "$GITHUB_OUTPUT"
+-
+-  tests:
+-    needs:
+-      - pre-test
+-    runs-on: ${{ endsWith(github.repository, '-enterprise') && fromJSON('["self-hosted", "ondemand", "linux"]') || 'ubuntu-latest' }}
+-    timeout-minutes: 30
+-    continue-on-error: true
+-    defaults:
+-      run:
+-        working-directory: ui
+-    strategy:
+-      matrix:
+-        partition: [1, 2, 3, 4]
+-        split: [4]
+-    steps:
+-      - uses: actions/checkout@8e5e7e5ab8b370d6c329ec480221332ada57f0ab # v3.5.2
+-      - uses: ./.github/actions/setup-js
+-      - uses: browser-actions/setup-chrome@c485fa3bab6be59dce18dbc18ef6ab7cbc8ff5f1 # v1.2.0
+-      - uses: ./.github/actions/vault-secrets
+-        with:
+-          paths: |-
+-            kv/data/teams/nomad/ui PERCY_TOKEN ;
+-      - name: ember exam
+-        env:
+-          PERCY_TOKEN: ${{ env.PERCY_TOKEN || secrets.PERCY_TOKEN }}
+-          PERCY_PARALLEL_NONCE: ${{ needs.pre-test.outputs.nonce }}
+-        run: yarn exam:parallel --split=${{ matrix.split }} --partition=${{ matrix.partition }}
+-
+-  finalize:
+-    needs:
+-      - pre-test
+-      - tests
+-    runs-on: ${{ endsWith(github.repository, '-enterprise') && fromJSON('["self-hosted", "ondemand", "linux"]') || 'ubuntu-latest' }}
+-    timeout-minutes: 30
+-    defaults:
+-      run:
+-        working-directory: ui
+-    steps:
+-      - uses: actions/checkout@8e5e7e5ab8b370d6c329ec480221332ada57f0ab # v3.5.2
+-      - uses: ./.github/actions/setup-js
+-      - uses: ./.github/actions/vault-secrets
+-        with:
+-          paths: |-
+-            kv/data/teams/nomad/ui PERCY_TOKEN ;
+-      - name: finalize
+-        env:
+-          PERCY_TOKEN: ${{ env.PERCY_TOKEN || secrets.PERCY_TOKEN }}
+-          PERCY_PARALLEL_NONCE: ${{ needs.pre-test.outputs.nonce }}
+-        run: yarn percy build:finalize
+-permissions:
+-  contents: read
+-  id-token: write
+diff --git a/.github/workflows/test-windows.yml b/.github/workflows/test-windows.yml
+deleted file mode 100644
+index 3316b5d1dc..0000000000
+--- a/.github/workflows/test-windows.yml
++++ /dev/null
+@@ -1,97 +0,0 @@
+-name: test-windows
+-on:
+-  pull_request:
+-    branches:
+-      - main
+-      - release/**
+-    paths-ignore:
+-      - 'README.md'
+-      - 'CHANGELOG.md'
+-      - '.changelog/**'
+-      - '.tours/**'
+-      - 'contributing/**'
+-      - 'demo/**'
+-      - 'dev/**'
+-      - 'e2e/**'
+-      - 'integrations/**'
+-      - 'pkg/**'
+-      - 'scripts/**'
+-      - 'terraform/**'
+-      - 'ui/**'
+-      - 'website/**'
+-  push:
+-    branches:
+-      - main
+-      - release/**
+-    paths-ignore:
+-      - 'README.md'
+-      - 'CHANGELOG.md'
+-      - '.changelog/**'
+-      - '.tours/**'
+-      - 'contributing/**'
+-      - 'demo/**'
+-      - 'dev/**'
+-      - 'e2e/**'
+-      - 'integrations/**'
+-      - 'pkg/**'
+-      - 'scripts/**'
+-      - 'terraform/**'
+-      - 'ui/**'
+-      - 'website/**'
+-
+-env:
+-  VAULT_VERSION: 1.4.1
+-jobs:
+-  test-windows:
+-    runs-on: 'windows-2019-16core'
+-    env:
+-      GOTESTSUM_PATH: c:\tmp\test-reports
+-    steps:
+-      - name: Docker Info
+-        run: docker version
+-      - run: git config --global core.autocrlf false
+-      - uses: actions/checkout@8e5e7e5ab8b370d6c329ec480221332ada57f0ab # v3.5.2
+-      - name: Setup go
+-        uses: actions/setup-go@4d34df0c2316fe8122ab82dc22947d607c0c91f9 # v4.0.0
+-        with:
+-          go-version-file: ".go-version"
+-      - name: Show installed Go version
+-        shell: bash
+-        run: |-
+-          export PATH=/c/go/bin:/c/gopath/bin:$PATH
+-          go version
+-      - uses: "./.github/actions/install-vault"
+-        with:
+-          version: "$VAULT_VERSION"
+-      - run: vault version
+-      - run: choco install make
+-      - name: Install golang dependencies
+-        shell: bash
+-        run: |-
+-          make deps
+-      - name: Pre-download docker test image
+-        shell: bash
+-        run: |-
+-          docker pull docker.mirror.hashicorp.services/hashicorpdev/busybox-windows:ltsc2019
+-      - name: Build nomad
+-        shell: bash
+-        run: |-
+-          go install .
+-      - name: Run tests with gotestsum
+-        shell: bash
+-        env:
+-          BUSYBOX_IMAGE: docker.mirror.hashicorp.services/hashicorpdev/busybox-windows:ltsc2019
+-        run: |-
+-          # Only test docker driver tests for now
+-          export PATH=/c/go/bin:/c/gopath/bin:$PATH
+-          gotestsum --format=short-verbose \
+-            --junitfile results.xml \
+-            github.com/hashicorp/nomad/drivers/docker \
+-            github.com/hashicorp/nomad/client/lib/fifo \
+-            github.com/hashicorp/nomad/client/logmon
+-      - uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce # v3.1.2
+-        with:
+-          name: results.xml
+-          path: results.xml
+-permissions:
+-  contents: read
+diff --git a/api/compose_test.go b/api/compose_test.go
+index dba002b091..accbd09a80 100644
+--- a/api/compose_test.go
++++ b/api/compose_test.go
+@@ -36,7 +36,7 @@ func TestCompose(t *testing.T) {
+ 	st2 := NewSpreadTarget("dc2", 20)
+ 	grp := NewTaskGroup("grp1", 2).
+ 		Constrain(NewConstraint("kernel.name", "=", "linux")).
+-		AddAffinity(NewAffinity("${node.class}", "=", "large", 50)).
++		AddAffinity(NewAffinity("${node.class}", "=", "large", 50, true)).
+ 		AddSpread(NewSpread("${node.datacenter}", 30, []*SpreadTarget{st1, st2})).
+ 		SetMeta("foo", "bar").
+ 		AddTask(task)
+@@ -81,10 +81,11 @@ func TestCompose(t *testing.T) {
+ 				},
+ 				Affinities: []*Affinity{
+ 					{
+-						LTarget: "${node.class}",
+-						RTarget: "large",
+-						Operand: "=",
+-						Weight:  pointerOf(int8(50)),
++						LTarget:               "${node.class}",
++						RTarget:               "large",
++						Operand:               "=",
++						Weight:                pointerOf(int8(50)),
++						NormalizeNodeAffinity: pointerOf(bool(true)),
+ 					},
+ 				},
+ 				Spreads: []*Spread{
+diff --git a/api/jobs_test.go b/api/jobs_test.go
+index f17dee3857..58cd813abf 100644
+--- a/api/jobs_test.go
++++ b/api/jobs_test.go
+@@ -2225,26 +2225,30 @@ func TestJobs_AddAffinity(t *testing.T) {
+ 	job := &Job{Affinities: nil}
+ 
+ 	// Create and add an affinity
+-	out := job.AddAffinity(NewAffinity("kernel.version", "=", "4.6", 100))
+-	must.Len(t, 1, job.Affinities)
++	out := job.AddAffinity(NewAffinity("kernel.version", "=", "4.6", 100, true))
++	if n := len(job.Affinities); n != 1 {
++		t.Fatalf("expected 1 affinity, got: %d", n)
++	}
+ 
+ 	// Check that the job was returned
+ 	must.Eq(t, job, out)
+ 
+ 	// Adding another affinity preserves the original
+-	job.AddAffinity(NewAffinity("${node.datacenter}", "=", "dc2", 50))
++	job.AddAffinity(NewAffinity("${node.datacenter}", "=", "dc2", 50, true))
+ 	expect := []*Affinity{
+ 		{
+-			LTarget: "kernel.version",
+-			RTarget: "4.6",
+-			Operand: "=",
+-			Weight:  pointerOf(int8(100)),
++			LTarget:               "kernel.version",
++			RTarget:               "4.6",
++			Operand:               "=",
++			Weight:                pointerOf(int8(100)),
++			NormalizeNodeAffinity: pointerOf(bool(true)),
+ 		},
+ 		{
+-			LTarget: "${node.datacenter}",
+-			RTarget: "dc2",
+-			Operand: "=",
+-			Weight:  pointerOf(int8(50)),
++			LTarget:               "${node.datacenter}",
++			RTarget:               "dc2",
++			Operand:               "=",
++			Weight:                pointerOf(int8(50)),
++			NormalizeNodeAffinity: pointerOf(bool(true)),
+ 		},
+ 	}
+ 	must.Eq(t, expect, job.Affinities)
+diff --git a/api/tasks.go b/api/tasks.go
+index 188fa8649b..e1d10a3321 100644
+--- a/api/tasks.go
++++ b/api/tasks.go
+@@ -180,18 +180,20 @@ func (r *ReschedulePolicy) Canonicalize(jobType string) {
+ 
+ // Affinity is used to serialize task group affinities
+ type Affinity struct {
+-	LTarget string `hcl:"attribute,optional"` // Left-hand target
+-	RTarget string `hcl:"value,optional"`     // Right-hand target
+-	Operand string `hcl:"operator,optional"`  // Constraint operand (<=, <, =, !=, >, >=), set_contains_all, set_contains_any
+-	Weight  *int8  `hcl:"weight,optional"`    // Weight applied to nodes that match the affinity. Can be negative
++	LTarget               string `hcl:"attribute,optional"` // Left-hand target
++	RTarget               string `hcl:"value,optional"`     // Right-hand target
++	Operand               string `hcl:"operator,optional"`  // Constraint operand (<=, <, =, !=, >, >=), set_contains_all, set_contains_any
++	Weight                *int8  `hcl:"weight,optional"`    // Weight applied to nodes that match the affinity. Can be negative
++	NormalizeNodeAffinity *bool  `hcl:"normalize_node_affinity,optional"`
+ }
+ 
+-func NewAffinity(lTarget string, operand string, rTarget string, weight int8) *Affinity {
++func NewAffinity(lTarget string, operand string, rTarget string, weight int8, normalizeNodeAffinity bool) *Affinity {
+ 	return &Affinity{
+-		LTarget: lTarget,
+-		RTarget: rTarget,
+-		Operand: operand,
+-		Weight:  pointerOf(int8(weight)),
++		LTarget:               lTarget,
++		RTarget:               rTarget,
++		Operand:               operand,
++		Weight:                pointerOf(int8(weight)),
++		NormalizeNodeAffinity: pointerOf(bool(normalizeNodeAffinity)),
+ 	}
+ }
+ 
+@@ -199,6 +201,9 @@ func (a *Affinity) Canonicalize() {
+ 	if a.Weight == nil {
+ 		a.Weight = pointerOf(int8(50))
+ 	}
++	if a.NormalizeNodeAffinity == nil {
++		a.NormalizeNodeAffinity = pointerOf(bool(true))
++	}
+ }
+ 
+ func NewDefaultReschedulePolicy(jobType string) *ReschedulePolicy {
+diff --git a/api/tasks_test.go b/api/tasks_test.go
+index 231993906f..b20d8a5b52 100644
+--- a/api/tasks_test.go
++++ b/api/tasks_test.go
+@@ -58,26 +58,30 @@ func TestTaskGroup_AddAffinity(t *testing.T) {
+ 	grp := NewTaskGroup("grp1", 1)
+ 
+ 	// Add an affinity to the group
+-	out := grp.AddAffinity(NewAffinity("kernel.version", "=", "4.6", 100))
+-	must.Len(t, 1, grp.Affinities)
++	out := grp.AddAffinity(NewAffinity("kernel.version", "=", "4.6", 100, true))
++	if n := len(grp.Affinities); n != 1 {
++		t.Fatalf("expected 1 affinity, got: %d", n)
++	}
+ 
+ 	// Check that the group was returned
+ 	must.Eq(t, grp, out)
+ 
+ 	// Add a second affinity
+-	grp.AddAffinity(NewAffinity("${node.affinity}", "=", "dc2", 50))
++	grp.AddAffinity(NewAffinity("${node.affinity}", "=", "dc2", 50, true))
+ 	expect := []*Affinity{
+ 		{
+-			LTarget: "kernel.version",
+-			RTarget: "4.6",
+-			Operand: "=",
+-			Weight:  pointerOf(int8(100)),
++			LTarget:               "kernel.version",
++			RTarget:               "4.6",
++			Operand:               "=",
++			Weight:                pointerOf(int8(100)),
++			NormalizeNodeAffinity: pointerOf(bool(true)),
+ 		},
+ 		{
+-			LTarget: "${node.affinity}",
+-			RTarget: "dc2",
+-			Operand: "=",
+-			Weight:  pointerOf(int8(50)),
++			LTarget:               "${node.affinity}",
++			RTarget:               "dc2",
++			Operand:               "=",
++			Weight:                pointerOf(int8(50)),
++			NormalizeNodeAffinity: pointerOf(bool(true)),
+ 		},
+ 	}
+ 	must.Eq(t, expect, grp.Affinities)
+@@ -281,26 +285,28 @@ func TestTask_AddAffinity(t *testing.T) {
+ 	task := NewTask("task1", "exec")
+ 
+ 	// Add an affinity to the task
+-	out := task.AddAffinity(NewAffinity("kernel.version", "=", "4.6", 100))
+-	must.Len(t, 1, out.Affinities)
++	out := task.AddAffinity(NewAffinity("kernel.version", "=", "4.6", 100, true))
++	must.Len(t, 1, out.Affinities);
+ 
+ 	// Check that the task was returned
+ 	must.Eq(t, task, out)
+ 
+ 	// Add a second affinity
+-	task.AddAffinity(NewAffinity("${node.datacenter}", "=", "dc2", 50))
++	task.AddAffinity(NewAffinity("${node.datacenter}", "=", "dc2", 50, true))
+ 	expect := []*Affinity{
+ 		{
+-			LTarget: "kernel.version",
+-			RTarget: "4.6",
+-			Operand: "=",
+-			Weight:  pointerOf(int8(100)),
++			LTarget:               "kernel.version",
++			RTarget:               "4.6",
++			Operand:               "=",
++			Weight:                pointerOf(int8(100)),
++			NormalizeNodeAffinity: pointerOf(bool(true)),
+ 		},
+ 		{
+-			LTarget: "${node.datacenter}",
+-			RTarget: "dc2",
+-			Operand: "=",
+-			Weight:  pointerOf(int8(50)),
++			LTarget:               "${node.datacenter}",
++			RTarget:               "dc2",
++			Operand:               "=",
++			Weight:                pointerOf(int8(50)),
++			NormalizeNodeAffinity: pointerOf(bool(true)),
+ 		},
+ 	}
+ 	must.Eq(t, expect, task.Affinities)
+diff --git a/command/agent/job_endpoint.go b/command/agent/job_endpoint.go
+index b12599141b..495f886f7f 100644
+--- a/command/agent/job_endpoint.go
++++ b/command/agent/job_endpoint.go
+@@ -1871,10 +1871,11 @@ func ApiAffinitiesToStructs(in []*api.Affinity) []*structs.Affinity {
+ 
+ func ApiAffinityToStructs(a1 *api.Affinity) *structs.Affinity {
+ 	return &structs.Affinity{
+-		LTarget: a1.LTarget,
+-		Operand: a1.Operand,
+-		RTarget: a1.RTarget,
+-		Weight:  *a1.Weight,
++		LTarget:               a1.LTarget,
++		Operand:               a1.Operand,
++		RTarget:               a1.RTarget,
++		Weight:                *a1.Weight,
++		NormalizeNodeAffinity: *a1.NormalizeNodeAffinity,
+ 	}
+ }
+ 
+diff --git a/command/agent/job_endpoint_test.go b/command/agent/job_endpoint_test.go
+index 9b6d9b0a83..d5f47e9ff6 100644
+--- a/command/agent/job_endpoint_test.go
++++ b/command/agent/job_endpoint_test.go
+@@ -2855,10 +2855,11 @@ func TestJobs_ApiJobToStructsJob(t *testing.T) {
+ 		},
+ 		Affinities: []*structs.Affinity{
+ 			{
+-				LTarget: "a",
+-				RTarget: "b",
+-				Operand: "c",
+-				Weight:  50,
++				LTarget:               "a",
++				RTarget:               "b",
++				Operand:               "c",
++				Weight:                50,
++				NormalizeNodeAffinity: true,
+ 			},
+ 		},
+ 		Spreads: []*structs.Spread{
+@@ -2920,10 +2921,11 @@ func TestJobs_ApiJobToStructsJob(t *testing.T) {
+ 				},
+ 				Affinities: []*structs.Affinity{
+ 					{
+-						LTarget: "x",
+-						RTarget: "y",
+-						Operand: "z",
+-						Weight:  100,
++						LTarget:               "x",
++						RTarget:               "y",
++						Operand:               "z",
++						Weight:                100,
++						NormalizeNodeAffinity: true,
+ 					},
+ 				},
+ 				RestartPolicy: &structs.RestartPolicy{
+@@ -3057,10 +3059,11 @@ func TestJobs_ApiJobToStructsJob(t *testing.T) {
+ 						},
+ 						Affinities: []*structs.Affinity{
+ 							{
+-								LTarget: "a",
+-								RTarget: "b",
+-								Operand: "c",
+-								Weight:  50,
++								LTarget:               "a",
++								RTarget:               "b",
++								Operand:               "c",
++								Weight:                50,
++								NormalizeNodeAffinity: true,
+ 							},
+ 						},
+ 						Env: map[string]string{
+@@ -3168,10 +3171,11 @@ func TestJobs_ApiJobToStructsJob(t *testing.T) {
+ 									},
+ 									Affinities: []*structs.Affinity{
+ 										{
+-											LTarget: "a",
+-											RTarget: "b",
+-											Operand: "c",
+-											Weight:  50,
++											LTarget:               "a",
++											RTarget:               "b",
++											Operand:               "c",
++											Weight:                50,
++											NormalizeNodeAffinity: true,
+ 										},
+ 									},
+ 								},
+diff --git a/nomad/structs/diff_test.go b/nomad/structs/diff_test.go
+index 7d03c1fd48..ea1b2eb0bc 100644
+--- a/nomad/structs/diff_test.go
++++ b/nomad/structs/diff_test.go
+@@ -833,32 +833,36 @@ func TestJobDiff(t *testing.T) {
+ 			Old: &Job{
+ 				Affinities: []*Affinity{
+ 					{
+-						LTarget: "foo",
+-						RTarget: "foo",
+-						Operand: "foo",
+-						Weight:  20,
++						LTarget:               "foo",
++						RTarget:               "foo",
++						Operand:               "foo",
++						Weight:                20,
++						NormalizeNodeAffinity: true,
+ 					},
+ 					{
+-						LTarget: "bar",
+-						RTarget: "bar",
+-						Operand: "bar",
+-						Weight:  20,
++						LTarget:               "bar",
++						RTarget:               "bar",
++						Operand:               "bar",
++						Weight:                20,
++						NormalizeNodeAffinity: true,
+ 					},
+ 				},
+ 			},
+ 			New: &Job{
+ 				Affinities: []*Affinity{
+ 					{
+-						LTarget: "foo",
+-						RTarget: "foo",
+-						Operand: "foo",
+-						Weight:  20,
++						LTarget:               "foo",
++						RTarget:               "foo",
++						Operand:               "foo",
++						Weight:                20,
++						NormalizeNodeAffinity: true,
+ 					},
+ 					{
+-						LTarget: "baz",
+-						RTarget: "baz",
+-						Operand: "baz",
+-						Weight:  20,
++						LTarget:               "baz",
++						RTarget:               "baz",
++						Operand:               "baz",
++						Weight:                20,
++						NormalizeNodeAffinity: true,
+ 					},
+ 				},
+ 			},
+@@ -875,6 +879,12 @@ func TestJobDiff(t *testing.T) {
+ 								Old:  "",
+ 								New:  "baz",
+ 							},
++							{
++								Type: DiffTypeAdded,
++								Name: "NormalizeNodeAffinity",
++								Old:  "",
++								New:  "true",
++							},
+ 							{
+ 								Type: DiffTypeAdded,
+ 								Name: "Operand",
+@@ -905,6 +915,12 @@ func TestJobDiff(t *testing.T) {
+ 								Old:  "bar",
+ 								New:  "",
+ 							},
++							{
++								Type: DiffTypeDeleted,
++								Name: "NormalizeNodeAffinity",
++								Old:  "true",
++								New:  "",
++							},
+ 							{
+ 								Type: DiffTypeDeleted,
+ 								Name: "Operand",
+@@ -1642,32 +1658,36 @@ func TestTaskGroupDiff(t *testing.T) {
+ 			Old: &TaskGroup{
+ 				Affinities: []*Affinity{
+ 					{
+-						LTarget: "foo",
+-						RTarget: "foo",
+-						Operand: "foo",
+-						Weight:  20,
++						LTarget:               "foo",
++						RTarget:               "foo",
++						Operand:               "foo",
++						Weight:                20,
++						NormalizeNodeAffinity: true,
+ 					},
+ 					{
+-						LTarget: "bar",
+-						RTarget: "bar",
+-						Operand: "bar",
+-						Weight:  20,
++						LTarget:               "bar",
++						RTarget:               "bar",
++						Operand:               "bar",
++						Weight:                20,
++						NormalizeNodeAffinity: true,
+ 					},
+ 				},
+ 			},
+ 			New: &TaskGroup{
+ 				Affinities: []*Affinity{
+ 					{
+-						LTarget: "foo",
+-						RTarget: "foo",
+-						Operand: "foo",
+-						Weight:  20,
++						LTarget:               "foo",
++						RTarget:               "foo",
++						Operand:               "foo",
++						Weight:                20,
++						NormalizeNodeAffinity: true,
+ 					},
+ 					{
+-						LTarget: "baz",
+-						RTarget: "baz",
+-						Operand: "baz",
+-						Weight:  20,
++						LTarget:               "baz",
++						RTarget:               "baz",
++						Operand:               "baz",
++						Weight:                20,
++						NormalizeNodeAffinity: true,
+ 					},
+ 				},
+ 			},
+@@ -1684,6 +1704,12 @@ func TestTaskGroupDiff(t *testing.T) {
+ 								Old:  "",
+ 								New:  "baz",
+ 							},
++							{
++								Type: DiffTypeAdded,
++								Name: "NormalizeNodeAffinity",
++								Old:  "",
++								New:  "true",
++							},
+ 							{
+ 								Type: DiffTypeAdded,
+ 								Name: "Operand",
+@@ -1714,6 +1740,12 @@ func TestTaskGroupDiff(t *testing.T) {
+ 								Old:  "bar",
+ 								New:  "",
+ 							},
++							{
++								Type: DiffTypeDeleted,
++								Name: "NormalizeNodeAffinity",
++								Old:  "true",
++								New:  "",
++							},
+ 							{
+ 								Type: DiffTypeDeleted,
+ 								Name: "Operand",
+@@ -4394,32 +4426,36 @@ func TestTaskDiff(t *testing.T) {
+ 			Old: &Task{
+ 				Affinities: []*Affinity{
+ 					{
+-						LTarget: "foo",
+-						RTarget: "foo",
+-						Operand: "foo",
+-						Weight:  20,
++						LTarget:               "foo",
++						RTarget:               "foo",
++						Operand:               "foo",
++						Weight:                20,
++						NormalizeNodeAffinity: true,
+ 					},
+ 					{
+-						LTarget: "bar",
+-						RTarget: "bar",
+-						Operand: "bar",
+-						Weight:  20,
++						LTarget:               "bar",
++						RTarget:               "bar",
++						Operand:               "bar",
++						Weight:                20,
++						NormalizeNodeAffinity: true,
+ 					},
+ 				},
+ 			},
+ 			New: &Task{
+ 				Affinities: []*Affinity{
+ 					{
+-						LTarget: "foo",
+-						RTarget: "foo",
+-						Operand: "foo",
+-						Weight:  20,
++						LTarget:               "foo",
++						RTarget:               "foo",
++						Operand:               "foo",
++						Weight:                20,
++						NormalizeNodeAffinity: true,
+ 					},
+ 					{
+-						LTarget: "baz",
+-						RTarget: "baz",
+-						Operand: "baz",
+-						Weight:  20,
++						LTarget:               "baz",
++						RTarget:               "baz",
++						Operand:               "baz",
++						Weight:                20,
++						NormalizeNodeAffinity: true,
+ 					},
+ 				},
+ 			},
+@@ -4436,6 +4472,12 @@ func TestTaskDiff(t *testing.T) {
+ 								Old:  "",
+ 								New:  "baz",
+ 							},
++							{
++								Type: DiffTypeAdded,
++								Name: "NormalizeNodeAffinity",
++								Old:  "",
++								New:  "true",
++							},
+ 							{
+ 								Type: DiffTypeAdded,
+ 								Name: "Operand",
+@@ -4466,6 +4508,12 @@ func TestTaskDiff(t *testing.T) {
+ 								Old:  "bar",
+ 								New:  "",
+ 							},
++							{
++								Type: DiffTypeDeleted,
++								Name: "NormalizeNodeAffinity",
++								Old:  "true",
++								New:  "",
++							},
+ 							{
+ 								Type: DiffTypeDeleted,
+ 								Name: "Operand",
+diff --git a/nomad/structs/structs.go b/nomad/structs/structs.go
+index ae87429491..f9a26ad86a 100644
+--- a/nomad/structs/structs.go
++++ b/nomad/structs/structs.go
+@@ -9444,13 +9444,23 @@ SETEQUALS:
+ 
+ // Affinity is used to score placement options based on a weight
+ type Affinity struct {
+-	LTarget string // Left-hand target
+-	RTarget string // Right-hand target
+-	Operand string // Affinity operand (<=, <, =, !=, >, >=), set_contains_all, set_contains_any
+-	Weight  int8   // Weight applied to nodes that match the affinity. Can be negative
++	LTarget               string // Left-hand target
++	RTarget               string // Right-hand target
++	Operand               string // Affinity operand (<=, <, =, !=, >, >=), set_contains_all, set_contains_any
++	Weight                int8   // Weight applied to nodes that match the affinity. Can be negative
++	NormalizeNodeAffinity bool
++}
++
++// Equals checks if two affinities are equal.
++func (a *Affinity) Equals(o *Affinity) bool {
++	return a == o ||
++		a.LTarget == o.LTarget &&
++			a.RTarget == o.RTarget &&
++			a.Operand == o.Operand &&
++			a.Weight == o.Weight &&
++			a.NormalizeNodeAffinity == o.NormalizeNodeAffinity
+ }
+ 
+-// Equal checks if two affinities are equal.
+ func (a *Affinity) Equal(o *Affinity) bool {
+ 	if a == nil || o == nil {
+ 		return a == o
+@@ -9473,15 +9483,16 @@ func (a *Affinity) Copy() *Affinity {
+ 		return nil
+ 	}
+ 	return &Affinity{
+-		LTarget: a.LTarget,
+-		RTarget: a.RTarget,
+-		Operand: a.Operand,
+-		Weight:  a.Weight,
++		LTarget:               a.LTarget,
++		RTarget:               a.RTarget,
++		Operand:               a.Operand,
++		Weight:                a.Weight,
++		NormalizeNodeAffinity: a.NormalizeNodeAffinity,
+ 	}
+ }
+ 
+ func (a *Affinity) String() string {
+-	return fmt.Sprintf("%s %s %s %v", a.LTarget, a.Operand, a.RTarget, a.Weight)
++	return fmt.Sprintf("%s %s %s %v %t", a.LTarget, a.Operand, a.RTarget, a.Weight, a.NormalizeNodeAffinity)
+ }
+ 
+ func (a *Affinity) Validate() error {
+diff --git a/nomad/structs/structs_test.go b/nomad/structs/structs_test.go
+index 1053d821a5..7543d5b68d 100644
+--- a/nomad/structs/structs_test.go
++++ b/nomad/structs/structs_test.go
+@@ -604,8 +604,8 @@ func TestJob_SpecChanged(t *testing.T) {
+ 		{
+ 			Name:     "With Affinities",
+ 			Changed:  false,
+-			Original: &Job{Affinities: []*Affinity{{"A", "B", "=", 1}}},
+-			New:      &Job{Affinities: []*Affinity{{"A", "B", "=", 1}}},
++			Original: &Job{Affinities: []*Affinity{{"A", "B", "=", 1, true}}},
++			New:      &Job{Affinities: []*Affinity{{"A", "B", "=", 1, true}}},
+ 		},
+ 	}
+ 
+@@ -1155,14 +1155,14 @@ func TestJob_PartEqual(t *testing.T) {
+ 	}))
+ 
+ 	as := &Affinities{
+-		&Affinity{"left0", "right0", "=", 0},
+-		&Affinity{"left1", "right1", "=", 0},
+-		&Affinity{"left2", "right2", "=", 0},
++		&Affinity{"left0", "right0", "=", 0, true},
++		&Affinity{"left1", "right1", "=", 0, true},
++		&Affinity{"left2", "right2", "=", 0, true},
+ 	}
+ 	require.True(t, as.Equal(&Affinities{
+-		&Affinity{"left0", "right0", "=", 0},
+-		&Affinity{"left2", "right2", "=", 0},
+-		&Affinity{"left1", "right1", "=", 0},
++		&Affinity{"left0", "right0", "=", 0, true},
++		&Affinity{"left2", "right2", "=", 0, true},
++		&Affinity{"left1", "right1", "=", 0, true},
+ 	}))
+ }
+ 
+diff --git a/scheduler/rank.go b/scheduler/rank.go
+index 0b960c39ba..0193557f02 100644
+--- a/scheduler/rank.go
++++ b/scheduler/rank.go
+@@ -741,17 +741,29 @@ func (iter *NodeAffinityIterator) Next() *RankedNode {
+ 	// TODO(preetha): we should calculate normalized weights once and reuse it here
+ 	sumWeight := 0.0
+ 	for _, affinity := range iter.affinities {
+-		sumWeight += math.Abs(float64(affinity.Weight))
++		if affinity.NormalizeNodeAffinity {
++			sumWeight += math.Abs(float64(affinity.Weight))
++		}
++	}
++
++	if sumWeight == 0.0 {
++		sumWeight = 1.0
+ 	}
+ 
++	totalAffinityScoreToNormalize := 0.0
+ 	totalAffinityScore := 0.0
+ 	for _, affinity := range iter.affinities {
+ 		if matchesAffinity(iter.ctx, affinity, option.Node) {
+-			totalAffinityScore += float64(affinity.Weight)
++			if affinity.NormalizeNodeAffinity {
++				totalAffinityScoreToNormalize += float64(affinity.Weight)
++			} else {
++				totalAffinityScore += float64(affinity.Weight)
++			}
+ 		}
+ 	}
+-	normScore := totalAffinityScore / sumWeight
+-	if totalAffinityScore != 0.0 {
++
++	normScore := totalAffinityScoreToNormalize/sumWeight + totalAffinityScore
++	if normScore != 0.0 {
+ 		option.Scores = append(option.Scores, normScore)
+ 		iter.ctx.Metrics().ScoreNode(option.Node, "node-affinity", normScore)
+ 	}
+diff --git a/scheduler/rank_test.go b/scheduler/rank_test.go
+index dce4ced9ca..96d5b7cda6 100644
+--- a/scheduler/rank_test.go
++++ b/scheduler/rank_test.go
+@@ -2157,28 +2157,32 @@ func TestNodeAffinityIterator(t *testing.T) {
+ 
+ 	affinities := []*structs.Affinity{
+ 		{
+-			Operand: "=",
+-			LTarget: "${node.datacenter}",
+-			RTarget: "dc1",
+-			Weight:  100,
++			Operand:               "=",
++			LTarget:               "${node.datacenter}",
++			RTarget:               "dc1",
++			Weight:                100,
++			NormalizeNodeAffinity: true,
+ 		},
+ 		{
+-			Operand: "=",
+-			LTarget: "${node.datacenter}",
+-			RTarget: "dc2",
+-			Weight:  -100,
++			Operand:               "=",
++			LTarget:               "${node.datacenter}",
++			RTarget:               "dc2",
++			Weight:                -100,
++			NormalizeNodeAffinity: true,
+ 		},
+ 		{
+-			Operand: "version",
+-			LTarget: "${attr.kernel.version}",
+-			RTarget: ">4.0",
+-			Weight:  50,
++			Operand:               "version",
++			LTarget:               "${attr.kernel.version}",
++			RTarget:               ">4.0",
++			Weight:                50,
++			NormalizeNodeAffinity: true,
+ 		},
+ 		{
+-			Operand: "is",
+-			LTarget: "${node.class}",
+-			RTarget: "large",
+-			Weight:  50,
++			Operand:               "is",
++			LTarget:               "${node.class}",
++			RTarget:               "large",
++			Weight:                50,
++			NormalizeNodeAffinity: true,
+ 		},
+ 	}
+ 
+diff --git a/version/version.go b/version/version.go
+index 7aa65fc923..019d649edf 100644
+--- a/version/version.go
++++ b/version/version.go
+@@ -19,12 +19,12 @@ var (
+ 	GitDescribe string
+ 
+ 	// The main version number that is being run at the moment.
+-	Version = "1.6.2"
++	Version = "1.6.1"
+ 
+ 	// A pre-release marker for the version. If this is "" (empty string)
+ 	// then it means that it is a final release. Otherwise, this is a pre-release
+ 	// such as "dev" (in development), "beta", "rc1", etc.
+-	VersionPrerelease = "dev"
++	VersionPrerelease = "rs-1"
+ 
+ 	// VersionMetadata is metadata further describing the build type.
+ 	VersionMetadata = ""
