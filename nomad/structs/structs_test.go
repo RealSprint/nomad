@@ -1159,7 +1159,7 @@ func TestJob_PartEqual(t *testing.T) {
 		&Affinity{"left1", "right1", "=", 0, true},
 		&Affinity{"left2", "right2", "=", 0, true},
 	}
-	require.True(t, as.Equals(&Affinities{
+	require.True(t, as.Equal(&Affinities{
 		&Affinity{"left0", "right0", "=", 0, true},
 		&Affinity{"left2", "right2", "=", 0, true},
 		&Affinity{"left1", "right1", "=", 0, true},
