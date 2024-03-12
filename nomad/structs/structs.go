@@ -9676,7 +9676,7 @@ func (a *Affinity) Copy() *Affinity {
 }
 
 func (a *Affinity) String() string {
-	return fmt.Sprintf("%s %s %s %v", a.LTarget, a.Operand, a.RTarget, a.Weight, a.NormalizeNodeAffinity)
+	return fmt.Sprintf("%s %s %s %v %t", a.LTarget, a.Operand, a.RTarget, a.Weight, a.NormalizeNodeAffinity)
 }
 
 func (a *Affinity) Validate() error {

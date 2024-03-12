@@ -191,7 +191,7 @@ type Affinity struct {
 	NormalizeNodeAffinity *bool  `hcl:"normalize_node_affinity,optional"`
 }
 
-func NewAffinity(lTarget string, operand string, rTarget string, weight int8) *Affinity {
+func NewAffinity(lTarget string, operand string, rTarget string, weight int8, normalizeNodeAffinity bool) *Affinity {
 	return &Affinity{
 		LTarget: lTarget,
 		RTarget: rTarget,
