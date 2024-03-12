@@ -2017,6 +2017,7 @@ func ApiAffinityToStructs(a1 *api.Affinity) *structs.Affinity {
 		Operand: a1.Operand,
 		RTarget: a1.RTarget,
 		Weight:  *a1.Weight,
+		NormalizeNodeAffinity: *a1.NormalizeNodeAffinity,
 	}
 }
 

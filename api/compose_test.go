@@ -36,7 +36,7 @@ func TestCompose(t *testing.T) {
 	st2 := NewSpreadTarget("dc2", 20)
 	grp := NewTaskGroup("grp1", 2).
 		Constrain(NewConstraint("kernel.name", "=", "linux")).
-		AddAffinity(NewAffinity("${node.class}", "=", "large", 50)).
+		AddAffinity(NewAffinity("${node.class}", "=", "large", 50, true)).
 		AddSpread(NewSpread("${node.datacenter}", 30, []*SpreadTarget{st1, st2})).
 		SetMeta("foo", "bar").
 		AddTask(task)
@@ -85,6 +85,7 @@ func TestCompose(t *testing.T) {
 						RTarget: "large",
 						Operand: "=",
 						Weight:  pointerOf(int8(50)),
+						NormalizeNodeAffinity: pointerOf(bool(true)),
 					},
 				},
 				Spreads: []*Spread{

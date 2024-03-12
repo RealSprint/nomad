@@ -9639,6 +9639,7 @@ type Affinity struct {
 	RTarget string // Right-hand target
 	Operand string // Affinity operand (<=, <, =, !=, >, >=), set_contains_all, set_contains_any
 	Weight  int8   // Weight applied to nodes that match the affinity. Can be negative
+	NormalizeNodeAffinity bool
 }
 
 // Equal checks if two affinities are equal.
@@ -9655,6 +9656,8 @@ func (a *Affinity) Equal(o *Affinity) bool {
 		return false
 	case a.Weight != o.Weight:
 		return false
+	case a.NormalizeNodeAffinity != o.NormalizeNodeAffinity:
+		return false
 	}
 	return true
 }
@@ -9668,11 +9671,12 @@ func (a *Affinity) Copy() *Affinity {
 		RTarget: a.RTarget,
 		Operand: a.Operand,
 		Weight:  a.Weight,
+		NormalizeNodeAffinity: a.NormalizeNodeAffinity,
 	}
 }
 
 func (a *Affinity) String() string {
-	return fmt.Sprintf("%s %s %s %v", a.LTarget, a.Operand, a.RTarget, a.Weight)
+	return fmt.Sprintf("%s %s %s %v", a.LTarget, a.Operand, a.RTarget, a.Weight, a.NormalizeNodeAffinity)
 }
 
 func (a *Affinity) Validate() error {

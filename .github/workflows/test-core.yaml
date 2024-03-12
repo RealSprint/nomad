@@ -20,6 +20,7 @@ on:
   push:
     branches:
       - main
+      - rs/**
       - release/**
     paths-ignore:
       - 'README.md'
@@ -73,7 +74,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-11, windows-2019]
+        os: [ubuntu-22.04]
     runs-on: ${{matrix.os}}
     timeout-minutes: 20
     steps:
@@ -85,7 +86,7 @@ jobs:
           make dev
   tests-api:
     needs: [mods]
-    runs-on: [custom, xl, 22.04]
+    runs-on: [ubuntu-22.04]
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3

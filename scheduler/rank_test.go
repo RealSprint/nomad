@@ -1762,6 +1762,7 @@ func TestBinPackIterator_Devices(t *testing.T) {
 											Operand: ">",
 											RTarget: "1.4 GHz",
 											Weight:  90,
+											NormalizeNodeAffinity: true,
 										},
 									},
 								},
@@ -2166,24 +2167,28 @@ func TestNodeAffinityIterator(t *testing.T) {
 			LTarget: "${node.datacenter}",
 			RTarget: "dc1",
 			Weight:  100,
+			NormalizeNodeAffinity: true,
 		},
 		{
 			Operand: "=",
 			LTarget: "${node.datacenter}",
 			RTarget: "dc2",
 			Weight:  -100,
+			NormalizeNodeAffinity: true,
 		},
 		{
 			Operand: "version",
 			LTarget: "${attr.kernel.version}",
 			RTarget: ">4.0",
 			Weight:  50,
+			NormalizeNodeAffinity: true,
 		},
 		{
 			Operand: "is",
 			LTarget: "${node.class}",
 			RTarget: "large",
 			Weight:  50,
+			NormalizeNodeAffinity: true,
 		},
 	}
 
