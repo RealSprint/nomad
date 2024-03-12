@@ -1,7 +1,11 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/hashicorp/nomad/api"
@@ -84,6 +88,10 @@ func (c *OperatorRaftListCommand) Run(args []string) int {
 
 	// Format it as a nice table.
 	result := []string{"Node|ID|Address|State|Voter|RaftProtocol"}
+	sort.Slice(reply.Servers, func(i, j int) bool {
+		return reply.Servers[i].Node < reply.Servers[j].Node
+	})
+
 	for _, s := range reply.Servers {
 		state := "follower"
 		if s.Leader {

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package mock
 
 import (
@@ -14,8 +17,9 @@ func Job() *structs.Job {
 		ID:          fmt.Sprintf("mock-service-%s", uuid.Generate()),
 		Name:        "my-job",
 		Namespace:   structs.DefaultNamespace,
+		NodePool:    structs.NodePoolDefault,
 		Type:        structs.JobTypeService,
-		Priority:    50,
+		Priority:    structs.JobDefaultPriority,
 		AllAtOnce:   false,
 		Datacenters: []string{"dc1"},
 		Constraints: []*structs.Constraint{
@@ -27,12 +31,13 @@ func Job() *structs.Job {
 		},
 		TaskGroups: []*structs.TaskGroup{
 			{
-				Name:  "web",
-				Count: 10,
+				Name:                    "web",
+				Count:                   10,
+				PreventRescheduleOnLost: false,
 				Constraints: []*structs.Constraint{
 					{
 						LTarget: "${attr.consul.version}",
-						RTarget: ">= 1.7.0",
+						RTarget: ">= 1.8.0",
 						Operand: structs.ConstraintSemver,
 					},
 				},
@@ -40,10 +45,11 @@ func Job() *structs.Job {
 					SizeMB: 150,
 				},
 				RestartPolicy: &structs.RestartPolicy{
-					Attempts: 3,
-					Interval: 10 * time.Minute,
-					Delay:    1 * time.Minute,
-					Mode:     structs.RestartPolicyModeDelay,
+					Attempts:        3,
+					Interval:        10 * time.Minute,
+					Delay:           1 * time.Minute,
+					Mode:            structs.RestartPolicyModeDelay,
+					RenderTemplates: false,
 				},
 				ReschedulePolicy: &structs.ReschedulePolicy{
 					Attempts:      2,
@@ -71,6 +77,18 @@ func Job() *structs.Job {
 						Env: map[string]string{
 							"FOO": "bar",
 						},
+						Actions: []*structs.Action{
+							{
+								Name:    "date-test",
+								Command: "/bin/date",
+								Args:    []string{"-u"},
+							},
+							{
+								Name:    "echo-test",
+								Command: "/bin/echo",
+								Args:    []string{"hello world"},
+							},
+						},
 						Services: []*structs.Service{
 							{
 								Name:      "${TASK}-frontend",
@@ -86,10 +104,12 @@ func Job() *structs.Job {
 										Timeout:  5 * time.Second,
 									},
 								},
+								Cluster: "default",
 							},
 							{
 								Name:      "${TASK}-admin",
 								PortLabel: "admin",
+								Cluster:   "default",
 							},
 						},
 						LogConfig: structs.DefaultLogConfig(),
@@ -117,6 +137,36 @@ func Job() *structs.Job {
 		CreateIndex:    42,
 		ModifyIndex:    99,
 		JobModifyIndex: 99,
+	}
+	job.Canonicalize()
+	return job
+}
+
+// MinJob returns a minimal service job with a mock driver task.
+func MinJob() *structs.Job {
+	job := &structs.Job{
+		ID:     "j" + uuid.Short(),
+		Name:   "j",
+		Region: "global",
+		Type:   "service",
+		TaskGroups: []*structs.TaskGroup{
+			{
+				Name:  "g",
+				Count: 1,
+				Tasks: []*structs.Task{
+					{
+						Name:   "t",
+						Driver: "mock_driver",
+						Config: map[string]any{
+							// An empty config actually causes an error, so set a reasonably
+							// long run_for duration.
+							"run_for": "10m",
+						},
+						LogConfig: structs.DefaultLogConfig(),
+					},
+				},
+			},
+		},
 	}
 	job.Canonicalize()
 	return job
@@ -192,10 +242,12 @@ func MultiTaskGroupJob() *structs.Job {
 								Timeout:  5 * time.Second,
 							},
 						},
+						Cluster: "default",
 					},
 					{
 						Name:      "${TASK}-admin",
 						PortLabel: "admin",
+						Cluster:   "default",
 					},
 				},
 				LogConfig: structs.DefaultLogConfig(),
@@ -225,6 +277,7 @@ func SystemBatchJob() *structs.Job {
 		ID:          fmt.Sprintf("mock-sysbatch-%s", uuid.Short()),
 		Name:        "my-sysbatch",
 		Namespace:   structs.DefaultNamespace,
+		NodePool:    structs.NodePoolDefault,
 		Type:        structs.JobTypeSysBatch,
 		Priority:    10,
 		Datacenters: []string{"dc1"},
@@ -287,14 +340,35 @@ func MultiregionJob() *structs.Job {
 	return job
 }
 
+func MultiregionMinJob() *structs.Job {
+	job := MinJob()
+	update := *structs.DefaultUpdateStrategy
+	job.Update = update
+	job.TaskGroups[0].Update = &update
+	job.Multiregion = &structs.Multiregion{
+		Regions: []*structs.MultiregionRegion{
+			{
+				Name:  "west",
+				Count: 1,
+			},
+			{
+				Name:  "east",
+				Count: 1,
+			},
+		},
+	}
+	return job
+}
+
 func BatchJob() *structs.Job {
 	job := &structs.Job{
 		Region:      "global",
 		ID:          fmt.Sprintf("mock-batch-%s", uuid.Generate()),
 		Name:        "batch-job",
 		Namespace:   structs.DefaultNamespace,
+		NodePool:    structs.NodePoolDefault,
 		Type:        structs.JobTypeBatch,
-		Priority:    50,
+		Priority:    structs.JobDefaultPriority,
 		AllAtOnce:   false,
 		Datacenters: []string{"dc1"},
 		TaskGroups: []*structs.TaskGroup{
@@ -357,10 +431,11 @@ func SystemJob() *structs.Job {
 	job := &structs.Job{
 		Region:      "global",
 		Namespace:   structs.DefaultNamespace,
+		NodePool:    structs.NodePoolDefault,
 		ID:          fmt.Sprintf("mock-system-%s", uuid.Generate()),
 		Name:        "my-job",
 		Type:        structs.JobTypeSystem,
-		Priority:    100,
+		Priority:    structs.JobDefaultMaxPriority,
 		AllAtOnce:   false,
 		Datacenters: []string{"dc1"},
 		Constraints: []*structs.Constraint{
@@ -436,8 +511,9 @@ func MaxParallelJob() *structs.Job {
 		ID:          fmt.Sprintf("mock-service-%s", uuid.Generate()),
 		Name:        "my-job",
 		Namespace:   structs.DefaultNamespace,
+		NodePool:    structs.NodePoolDefault,
 		Type:        structs.JobTypeService,
-		Priority:    50,
+		Priority:    structs.JobDefaultPriority,
 		AllAtOnce:   false,
 		Datacenters: []string{"dc1"},
 		Constraints: []*structs.Constraint{
@@ -494,10 +570,12 @@ func MaxParallelJob() *structs.Job {
 										Timeout:  5 * time.Second,
 									},
 								},
+								Cluster: "default",
 							},
 							{
 								Name:      "${TASK}-admin",
 								PortLabel: "admin",
+								Cluster:   "default",
 							},
 						},
 						LogConfig: structs.DefaultLogConfig(),
@@ -536,5 +614,130 @@ func MaxParallelJob() *structs.Job {
 		JobModifyIndex: 99,
 	}
 	job.Canonicalize()
+	return job
+}
+
+// BigBenchmarkJob creates a job with many fields set, ideal for benchmarking
+// stuff involving jobs.
+//
+// Should not be used outside of benchmarking - folks should feel free to add
+// more fields without risk of breaking test cases down the line.
+func BigBenchmarkJob() *structs.Job {
+	job := MultiTaskGroupJob()
+
+	// job affinities
+	job.Affinities = structs.Affinities{{
+		LTarget: "left",
+		RTarget: "right",
+		Operand: "!=",
+		Weight:  100,
+	}, {
+		LTarget: "a",
+		RTarget: "b",
+		Operand: "<",
+		Weight:  50,
+	}}
+
+	// job spreads
+	job.Spreads = []*structs.Spread{{
+		Attribute: "foo.x",
+		Weight:    100,
+		SpreadTarget: []*structs.SpreadTarget{{
+			Value:   "x",
+			Percent: 90,
+		}, {
+			Value:   "x2",
+			Percent: 99,
+		}},
+	}, {
+		Attribute: "foo.y",
+		Weight:    90,
+		SpreadTarget: []*structs.SpreadTarget{{
+			Value:   "y",
+			Percent: 10,
+		}},
+	}}
+
+	// group affinities
+	job.TaskGroups[0].Affinities = structs.Affinities{{
+		LTarget: "L",
+		RTarget: "R",
+		Operand: "!=",
+		Weight:  100,
+	}, {
+		LTarget: "b",
+		RTarget: "a",
+		Operand: ">",
+		Weight:  50,
+	}}
+
+	// group spreads
+	job.TaskGroups[0].Spreads = []*structs.Spread{{
+		Attribute: "bar.x",
+		Weight:    100,
+		SpreadTarget: []*structs.SpreadTarget{{
+			Value:   "x",
+			Percent: 90,
+		}, {
+			Value:   "x2",
+			Percent: 99,
+		}},
+	}, {
+		Attribute: "bar.y",
+		Weight:    90,
+		SpreadTarget: []*structs.SpreadTarget{{
+			Value:   "y",
+			Percent: 10,
+		}},
+	}}
+
+	// task affinities
+	job.TaskGroups[0].Tasks[0].Affinities = structs.Affinities{{
+		LTarget: "Left",
+		RTarget: "Right",
+		Operand: "!=",
+		Weight:  100,
+	}, {
+		LTarget: "A",
+		RTarget: "B",
+		Operand: "<",
+		Weight:  50,
+	}}
+
+	return job
+}
+
+// ActionsJob produces a multi-group, multi-task job with actions for testing.
+func ActionsJob() *structs.Job {
+	job := MinJob()
+
+	for i := 0; i < 2; i++ {
+		tg := job.TaskGroups[0].Copy()
+		tg.Name = fmt.Sprintf("g%d", i+1)
+		job.TaskGroups = append(job.TaskGroups, tg)
+	}
+
+	for i := 0; i < 2; i++ {
+		task := job.TaskGroups[0].Tasks[0].Copy()
+		task.Name = fmt.Sprintf("t%d", i+1)
+		job.TaskGroups[0].Tasks = append(job.TaskGroups[0].Tasks, task)
+	}
+
+	for _, tg := range job.TaskGroups {
+		for _, task := range tg.Tasks {
+			task.Actions = []*structs.Action{
+				{
+					Name:    "date-test",
+					Command: "/bin/date",
+					Args:    []string{"-u"},
+				},
+				{
+					Name:    "echo-test",
+					Command: "/bin/echo",
+					Args:    []string{"hello world"},
+				},
+			}
+		}
+	}
 	return job
 }

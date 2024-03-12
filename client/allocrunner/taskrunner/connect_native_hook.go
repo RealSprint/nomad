@@ -1,10 +1,12 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package taskrunner
 
 import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 
@@ -117,8 +119,8 @@ func (h *connectNativeHook) Prestart(
 	merge(environment, h.bridgeEnv(request.TaskEnv.EnvMap))
 	merge(environment, h.hostEnv(request.TaskEnv.EnvMap))
 
-	// tls/acl setup for native task done
-	response.Done = true
+	// tls/acl setup for native task done but since SecretsDir is a tmpfs, don't
+	// mark Done=true as this hook will need to rerun on node reboots
 	response.Env = environment
 	return nil
 }
@@ -265,12 +267,12 @@ func (h *connectNativeHook) hostEnv(env map[string]string) map[string]string {
 func (h *connectNativeHook) maybeSetSITokenEnv(dir, task string, env map[string]string) error {
 	if _, exists := env["CONSUL_HTTP_TOKEN"]; exists {
 		// Consul token was already set - typically by using the Vault integration
-		// and a template stanza to set the environment. Ignore the SI token as
+		// and a template block to set the environment. Ignore the SI token as
 		// the configured token takes precedence.
 		return nil
 	}
 
-	token, err := ioutil.ReadFile(filepath.Join(dir, sidsTokenFile))
+	token, err := os.ReadFile(filepath.Join(dir, sidsTokenFile))
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return fmt.Errorf("failed to load SI token for native task %s: %w", task, err)

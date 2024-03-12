@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 /* eslint-disable qunit/require-expect */
 import { currentURL } from '@ember/test-helpers';
 import { module, test } from 'qunit';
@@ -12,6 +17,7 @@ import faker from 'nomad-ui/mirage/faker';
 
 const minimumSetup = () => {
   faker.seed(1);
+  server.createList('node-pool', 1);
   server.createList('node', 1);
   server.createList('agent', 1);
 };
@@ -37,6 +43,7 @@ module('Acceptance | servers list', function (hooks) {
 
   test('/servers should list all servers', async function (assert) {
     faker.seed(1);
+    server.createList('node-pool', 1);
     server.createList('node', 1);
     server.createList('agent', 10);
 
@@ -61,7 +68,7 @@ module('Acceptance | servers list', function (hooks) {
       );
     });
 
-    assert.equal(document.title, 'Servers - Nomad');
+    assert.ok(document.title.includes('Servers'));
   });
 
   test('each server should show high-level info of the server', async function (assert) {
@@ -73,7 +80,11 @@ module('Acceptance | servers list', function (hooks) {
     const agentRow = ServersList.servers.objectAt(0);
 
     assert.equal(agentRow.name, agent.name, 'Name');
-    assert.equal(agentRow.status, agent.member.Status, 'Status');
+    assert.equal(
+      agentRow.status,
+      agent.member.Status[0].toUpperCase() + agent.member.Status.substring(1),
+      'Status'
+    );
     assert.equal(agentRow.leader, 'True', 'Leader?');
     assert.equal(agentRow.address, agent.member.Address, 'Address');
     assert.equal(agentRow.serfPort, agent.member.Port, 'Serf Port');

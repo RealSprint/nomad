@@ -1,7 +1,13 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 /* eslint-disable qunit/require-expect */
 /* Mirage fixtures are random so we can't expect a set number of assertions */
+import AdapterError from '@ember-data/adapter/error';
 import { run } from '@ember/runloop';
-import { currentURL, click, visit, triggerEvent } from '@ember/test-helpers';
+import { currentURL, click, triggerEvent, waitFor } from '@ember/test-helpers';
 import { assign } from '@ember/polyfills';
 import { module, test } from 'qunit';
 import { setupApplicationTest } from 'ember-qunit';
@@ -10,6 +16,7 @@ import a11yAudit from 'nomad-ui/tests/helpers/a11y-audit';
 import Allocation from 'nomad-ui/tests/pages/allocations/detail';
 import moment from 'moment';
 import formatHost from 'nomad-ui/utils/format-host';
+import faker from 'nomad-ui/mirage/faker';
 
 let job;
 let node;
@@ -22,6 +29,7 @@ module('Acceptance | allocation detail', function (hooks) {
   hooks.beforeEach(async function () {
     server.create('agent');
 
+    server.create('node-pool');
     node = server.create('node');
     job = server.create('job', {
       groupsCount: 1,
@@ -71,7 +79,7 @@ module('Acceptance | allocation detail', function (hooks) {
     );
     assert.ok(Allocation.execButton.isPresent);
 
-    assert.equal(document.title, `Allocation ${allocation.name} - Nomad`);
+    assert.ok(document.title.includes(`Allocation ${allocation.name} `));
 
     await Allocation.details.visitJob();
     assert.equal(
@@ -111,7 +119,7 @@ module('Acceptance | allocation detail', function (hooks) {
   test('/allocation/:id should present task lifecycles', async function (assert) {
     const job = server.create('job', {
       groupsCount: 1,
-      groupTaskCount: 6,
+      groupAllocCount: 6,
       withGroupServices: true,
       createAllocations: false,
     });
@@ -160,7 +168,7 @@ module('Acceptance | allocation detail', function (hooks) {
   test('each task row should list high-level information for the task', async function (assert) {
     const job = server.create('job', {
       groupsCount: 1,
-      groupTaskCount: 3,
+      groupAllocCount: 3,
       withGroupServices: true,
       createAllocations: false,
     });
@@ -394,7 +402,7 @@ module('Acceptance | allocation detail', function (hooks) {
     await Allocation.stop.idle();
 
     run.later(() => {
-      assert.ok(Allocation.stop.isRunning, 'Stop is loading');
+      assert.ok(Allocation.stop.isDisabled, 'Stop is disabled');
       assert.ok(Allocation.restart.isDisabled, 'Restart is disabled');
       assert.ok(Allocation.restartAll.isDisabled, 'Restart All is disabled');
       server.pretender.resolve(server.pretender.requestReferences[0].request);
@@ -426,6 +434,44 @@ module('Acceptance | allocation detail', function (hooks) {
       'Inline error is no longer shown'
     );
   });
+
+  test('when navigating to an allocation, if the allocation no longer exists it does a redirect to previous page', async function (assert) {
+    await click('[data-test-breadcrumb="jobs.job.index"]');
+    await click('[data-test-tab="allocations"] > a');
+
+    const component = this.owner.lookup('component:allocation-row');
+    const router = this.owner.lookup('service:router');
+    const allocRoute = this.owner.lookup('route:allocations.allocation');
+    const originalMethod = allocRoute.goBackToReferrer;
+    allocRoute.goBackToReferrer = () => {
+      assert.step('Transition dispatched.');
+      router.transitionTo('jobs.job.allocations');
+    };
+
+    component.onClick = () =>
+      router.transitionTo('allocations.allocation', 'aaa');
+
+    server.get('/allocation/:id', function () {
+      return new AdapterError([
+        {
+          detail: `alloc not found`,
+          status: 404,
+        },
+      ]);
+    });
+
+    component.onClick();
+
+    await waitFor('.flash-message.alert-critical');
+
+    assert.verifySteps(['Transition dispatched.']);
+    assert
+      .dom('.flash-message.alert-critical')
+      .exists('A toast error message pops up.');
+
+    // Clean-up
+    allocRoute.goBackToReferrer = originalMethod;
+  });
 });
 
 module('Acceptance | allocation detail (rescheduled)', function (hooks) {
@@ -435,6 +481,7 @@ module('Acceptance | allocation detail (rescheduled)', function (hooks) {
   hooks.beforeEach(async function () {
     server.create('agent');
 
+    server.create('node-pool');
     node = server.create('node');
     job = server.create('job', { createAllocations: false });
     allocation = server.create('allocation', 'rescheduled');
@@ -457,6 +504,7 @@ module('Acceptance | allocation detail (not running)', function (hooks) {
   hooks.beforeEach(async function () {
     server.create('agent');
 
+    server.create('node-pool');
     node = server.create('node');
     job = server.create('job', { createAllocations: false });
     allocation = server.create('allocation', { clientStatus: 'pending' });
@@ -487,6 +535,7 @@ module('Acceptance | allocation detail (preemptions)', function (hooks) {
 
   hooks.beforeEach(async function () {
     server.create('agent');
+    server.create('node-pool');
     node = server.create('node');
     job = server.create('job', { createAllocations: false });
   });
@@ -625,6 +674,7 @@ module('Acceptance | allocation detail (services)', function (hooks) {
   hooks.beforeEach(async function () {
     server.create('feature', { name: 'Dynamic Application Sizing' });
     server.createList('agent', 3, 'withConsulLink', 'withVaultLink');
+    server.createList('node-pool', 3);
     server.createList('node', 5);
     server.createList('job', 1, { createRecommendations: true });
     const job = server.create('job', {
@@ -635,7 +685,11 @@ module('Acceptance | allocation detail (services)', function (hooks) {
       namespaceId: 'default',
     });
 
-    const currentAlloc = server.db.allocations.findBy({ jobId: job.id });
+    const runningAlloc = server.create('allocation', {
+      jobId: job.id,
+      forceRunningClientStatus: true,
+      clientStatus: 'running',
+    });
     const otherAlloc = server.db.allocations.reject((j) => j.jobId !== job.id);
 
     server.db.serviceFragments.update({
@@ -644,7 +698,7 @@ module('Acceptance | allocation detail (services)', function (hooks) {
           Status: 'success',
           Check: 'check1',
           Timestamp: 99,
-          Alloc: currentAlloc.id,
+          Alloc: runningAlloc.id,
         },
         {
           Status: 'failure',
@@ -653,21 +707,21 @@ module('Acceptance | allocation detail (services)', function (hooks) {
           propThatDoesntMatter:
             'this object will be ignored, since it shared a Check name with a later one.',
           Timestamp: 98,
-          Alloc: currentAlloc.id,
+          Alloc: runningAlloc.id,
         },
         {
           Status: 'success',
           Check: 'check2',
           Output: 'Two',
           Timestamp: 99,
-          Alloc: currentAlloc.id,
+          Alloc: runningAlloc.id,
         },
         {
           Status: 'failure',
           Check: 'check3',
           Output: 'Oh no!',
           Timestamp: 99,
-          Alloc: currentAlloc.id,
+          Alloc: runningAlloc.id,
         },
         {
           Status: 'success',
@@ -683,14 +737,20 @@ module('Acceptance | allocation detail (services)', function (hooks) {
   });
 
   test('Allocation has a list of services with active checks', async function (assert) {
-    await visit('jobs/service-haver@default');
-    await click('.allocation-row');
+    faker.seed(1);
+    const runningAlloc = server.db.allocations.findBy({
+      jobId: 'service-haver',
+      forceRunningClientStatus: true,
+      clientStatus: 'running',
+    });
+    await Allocation.visit({ id: runningAlloc.id });
     assert.dom('[data-test-service]').exists();
     assert.dom('.service-sidebar').exists();
     assert.dom('.service-sidebar').doesNotHaveClass('open');
     assert
       .dom('[data-test-service-status-bar]')
       .exists('At least one allocation has service health');
+
     await click('[data-test-service-status-bar]');
     assert.dom('.service-sidebar').hasClass('open');
     assert

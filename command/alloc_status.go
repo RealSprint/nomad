@@ -1,19 +1,21 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/dustin/go-humanize"
-	"github.com/posener/complete"
-	"golang.org/x/exp/slices"
-
 	"github.com/hashicorp/nomad/api"
 	"github.com/hashicorp/nomad/api/contexts"
+	"github.com/posener/complete"
 )
 
 type AllocStatusCommand struct {
@@ -884,11 +886,11 @@ FOUND:
 	if len(hostVolumesOutput) > 1 {
 		c.Ui.Output("Host Volumes:")
 		c.Ui.Output(formatList(hostVolumesOutput))
-		c.Ui.Output("") // line padding to next stanza
+		c.Ui.Output("") // line padding to next block
 	}
 	if len(csiVolumesOutput) > 1 {
 		c.Ui.Output("CSI Volumes:")
 		c.Ui.Output(formatList(csiVolumesOutput))
-		c.Ui.Output("") // line padding to next stanza
+		c.Ui.Output("") // line padding to next block
 	}
 }

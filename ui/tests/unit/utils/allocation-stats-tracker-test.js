@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 import EmberObject from '@ember/object';
 import { assign } from '@ember/polyfills';
 import { module, test } from 'qunit';
@@ -54,7 +59,7 @@ module('Unit | Util | AllocationStatsTracker', function () {
       },
       MemoryStats: {
         RSS: (step + 400) * 1024 * 1024,
-        Usage: (step + 400) * 1024 * 1024,
+        Usage: (step + 800) * 1024 * 1024,
       },
     },
     Tasks: {
@@ -65,7 +70,7 @@ module('Unit | Util | AllocationStatsTracker', function () {
           },
           MemoryStats: {
             RSS: (step + 100) * 1024 * 1024,
-            Usage: (step + 100) * 1024 * 1024,
+            Usage: (step + 200) * 1024 * 1024,
           },
         },
         Timestamp: refDate + step,
@@ -77,7 +82,7 @@ module('Unit | Util | AllocationStatsTracker', function () {
           },
           MemoryStats: {
             RSS: (step + 50) * 1024 * 1024,
-            Usage: (step + 50) * 1024 * 1024,
+            Usage: (step + 100) * 1024 * 1024,
           },
         },
         Timestamp: refDate + step * 10,
@@ -89,7 +94,7 @@ module('Unit | Util | AllocationStatsTracker', function () {
           },
           MemoryStats: {
             RSS: (step + 51) * 1024 * 1024,
-            Usage: (step + 51) * 1024 * 1024,
+            Usage: (step + 101) * 1024 * 1024,
           },
         },
         Timestamp: refDate + step * 100,

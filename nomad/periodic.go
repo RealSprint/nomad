@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package nomad
 
 import (
@@ -68,37 +71,13 @@ func (s *Server) DispatchJob(job *structs.Job) (*structs.Evaluation, error) {
 			Namespace: job.Namespace,
 		},
 	}
-	fsmErr, index, err := s.raftApply(structs.JobRegisterRequestType, req)
-	if err, ok := fsmErr.(error); ok && err != nil {
-		return nil, err
-	}
+	_, index, err := s.raftApply(structs.JobRegisterRequestType, req)
 	if err != nil {
 		return nil, err
 	}
 
 	eval.CreateIndex = index
 	eval.ModifyIndex = index
-
-	// COMPAT(1.1): Remove in 1.1.0 - 0.12.1 introduced atomic eval job registration
-	if !ServersMeetMinimumVersion(s.Members(), s.Region(), minJobRegisterAtomicEvalVersion, false) {
-		// Create a new evaluation
-		eval.JobModifyIndex = index
-		update := &structs.EvalUpdateRequest{
-			Evals: []*structs.Evaluation{eval},
-		}
-
-		// Commit this evaluation via Raft
-		// There is a risk of partial failure where the JobRegister succeeds
-		// but that the EvalUpdate does not, before Nomad 0.12.1
-		_, evalIndex, err := s.raftApply(structs.EvalUpdateRequestType, update)
-		if err != nil {
-			return nil, err
-		}
-
-		// Update its indexes.
-		eval.CreateIndex = evalIndex
-		eval.ModifyIndex = evalIndex
-	}
 
 	return eval, nil
 }
@@ -298,9 +277,9 @@ func (p *PeriodicDispatch) removeLocked(jobID structs.NamespacedID) error {
 	return nil
 }
 
-// ForceRun causes the periodic job to be evaluated immediately and returns the
+// ForceEval causes the periodic job to be evaluated immediately and returns the
 // subsequent eval.
-func (p *PeriodicDispatch) ForceRun(namespace, jobID string) (*structs.Evaluation, error) {
+func (p *PeriodicDispatch) ForceEval(namespace, jobID string) (*structs.Evaluation, error) {
 	p.l.Lock()
 
 	// Do nothing if not enabled

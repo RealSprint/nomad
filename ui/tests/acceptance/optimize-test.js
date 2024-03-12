@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 /* eslint-disable qunit/require-expect */
 /* eslint-disable qunit/no-conditional-assertions */
 import { module, test } from 'qunit';
@@ -35,6 +40,7 @@ module('Acceptance | optimize', function (hooks) {
   hooks.beforeEach(async function () {
     server.create('feature', { name: 'Dynamic Application Sizing' });
 
+    server.create('node-pool');
     server.create('node');
 
     server.createList('namespace', 2);
@@ -42,7 +48,7 @@ module('Acceptance | optimize', function (hooks) {
     const jobs = server.createList('job', 2, {
       createRecommendations: true,
       groupsCount: 1,
-      groupTaskCount: 2,
+      groupAllocCount: 2,
       namespaceId: server.db.namespaces[1].id,
     });
 
@@ -283,7 +289,7 @@ module('Acceptance | optimize', function (hooks) {
     server.createList('job', 10, {
       createRecommendations: true,
       groupsCount: 1,
-      groupTaskCount: 2,
+      groupAllocCount: 2,
       namespaceId: server.db.namespaces[1].id,
     });
 
@@ -301,7 +307,7 @@ module('Acceptance | optimize', function (hooks) {
     server.createList('job', 10, {
       createRecommendations: true,
       groupsCount: 1,
-      groupTaskCount: 2,
+      groupAllocCount: 2,
       namespaceId: server.db.namespaces[1].id,
     });
 
@@ -416,7 +422,7 @@ module('Acceptance | optimize', function (hooks) {
     window.localStorage.nomadTokenSecret = clientToken.secretId;
     await Optimize.visit();
 
-    assert.equal(currentURL(), '/jobs?namespace=*');
+    assert.equal(currentURL(), '/jobs');
     assert.ok(Layout.gutter.optimize.isHidden);
   });
 
@@ -435,6 +441,7 @@ module('Acceptance | optimize search and facets', function (hooks) {
   hooks.beforeEach(async function () {
     server.create('feature', { name: 'Dynamic Application Sizing' });
 
+    server.create('node-pool');
     server.create('node');
 
     server.createList('namespace', 2);
@@ -450,7 +457,7 @@ module('Acceptance | optimize search and facets', function (hooks) {
       name: 'zzzzzz',
       createRecommendations: true,
       groupsCount: 1,
-      groupTaskCount: 6,
+      groupAllocCount: 6,
     });
 
     // Ensure this job’s recommendations are sorted to the top of the table
@@ -461,14 +468,14 @@ module('Acceptance | optimize search and facets', function (hooks) {
       name: 'oooooo',
       createRecommendations: true,
       groupsCount: 2,
-      groupTaskCount: 4,
+      groupAllocCount: 4,
     });
 
     server.create('job', {
       name: 'pppppp',
       createRecommendations: true,
       groupsCount: 2,
-      groupTaskCount: 4,
+      groupAllocCount: 4,
     });
 
     await Optimize.visit();
@@ -507,7 +514,7 @@ module('Acceptance | optimize search and facets', function (hooks) {
     server.create('job', {
       createRecommendations: true,
       groupsCount: 1,
-      groupTaskCount: 4,
+      groupAllocCount: 4,
     });
 
     await Optimize.visit();
@@ -520,21 +527,21 @@ module('Acceptance | optimize search and facets', function (hooks) {
       name: 'ooo111',
       createRecommendations: true,
       groupsCount: 1,
-      groupTaskCount: 4,
+      groupAllocCount: 4,
     });
 
     server.create('job', {
       name: 'pppppp',
       createRecommendations: true,
       groupsCount: 1,
-      groupTaskCount: 4,
+      groupAllocCount: 4,
     });
 
     server.create('job', {
       name: 'ooo222',
       createRecommendations: true,
       groupsCount: 1,
-      groupTaskCount: 4,
+      groupAllocCount: 4,
     });
 
     // Directly set the sorting of the above jobs’s summaries in the table
@@ -609,14 +616,14 @@ module('Acceptance | optimize search and facets', function (hooks) {
         type: 'service',
         createRecommendations: true,
         groupsCount: 1,
-        groupTaskCount: 2,
+        groupAllocCount: 2,
       });
 
       server.createList('job', 2, {
         type: 'system',
         createRecommendations: true,
         groupsCount: 1,
-        groupTaskCount: 2,
+        groupAllocCount: 2,
       });
       await Optimize.visit();
     },
@@ -635,14 +642,14 @@ module('Acceptance | optimize search and facets', function (hooks) {
         status: 'pending',
         createRecommendations: true,
         groupsCount: 1,
-        groupTaskCount: 2,
+        groupAllocCount: 2,
         childrenCount: 0,
       });
       server.createList('job', 2, {
         status: 'running',
         createRecommendations: true,
         groupsCount: 1,
-        groupTaskCount: 2,
+        groupAllocCount: 2,
         childrenCount: 0,
       });
       server.createList('job', 2, {
@@ -669,28 +676,28 @@ module('Acceptance | optimize search and facets', function (hooks) {
         datacenters: ['pdx', 'lax'],
         createRecommendations: true,
         groupsCount: 1,
-        groupTaskCount: 2,
+        groupAllocCount: 2,
         childrenCount: 0,
       });
       server.create('job', {
         datacenters: ['pdx', 'ord'],
         createRecommendations: true,
         groupsCount: 1,
-        groupTaskCount: 2,
+        groupAllocCount: 2,
         childrenCount: 0,
       });
       server.create('job', {
         datacenters: ['lax', 'jfk'],
         createRecommendations: true,
         groupsCount: 1,
-        groupTaskCount: 2,
+        groupAllocCount: 2,
         childrenCount: 0,
       });
       server.create('job', {
         datacenters: ['jfk', 'dfw'],
         createRecommendations: true,
         groupsCount: 1,
-        groupTaskCount: 2,
+        groupAllocCount: 2,
         childrenCount: 0,
       });
       server.create('job', {
@@ -725,7 +732,7 @@ module('Acceptance | optimize search and facets', function (hooks) {
           createRecommendations: true,
           createAllocations: true,
           groupsCount: 1,
-          groupTaskCount: 2,
+          groupAllocCount: 2,
           childrenCount: 0,
         });
       });

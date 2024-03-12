@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package events
 
 import (
@@ -87,7 +90,7 @@ func (tc *EventsTest) TestDeploymentEvents(f *framework.F) {
 	e2eutil.RegisterAndWaitForAllocs(t, nomadClient, "events/input/initial.nomad", jobID, "")
 
 	// update job
-	e2eutil.RegisterAllocs(t, nomadClient, "events/input/deploy.nomad", jobID, "")
+	e2eutil.RegisterAndWaitForAllocs(t, nomadClient, "events/input/deploy.nomad", jobID, "")
 
 	ds := e2eutil.DeploymentsForJob(t, nomadClient, jobID)
 	require.Equal(t, 2, len(ds))

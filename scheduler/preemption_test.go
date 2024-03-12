@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package scheduler
 
 import (
@@ -174,10 +177,11 @@ func TestPreemption(t *testing.T) {
 		deviceIDs = append(deviceIDs, "dev"+strconv.Itoa(i))
 	}
 
+	legacyCpuResources, processorResources := cpuResources(4000)
+
 	defaultNodeResources := &structs.NodeResources{
-		Cpu: structs.NodeCpuResources{
-			CpuShares: 4000,
-		},
+		Processors: processorResources,
+		Cpu:        legacyCpuResources,
 		Memory: structs.NodeMemoryResources{
 			MemoryMB: 8192,
 		},
@@ -456,10 +460,10 @@ func TestPreemption(t *testing.T) {
 			},
 			nodeReservedCapacity: reservedNodeResources,
 			// This test sets up a node with two NICs
+
 			nodeCapacity: &structs.NodeResources{
-				Cpu: structs.NodeCpuResources{
-					CpuShares: 4000,
-				},
+				Processors: processorResources,
+				Cpu:        legacyCpuResources,
 				Memory: structs.NodeMemoryResources{
 					MemoryMB: 8192,
 				},
@@ -1353,10 +1357,11 @@ func TestPreemption(t *testing.T) {
 				ctx.plan.NodePreemptions[node.ID] = tc.currentPreemptions
 			}
 			static := NewStaticRankIterator(ctx, nodes)
-			binPackIter := NewBinPackIterator(ctx, static, true, tc.jobPriority, testSchedulerConfig)
+			binPackIter := NewBinPackIterator(ctx, static, true, tc.jobPriority)
 			job := mock.Job()
 			job.Priority = tc.jobPriority
 			binPackIter.SetJob(job)
+			binPackIter.SetSchedulerConfiguration(testSchedulerConfig)
 
 			taskGroup := &structs.TaskGroup{
 				EphemeralDisk: &structs.EphemeralDisk{},
@@ -1398,12 +1403,13 @@ func TestPreemptionMultiple(t *testing.T) {
 	// All low priority allocs should preempted to accomodate the high priority job
 	h := NewHarness(t)
 
+	legacyCpuResources, processorResources := cpuResources(4000)
+
 	// node with 4 GPUs
 	node := mock.Node()
 	node.NodeResources = &structs.NodeResources{
-		Cpu: structs.NodeCpuResources{
-			CpuShares: 4000,
-		},
+		Processors: processorResources,
+		Cpu:        legacyCpuResources,
 		Memory: structs.NodeMemoryResources{
 			MemoryMB: 8192,
 		},
@@ -1463,7 +1469,7 @@ func TestPreemptionMultiple(t *testing.T) {
 		Name:  "gpu",
 		Count: 1,
 	}}
-	require.NoError(t, h.State.UpsertJob(structs.MsgTypeTestSetup, h.NextIndex(), lowPrioJob))
+	require.NoError(t, h.State.UpsertJob(structs.MsgTypeTestSetup, h.NextIndex(), nil, lowPrioJob))
 
 	allocs := []*structs.Allocation{}
 	allocIDs := map[string]struct{}{}
@@ -1492,7 +1498,7 @@ func TestPreemptionMultiple(t *testing.T) {
 		Name:  "gpu",
 		Count: 2,
 	}}
-	require.NoError(t, h.State.UpsertJob(structs.MsgTypeTestSetup, h.NextIndex(), highPrioJob))
+	require.NoError(t, h.State.UpsertJob(structs.MsgTypeTestSetup, h.NextIndex(), nil, highPrioJob))
 
 	// schedule
 	eval := &structs.Evaluation{

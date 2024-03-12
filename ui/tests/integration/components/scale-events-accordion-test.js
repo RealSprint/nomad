@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 import { module, test } from 'qunit';
 import { setupRenderingTest } from 'ember-qunit';
 import { click, find, findAll, render } from '@ember/test-helpers';
@@ -15,6 +20,7 @@ module('Integration | Component | scale-events-accordion', function (hooks) {
     fragmentSerializerInitializer(this.owner);
     this.store = this.owner.lookup('service:store');
     this.server = startMirage();
+    this.server.create('node-pool');
     this.server.create('node');
     this.taskGroupWithEvents = async function (events) {
       const job = this.server.create('job', { createAllocations: false });
@@ -70,8 +76,8 @@ module('Integration | Component | scale-events-accordion', function (hooks) {
     await componentA11yAudit(this.element, assert);
   });
 
-  test('when an event has a count higher than previous count, a danger up arrow is shown', async function (assert) {
-    assert.expect(4);
+  test('when an event has a count higher than previous count, an up arrow is shown', async function (assert) {
+    assert.expect(3);
 
     const count = 5;
     const taskGroup = await this.taskGroupWithEvents(
@@ -87,15 +93,10 @@ module('Integration | Component | scale-events-accordion', function (hooks) {
 
     assert.notOk(find('[data-test-error]'));
     assert.equal(find('[data-test-count]').textContent, count);
-    assert.ok(
-      find('[data-test-count-icon]')
-        .querySelector('.icon')
-        .classList.contains('is-danger')
-    );
     await componentA11yAudit(this.element, assert);
   });
 
-  test('when an event has a count lower than previous count, a primary down arrow is shown', async function (assert) {
+  test('when an event has a count lower than previous count, a down arrow is shown', async function (assert) {
     const count = 5;
     const taskGroup = await this.taskGroupWithEvents(
       server.createList('scale-event', 1, {
@@ -110,11 +111,6 @@ module('Integration | Component | scale-events-accordion', function (hooks) {
 
     assert.notOk(find('[data-test-error]'));
     assert.equal(find('[data-test-count]').textContent, count);
-    assert.ok(
-      find('[data-test-count-icon]')
-        .querySelector('.icon')
-        .classList.contains('is-primary')
-    );
   });
 
   test('when an event has no count, the count is omitted', async function (assert) {

@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 /* eslint-disable ember-a11y-testing/a11y-audit-called */
 import { module, test } from 'qunit';
 import { click, visit, currentURL } from '@ember/test-helpers';
@@ -69,7 +74,7 @@ module('Acceptance | global header', function (hooks) {
     assert.false(Layout.navbar.end.signInLink.isVisible);
     await Layout.navbar.end.profileDropdown.open();
 
-    await click('.dropdown-options .ember-power-select-option:nth-child(1)');
+    await click('[data-test-profile-dropdown-profile-link]');
     assert.equal(
       currentURL(),
       '/settings/tokens',
@@ -77,7 +82,7 @@ module('Acceptance | global header', function (hooks) {
     );
 
     await Layout.navbar.end.profileDropdown.open();
-    await click('.dropdown-options .ember-power-select-option:nth-child(2)');
+    await click('[data-test-profile-dropdown-sign-out-link]');
     assert.equal(window.localStorage.nomadTokenSecret, null, 'Token is wiped');
     assert.equal(currentURL(), '/jobs', 'After signout, back on the jobs page');
   });

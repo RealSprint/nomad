@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package allocwatcher
 
 import (
@@ -5,7 +8,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,7 +29,7 @@ import (
 // fakeAllocRunner implements AllocRunnerMeta
 type fakeAllocRunner struct {
 	alloc       *structs.Allocation
-	AllocDir    *allocdir.AllocDir
+	AllocDir    allocdir.Interface
 	Broadcaster *cstructs.AllocBroadcaster
 }
 
@@ -46,7 +49,7 @@ func newFakeAllocRunner(t *testing.T, logger hclog.Logger) *fakeAllocRunner {
 	}
 }
 
-func (f *fakeAllocRunner) GetAllocDir() *allocdir.AllocDir {
+func (f *fakeAllocRunner) GetAllocDir() allocdir.Interface {
 	return f.AllocDir
 }
 
@@ -255,7 +258,7 @@ func TestPrevAlloc_StreamAllocDir_Error(t *testing.T) {
 	}
 
 	// Assert streamAllocDir fails
-	err = prevAlloc.streamAllocDir(context.Background(), ioutil.NopCloser(tarBuf), dest)
+	err = prevAlloc.streamAllocDir(context.Background(), io.NopCloser(tarBuf), dest)
 	if err == nil {
 		t.Fatalf("expected an error from streamAllocDir")
 	}

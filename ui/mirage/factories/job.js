@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 import { assign } from '@ember/polyfills';
 import { Factory, trait } from 'ember-cli-mirage';
 import faker from 'nomad-ui/mirage/faker';
@@ -194,11 +199,19 @@ export default Factory.extend({
   // When true, only task groups and allocations are made
   shallow: false,
 
+  // When true, the job's groups' tasks will have actions blocks
+  withActions: false,
+
   afterCreate(job, server) {
+    Ember.assert(
+      '[Mirage] No node pools! make sure node pools are created before jobs',
+      server.db.nodePools.length
+    );
+
     if (!job.namespaceId) {
       const namespace = server.db.namespaces.length
         ? pickOne(server.db.namespaces).id
-        : null;
+        : 'default';
       job.update({
         namespace,
         namespaceId: namespace,
@@ -209,18 +222,30 @@ export default Factory.extend({
       });
     }
 
+    if (!job.nodePool) {
+      job.update({
+        nodePool: pickOne(server.db.nodePools).name,
+      });
+    }
+
     const groupProps = {
       job,
       createAllocations: job.createAllocations,
       withRescheduling: job.withRescheduling,
       withServices: job.withGroupServices,
       withTaskServices: job.withTaskServices,
+      withActions: job.withActions,
       createRecommendations: job.createRecommendations,
       shallow: job.shallow,
+      allocStatusDistribution: job.allocStatusDistribution,
     };
 
     if (job.groupTaskCount) {
-      groupProps.count = job.groupTaskCount;
+      groupProps.taskCount = job.groupTaskCount;
+    }
+
+    if (job.groupAllocCount) {
+      groupProps.count = job.groupAllocCount;
     }
 
     let groups;
@@ -339,6 +364,7 @@ export default Factory.extend({
         datacenters: job.datacenters,
         createAllocations: job.createAllocations,
         shallow: job.shallow,
+        noActiveDeployment: job.noActiveDeployment,
       });
     }
 
@@ -361,6 +387,7 @@ export default Factory.extend({
         datacenters: job.datacenters,
         createAllocations: job.createAllocations,
         shallow: job.shallow,
+        noActiveDeployment: job.noActiveDeployment,
       });
     }
   },

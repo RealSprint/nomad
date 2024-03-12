@@ -1,8 +1,11 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package taskrunner
 
 import (
 	"context"
-	"io/ioutil"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -50,7 +53,7 @@ func TestTaskRunner_DispatchHook_NoPayload(t *testing.T) {
 	require.True(resp.Done)
 
 	// Assert payload directory is empty
-	files, err := ioutil.ReadDir(req.TaskDir.LocalDir)
+	files, err := os.ReadDir(req.TaskDir.LocalDir)
 	require.NoError(err)
 	require.Empty(files)
 }
@@ -94,7 +97,7 @@ func TestTaskRunner_DispatchHook_Ok(t *testing.T) {
 	require.True(resp.Done)
 
 	filename := filepath.Join(req.TaskDir.LocalDir, task.DispatchPayload.File)
-	result, err := ioutil.ReadFile(filename)
+	result, err := os.ReadFile(filename)
 	require.NoError(err)
 	require.Equal(expected, result)
 }
@@ -141,7 +144,7 @@ func TestTaskRunner_DispatchHook_Error(t *testing.T) {
 	require.False(resp.Done)
 
 	// Assert payload directory is empty
-	files, err := ioutil.ReadDir(req.TaskDir.LocalDir)
+	files, err := os.ReadDir(req.TaskDir.LocalDir)
 	require.NoError(err)
 	require.Empty(files)
 }

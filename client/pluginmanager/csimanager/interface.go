@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package csimanager
 
 import (
@@ -6,11 +9,22 @@ import (
 
 	"github.com/hashicorp/nomad/client/pluginmanager"
 	"github.com/hashicorp/nomad/nomad/structs"
+	"github.com/hashicorp/nomad/plugins/csi"
 )
 
 type MountInfo struct {
 	Source   string
 	IsDevice bool
+}
+
+func (mi *MountInfo) Copy() *MountInfo {
+	if mi == nil {
+		return nil
+	}
+
+	nmi := new(MountInfo)
+	*nmi = *mi
+	return nmi
 }
 
 type UsageOptions struct {
@@ -40,18 +54,25 @@ func (u *UsageOptions) ToFS() string {
 	return sb.String()
 }
 
-type VolumeMounter interface {
+type VolumeManager interface {
 	MountVolume(ctx context.Context, vol *structs.CSIVolume, alloc *structs.Allocation, usageOpts *UsageOptions, publishContext map[string]string) (*MountInfo, error)
 	UnmountVolume(ctx context.Context, volID, remoteID, allocID string, usageOpts *UsageOptions) error
+	HasMount(ctx context.Context, mountInfo *MountInfo) (bool, error)
+	ExpandVolume(ctx context.Context, volID, remoteID, allocID string, usageOpts *UsageOptions, capacity *csi.CapacityRange) (int64, error)
+	ExternalID() string
 }
 
 type Manager interface {
 	// PluginManager returns a PluginManager for use by the node fingerprinter.
 	PluginManager() pluginmanager.PluginManager
 
-	// MounterForPlugin returns a VolumeMounter for the plugin ID associated
+	// WaitForPlugin waits for the plugin to become available,
+	// or until its context is canceled or times out.
+	WaitForPlugin(ctx context.Context, pluginType, pluginID string) error
+
+	// ManagerForPlugin returns a VolumeManager for the plugin ID associated
 	// with the volume.	Returns an error if this plugin isn't registered.
-	MounterForPlugin(ctx context.Context, pluginID string) (VolumeMounter, error)
+	ManagerForPlugin(ctx context.Context, pluginID string) (VolumeManager, error)
 
 	// Shutdown shuts down the Manager and unmounts any locally attached volumes.
 	Shutdown()

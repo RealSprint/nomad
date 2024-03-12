@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package taskrunner
 
 import (
@@ -69,7 +72,7 @@ func (tr *TaskRunner) setVaultToken(token string) {
 	// Update the task's environment
 	taskNamespace := tr.task.Vault.Namespace
 
-	ns := tr.clientConfig.VaultConfig.Namespace
+	ns := tr.clientConfig.GetVaultConfigs(tr.logger)[tr.task.GetVaultClusterName()].Namespace
 	if taskNamespace != "" {
 		ns = taskNamespace
 	}
@@ -86,6 +89,10 @@ func (tr *TaskRunner) setNomadToken(token string) {
 	tr.nomadTokenLock.Lock()
 	defer tr.nomadTokenLock.Unlock()
 	tr.nomadToken = token
+
+	if id := tr.Task().Identity; id != nil && id.Env {
+		tr.envBuilder.SetDefaultWorkloadToken(token)
+	}
 }
 
 // getDriverHandle returns a driver handle.

@@ -1,10 +1,12 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 // Package testtask implements a portable set of commands useful as stand-ins
 // for user tasks.
 package testtask
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"time"
@@ -110,7 +112,7 @@ func execute() {
 			}
 			msg := popArg()
 			file := popArg()
-			ioutil.WriteFile(file, []byte(msg), 0666)
+			os.WriteFile(file, []byte(msg), 0666)
 
 		case "pgrp":
 			if len(args) < 1 {
@@ -135,7 +137,7 @@ func execute() {
 				os.Exit(1)
 			}
 
-			if err := ioutil.WriteFile(pidFile, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0777); err != nil {
+			if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0777); err != nil {
 				fmt.Fprintf(os.Stderr, "failed to write pid file: %v\n", err)
 				os.Exit(1)
 			}

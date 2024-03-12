@@ -1,15 +1,20 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package api
 
 import (
+	"errors"
+	"net/http"
 	"testing"
 
 	"github.com/hashicorp/nomad/api/internal/testutil"
-	"github.com/stretchr/testify/assert"
+	"github.com/shoenig/test/must"
 )
 
 func TestNamespaces_Register(t *testing.T) {
 	testutil.Parallel(t)
-	assert := assert.New(t)
+
 	c, s := makeClient(t, nil, nil)
 	defer s.Stop()
 	namespaces := c.Namespaces()
@@ -17,21 +22,21 @@ func TestNamespaces_Register(t *testing.T) {
 	// Create a namespace and register it
 	ns := testNamespace()
 	wm, err := namespaces.Register(ns, nil)
-	assert.Nil(err)
+	must.NoError(t, err)
 	assertWriteMeta(t, wm)
 
 	// Query the jobs back out again
 	resp, qm, err := namespaces.List(nil)
-	assert.Nil(err)
+	must.NoError(t, err)
 	assertQueryMeta(t, qm)
-	assert.Len(resp, 2)
-	assert.Equal(ns.Name, resp[0].Name)
-	assert.Equal("default", resp[1].Name)
+	must.Len(t, 2, resp)
+	must.Eq(t, ns.Name, resp[0].Name)
+	must.Eq(t, "default", resp[1].Name)
 }
 
 func TestNamespaces_Register_Invalid(t *testing.T) {
 	testutil.Parallel(t)
-	assert := assert.New(t)
+
 	c, s := makeClient(t, nil, nil)
 	defer s.Stop()
 	namespaces := c.Namespaces()
@@ -40,38 +45,38 @@ func TestNamespaces_Register_Invalid(t *testing.T) {
 	ns := testNamespace()
 	ns.Name = "*"
 	_, err := namespaces.Register(ns, nil)
-	assert.NotNil(err)
+	must.ErrorContains(t, err, `invalid name "*".`)
 }
 
-func TestNamespace_Info(t *testing.T) {
+func TestNamespaces_Info(t *testing.T) {
 	testutil.Parallel(t)
-	assert := assert.New(t)
+
 	c, s := makeClient(t, nil, nil)
 	defer s.Stop()
 	namespaces := c.Namespaces()
 
 	// Trying to retrieve a namespace before it exists returns an error
 	_, _, err := namespaces.Info("foo", nil)
-	assert.NotNil(err)
-	assert.Contains(err.Error(), "not found")
+	must.NotNil(t, err)
+	must.ErrorContains(t, err, "not found")
 
 	// Register the namespace
 	ns := testNamespace()
 	wm, err := namespaces.Register(ns, nil)
-	assert.Nil(err)
+	must.NoError(t, err)
 	assertWriteMeta(t, wm)
 
 	// Query the namespace again and ensure it exists
 	result, qm, err := namespaces.Info(ns.Name, nil)
-	assert.Nil(err)
+	must.NoError(t, err)
 	assertQueryMeta(t, qm)
-	assert.NotNil(result)
-	assert.Equal(ns.Name, result.Name)
+	must.NotNil(t, result)
+	must.Eq(t, ns.Name, result.Name)
 }
 
 func TestNamespaces_Delete(t *testing.T) {
 	testutil.Parallel(t)
-	assert := assert.New(t)
+
 	c, s := makeClient(t, nil, nil)
 	defer s.Stop()
 	namespaces := c.Namespaces()
@@ -79,33 +84,33 @@ func TestNamespaces_Delete(t *testing.T) {
 	// Create a namespace and register it
 	ns := testNamespace()
 	wm, err := namespaces.Register(ns, nil)
-	assert.Nil(err)
+	must.NoError(t, err)
 	assertWriteMeta(t, wm)
 
 	// Query the namespace back out again
 	resp, qm, err := namespaces.List(nil)
-	assert.Nil(err)
+	must.NoError(t, err)
 	assertQueryMeta(t, qm)
-	assert.Len(resp, 2)
-	assert.Equal(ns.Name, resp[0].Name)
-	assert.Equal("default", resp[1].Name)
+	must.Len(t, 2, resp)
+	must.Eq(t, ns.Name, resp[0].Name)
+	must.Eq(t, "default", resp[1].Name)
 
 	// Delete the namespace
 	wm, err = namespaces.Delete(ns.Name, nil)
-	assert.Nil(err)
+	must.NoError(t, err)
 	assertWriteMeta(t, wm)
 
 	// Query the namespaces back out again
 	resp, qm, err = namespaces.List(nil)
-	assert.Nil(err)
+	must.NoError(t, err)
 	assertQueryMeta(t, qm)
-	assert.Len(resp, 1)
-	assert.Equal("default", resp[0].Name)
+	must.Len(t, 1, resp)
+	must.Eq(t, "default", resp[0].Name)
 }
 
 func TestNamespaces_List(t *testing.T) {
 	testutil.Parallel(t)
-	assert := assert.New(t)
+
 	c, s := makeClient(t, nil, nil)
 	defer s.Stop()
 	namespaces := c.Namespaces()
@@ -116,29 +121,44 @@ func TestNamespaces_List(t *testing.T) {
 	ns1.Name = "fooaaa"
 	ns2.Name = "foobbb"
 	wm, err := namespaces.Register(ns1, nil)
-	assert.Nil(err)
+	must.NoError(t, err)
 	assertWriteMeta(t, wm)
 
 	wm, err = namespaces.Register(ns2, nil)
-	assert.Nil(err)
+	must.NoError(t, err)
 	assertWriteMeta(t, wm)
 
 	// Query the namespaces
 	resp, qm, err := namespaces.List(nil)
-	assert.Nil(err)
+	must.NoError(t, err)
 	assertQueryMeta(t, qm)
-	assert.Len(resp, 3)
+	must.Len(t, 3, resp)
 
 	// Query the namespaces using a prefix
 	resp, qm, err = namespaces.PrefixList("foo", nil)
-	assert.Nil(err)
+	must.NoError(t, err)
 	assertQueryMeta(t, qm)
-	assert.Len(resp, 2)
+	must.Len(t, 2, resp)
 
 	// Query the namespaces using a prefix
 	resp, qm, err = namespaces.PrefixList("foob", nil)
-	assert.Nil(err)
+	must.NoError(t, err)
 	assertQueryMeta(t, qm)
-	assert.Len(resp, 1)
-	assert.Equal(ns2.Name, resp[0].Name)
+	must.Len(t, 1, resp)
+	must.Eq(t, ns2.Name, resp[0].Name)
+}
+
+func TestNamespace_NotFound(t *testing.T) {
+	testutil.Parallel(t)
+
+	c, s := makeClient(t, nil, nil)
+	defer s.Stop()
+	namespaces := c.Namespaces()
+
+	var ure UnexpectedResponseError
+	_, _, e := namespaces.Info("dummy", nil)
+
+	ok := errors.As(e, &ure)
+	must.True(t, ok)
+	must.Eq(t, http.StatusNotFound, ure.StatusCode())
 }

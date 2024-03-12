@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 import Component from '@ember/component';
 import { action, computed } from '@ember/object';
 import { classNames } from '@ember-decorators/component';
@@ -65,10 +70,7 @@ export default class JobVersion extends Component {
         });
       } else {
         const job = this.get('version.job');
-
-        this.router.transitionTo('jobs.job', job.get('plainId'), {
-          queryParams: { namespace: job.get('namespace.name') },
-        });
+        this.router.transitionTo('jobs.job.index', job.get('idWithNamespace'));
       }
     } catch (e) {
       this.handleError({

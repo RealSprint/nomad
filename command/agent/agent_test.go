@@ -1,17 +1,16 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package agent
 
 import (
 	"fmt"
-	"io/ioutil"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/shoenig/test/must"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	"github.com/hashicorp/nomad/ci"
 	cstructs "github.com/hashicorp/nomad/client/structs"
@@ -20,6 +19,10 @@ import (
 	"github.com/hashicorp/nomad/nomad/structs"
 	"github.com/hashicorp/nomad/nomad/structs/config"
 	"github.com/hashicorp/nomad/testutil"
+	"github.com/hashicorp/raft"
+	"github.com/shoenig/test/must"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestAgent_RPC_Ping(t *testing.T) {
@@ -28,7 +31,7 @@ func TestAgent_RPC_Ping(t *testing.T) {
 	defer agent.Shutdown()
 
 	var out struct{}
-	if err := agent.RPC("Status.Ping", struct{}{}, &out); err != nil {
+	if err := agent.RPC("Status.Ping", &structs.GenericRequest{}, &out); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 }
@@ -551,6 +554,104 @@ func TestAgent_ServerConfig_RaftMultiplier_Bad(t *testing.T) {
 	}
 }
 
+func TestAgent_ServerConfig_RaftTrailingLogs(t *testing.T) {
+	ci.Parallel(t)
+
+	cases := []struct {
+		name   string
+		value  *int
+		expect interface{}
+		isErr  bool
+	}{
+		{
+			name:   "bad",
+			value:  pointer.Of(int(-1)),
+			isErr:  true,
+			expect: "raft_trailing_logs must be non-negative",
+		},
+		{
+			name:   "good",
+			value:  pointer.Of(int(10)),
+			expect: uint64(10),
+		},
+		{
+			name:   "empty",
+			value:  nil,
+			expect: raft.DefaultConfig().TrailingLogs,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ci.Parallel(t)
+			tc := tc
+			conf := DevConfig(nil)
+			require.NoError(t, conf.normalizeAddrs())
+
+			conf.Server.RaftTrailingLogs = tc.value
+			nc, err := convertServerConfig(conf)
+
+			if !tc.isErr {
+				must.NoError(t, err)
+				val := tc.expect.(uint64)
+				must.Eq(t, val, nc.RaftConfig.TrailingLogs)
+				return
+			}
+			must.Error(t, err)
+			must.StrContains(t, err.Error(), tc.expect.(string))
+		})
+	}
+}
+
+func TestAgent_ServerConfig_RaftSnapshotThreshold(t *testing.T) {
+	ci.Parallel(t)
+
+	cases := []struct {
+		name   string
+		value  *int
+		expect interface{}
+		isErr  bool
+	}{
+		{
+			name:   "bad",
+			value:  pointer.Of(int(-1)),
+			isErr:  true,
+			expect: "raft_snapshot_threshold must be non-negative",
+		},
+		{
+			name:   "good",
+			value:  pointer.Of(int(10)),
+			expect: uint64(10),
+		},
+		{
+			name:   "empty",
+			value:  nil,
+			expect: raft.DefaultConfig().SnapshotThreshold,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ci.Parallel(t)
+			tc := tc
+			conf := DevConfig(nil)
+			require.NoError(t, conf.normalizeAddrs())
+
+			conf.Server.RaftSnapshotThreshold = tc.value
+			nc, err := convertServerConfig(conf)
+
+			if !tc.isErr {
+				must.NoError(t, err)
+				val := tc.expect.(uint64)
+				must.Eq(t, val, nc.RaftConfig.SnapshotThreshold)
+				return
+			}
+			must.Error(t, err)
+			must.StrContains(t, err.Error(), tc.expect.(string))
+		})
+	}
+}
+
 func TestAgent_ServerConfig_RaftProtocol_3(t *testing.T) {
 	ci.Parallel(t)
 
@@ -576,7 +677,7 @@ func TestAgent_ServerConfig_RaftProtocol_3(t *testing.T) {
 	}
 }
 
-func TestAgent_ClientConfig(t *testing.T) {
+func TestAgent_ClientConfig_discovery(t *testing.T) {
 	ci.Parallel(t)
 	conf := DefaultConfig()
 	conf.Client.Enabled = true
@@ -628,24 +729,24 @@ func TestAgent_ClientConfig(t *testing.T) {
 	require.False(t, c.NomadServiceDiscovery)
 }
 
-func TestAgent_ClientConfig_ReservedCores(t *testing.T) {
+func TestAgent_ClientConfig_JobMaxSourceSize(t *testing.T) {
 	ci.Parallel(t)
-	conf := DefaultConfig()
-	conf.Client.Enabled = true
-	conf.Client.ReserveableCores = "0-7"
-	conf.Client.Reserved.Cores = "0,2-3"
-	a := &Agent{config: conf}
-	c, err := a.clientConfig()
-	require.NoError(t, err)
-	require.Exactly(t, []uint16{0, 1, 2, 3, 4, 5, 6, 7}, c.ReservableCores)
-	require.Exactly(t, []uint16{0, 2, 3}, c.Node.ReservedResources.Cpu.ReservedCpuCores)
+
+	conf := DevConfig(nil)
+	must.Eq(t, conf.Server.JobMaxSourceSize, pointer.Of("1M"))
+	must.NoError(t, conf.normalizeAddrs())
+
+	// config conversion ensures value is set
+	conf.Server.JobMaxSourceSize = nil
+	agent := &Agent{config: conf}
+	serverConf, err := agent.serverConfig()
+	must.NoError(t, err)
+	must.Eq(t, 1e6, serverConf.JobMaxSourceSize)
 }
 
 // Clients should inherit telemetry configuration
 func TestAgent_Client_TelemetryConfiguration(t *testing.T) {
 	ci.Parallel(t)
-
-	assert := assert.New(t)
 
 	conf := DefaultConfig()
 	conf.DevMode = true
@@ -653,13 +754,13 @@ func TestAgent_Client_TelemetryConfiguration(t *testing.T) {
 	a := &Agent{config: conf}
 
 	c, err := a.clientConfig()
-	assert.Nil(err)
+	must.NoError(t, err)
 
 	telemetry := conf.Telemetry
 
-	assert.Equal(c.StatsCollectionInterval, telemetry.collectionInterval)
-	assert.Equal(c.PublishNodeMetrics, telemetry.PublishNodeMetrics)
-	assert.Equal(c.PublishAllocationMetrics, telemetry.PublishAllocationMetrics)
+	must.Eq(t, c.StatsCollectionInterval, telemetry.collectionInterval)
+	must.Eq(t, c.PublishNodeMetrics, telemetry.PublishNodeMetrics)
+	must.Eq(t, c.PublishAllocationMetrics, telemetry.PublishAllocationMetrics)
 }
 
 // TestAgent_HTTPCheck asserts Agent.agentHTTPCheck properly alters the HTTP
@@ -673,9 +774,12 @@ func TestAgent_HTTPCheck(t *testing.T) {
 			config: &Config{
 				AdvertiseAddrs:  &AdvertiseAddrs{HTTP: "advertise:4646"},
 				normalizedAddrs: &NormalizedAddrs{HTTP: []string{"normalized:4646"}},
-				Consul: &config.ConsulConfig{
-					ChecksUseAdvertise: pointer.Of(false),
-				},
+				Consuls: []*config.ConsulConfig{{
+					Name:                         "default",
+					ChecksUseAdvertise:           pointer.Of(false),
+					ClientFailuresBeforeCritical: 2,
+					ClientFailuresBeforeWarning:  1,
+				}},
 				TLSConfig: &config.TLSConfig{EnableHTTP: false},
 			},
 		}
@@ -699,11 +803,17 @@ func TestAgent_HTTPCheck(t *testing.T) {
 		if expected := a.config.normalizedAddrs.HTTP[0]; check.PortLabel != expected {
 			t.Errorf("expected normalized addr not %q", check.PortLabel)
 		}
+		if expected := 2; check.FailuresBeforeCritical != expected {
+			t.Errorf("expected failured before critical count not: %q", expected)
+		}
+		if expected := 1; check.FailuresBeforeWarning != expected {
+			t.Errorf("expected failured before warning count not: %q", expected)
+		}
 	})
 
 	t.Run("Plain HTTP + ChecksUseAdvertise", func(t *testing.T) {
 		a := agent()
-		a.config.Consul.ChecksUseAdvertise = pointer.Of(true)
+		a.config.Consuls[0].ChecksUseAdvertise = pointer.Of(true)
 		check := a.agentHTTPCheck(false)
 		if check == nil {
 			t.Fatalf("expected non-nil check")
@@ -749,6 +859,10 @@ func TestAgent_HTTPCheckPath(t *testing.T) {
 		config: DevConfig(nil),
 		logger: testlog.HCLogger(t),
 	}
+	// setting to ensure this does not get set for the server
+	a.config.Consuls[0].ServerFailuresBeforeCritical = 4
+	a.config.Consuls[0].ServerFailuresBeforeWarning = 3
+
 	if err := a.config.normalizeAddrs(); err != nil {
 		t.Fatalf("error normalizing config: %v", err)
 	}
@@ -761,6 +875,13 @@ func TestAgent_HTTPCheckPath(t *testing.T) {
 	}
 	if expected := "/v1/agent/health?type=server"; check.Path != expected {
 		t.Errorf("expected server check path to be %q but found %q", expected, check.Path)
+	}
+	// ensure server failures before critical and warning are set
+	if expected := 4; check.FailuresBeforeCritical != expected {
+		t.Errorf("expected failured before critical count not: %q", expected)
+	}
+	if expected := 3; check.FailuresBeforeWarning != expected {
+		t.Errorf("expected failured before warning count not: %q", expected)
 	}
 
 	// Assert client check uses /v1/agent/health?type=client
@@ -805,11 +926,12 @@ func TestServer_Reload_TLS_Shared_Keyloader(t *testing.T) {
 
 	// We will start out with a bad cert and then reload with a good one.
 	const (
-		cafile   = "../../helper/tlsutil/testdata/ca.pem"
-		foocert  = "../../helper/tlsutil/testdata/nomad-bad.pem"
-		fookey   = "../../helper/tlsutil/testdata/nomad-bad-key.pem"
-		foocert2 = "../../helper/tlsutil/testdata/nomad-foo.pem"
-		fookey2  = "../../helper/tlsutil/testdata/nomad-foo-key.pem"
+		badca         = "../../helper/tlsutil/testdata/bad-agent-ca.pem"
+		badcert       = "../../helper/tlsutil/testdata/badRegion-client-bad.pem"
+		badkey        = "../../helper/tlsutil/testdata/badRegion-client-bad-key.pem"
+		foocafile     = "../../helper/tlsutil/testdata/nomad-agent-ca.pem"
+		fooclientcert = "../../helper/tlsutil/testdata/regionFoo-client-nomad.pem"
+		fooclientkey  = "../../helper/tlsutil/testdata/regionFoo-client-nomad-key.pem"
 	)
 
 	agent := NewTestAgent(t, t.Name(), func(c *Config) {
@@ -817,9 +939,9 @@ func TestServer_Reload_TLS_Shared_Keyloader(t *testing.T) {
 			EnableHTTP:           true,
 			EnableRPC:            true,
 			VerifyServerHostname: true,
-			CAFile:               cafile,
-			CertFile:             foocert,
-			KeyFile:              fookey,
+			CAFile:               badca,
+			CertFile:             badcert,
+			KeyFile:              badkey,
 		}
 	})
 	defer agent.Shutdown()
@@ -837,9 +959,9 @@ func TestServer_Reload_TLS_Shared_Keyloader(t *testing.T) {
 			EnableHTTP:           true,
 			EnableRPC:            true,
 			VerifyServerHostname: true,
-			CAFile:               cafile,
-			CertFile:             foocert2,
-			KeyFile:              fookey2,
+			CAFile:               foocafile,
+			CertFile:             fooclientcert,
+			KeyFile:              fooclientkey,
 		},
 	}
 
@@ -872,11 +994,12 @@ func TestServer_Reload_TLS_Certificate(t *testing.T) {
 	assert := assert.New(t)
 
 	const (
-		cafile   = "../../helper/tlsutil/testdata/ca.pem"
-		foocert  = "../../helper/tlsutil/testdata/nomad-bad.pem"
-		fookey   = "../../helper/tlsutil/testdata/nomad-bad-key.pem"
-		foocert2 = "../../helper/tlsutil/testdata/nomad-foo.pem"
-		fookey2  = "../../helper/tlsutil/testdata/nomad-foo-key.pem"
+		badca         = "../../helper/tlsutil/testdata/nomad-agent-ca.pem"
+		badcert       = "../../helper/tlsutil/testdata/regionFoo-client-nomad.pem"
+		badkey        = "../../helper/tlsutil/testdata/regionFoo-client-nomad-key.pem"
+		cafile        = "../../helper/tlsutil/testdata/nomad-agent-ca.pem"
+		fooclientcert = "../../helper/tlsutil/testdata/regionFoo-client-nomad.pem"
+		fooclientkey  = "../../helper/tlsutil/testdata/regionFoo-client-nomad-key.pem"
 	)
 
 	agentConfig := &Config{
@@ -884,9 +1007,9 @@ func TestServer_Reload_TLS_Certificate(t *testing.T) {
 			EnableHTTP:           true,
 			EnableRPC:            true,
 			VerifyServerHostname: true,
-			CAFile:               cafile,
-			CertFile:             foocert,
-			KeyFile:              fookey,
+			CAFile:               badca,
+			CertFile:             badcert,
+			KeyFile:              badkey,
 		},
 	}
 
@@ -901,8 +1024,8 @@ func TestServer_Reload_TLS_Certificate(t *testing.T) {
 			EnableRPC:            true,
 			VerifyServerHostname: true,
 			CAFile:               cafile,
-			CertFile:             foocert2,
-			KeyFile:              fookey2,
+			CertFile:             fooclientcert,
+			KeyFile:              fooclientkey,
 		},
 	}
 
@@ -921,11 +1044,11 @@ func TestServer_Reload_TLS_Certificate_Invalid(t *testing.T) {
 	assert := assert.New(t)
 
 	const (
-		cafile   = "../../helper/tlsutil/testdata/ca.pem"
-		foocert  = "../../helper/tlsutil/testdata/nomad-bad.pem"
-		fookey   = "../../helper/tlsutil/testdata/nomad-bad-key.pem"
-		foocert2 = "invalid_cert_path"
-		fookey2  = "invalid_key_path"
+		badca      = "../../helper/tlsutil/testdata/nomad-agent-ca.pem"
+		badcert    = "../../helper/tlsutil/testdata/badRegion-client-bad.pem"
+		badkey     = "../../helper/tlsutil/testdata/badRegion-client-bad-key.pem"
+		newfoocert = "invalid_cert_path"
+		newfookey  = "invalid_key_path"
 	)
 
 	agentConfig := &Config{
@@ -933,9 +1056,9 @@ func TestServer_Reload_TLS_Certificate_Invalid(t *testing.T) {
 			EnableHTTP:           true,
 			EnableRPC:            true,
 			VerifyServerHostname: true,
-			CAFile:               cafile,
-			CertFile:             foocert,
-			KeyFile:              fookey,
+			CAFile:               badca,
+			CertFile:             badcert,
+			KeyFile:              badkey,
 		},
 	}
 
@@ -949,9 +1072,9 @@ func TestServer_Reload_TLS_Certificate_Invalid(t *testing.T) {
 			EnableHTTP:           true,
 			EnableRPC:            true,
 			VerifyServerHostname: true,
-			CAFile:               cafile,
-			CertFile:             foocert2,
-			KeyFile:              fookey2,
+			CAFile:               badca,
+			CertFile:             newfoocert,
+			KeyFile:              newfookey,
 		},
 	}
 
@@ -974,8 +1097,6 @@ func Test_GetConfig(t *testing.T) {
 		Ports:          &Ports{},
 		Addresses:      &Addresses{},
 		AdvertiseAddrs: &AdvertiseAddrs{},
-		Vault:          &config.VaultConfig{},
-		Consul:         &config.ConsulConfig{},
 		Sentinel:       &config.SentinelConfig{},
 	}
 
@@ -1008,9 +1129,9 @@ func TestServer_Reload_TLS_UpgradeToTLS(t *testing.T) {
 	assert := assert.New(t)
 
 	const (
-		cafile  = "../../helper/tlsutil/testdata/ca.pem"
-		foocert = "../../helper/tlsutil/testdata/nomad-foo.pem"
-		fookey  = "../../helper/tlsutil/testdata/nomad-foo-key.pem"
+		cafile  = "../../helper/tlsutil/testdata/nomad-agent-ca.pem"
+		foocert = "../../helper/tlsutil/testdata/regionFoo-client-nomad.pem"
+		fookey  = "../../helper/tlsutil/testdata/regionFoo-client-nomad-key.pem"
 	)
 
 	logger := testlog.HCLogger(t)
@@ -1049,9 +1170,9 @@ func TestServer_Reload_TLS_DowngradeFromTLS(t *testing.T) {
 	assert := assert.New(t)
 
 	const (
-		cafile  = "../../helper/tlsutil/testdata/ca.pem"
-		foocert = "../../helper/tlsutil/testdata/nomad-foo.pem"
-		fookey  = "../../helper/tlsutil/testdata/nomad-foo-key.pem"
+		cafile  = "../../helper/tlsutil/testdata/nomad-agent-ca.pem"
+		foocert = "../../helper/tlsutil/testdata/regionFoo-client-nomad.pem"
+		fookey  = "../../helper/tlsutil/testdata/regionFoo-client-nomad-key.pem"
 	)
 
 	logger := testlog.HCLogger(t)
@@ -1090,7 +1211,8 @@ func TestServer_Reload_VaultConfig(t *testing.T) {
 
 	agent := NewTestAgent(t, t.Name(), func(c *Config) {
 		c.Server.NumSchedulers = pointer.Of(0)
-		c.Vault = &config.VaultConfig{
+		c.Vaults[0] = &config.VaultConfig{
+			Name:      "default",
 			Enabled:   pointer.Of(true),
 			Token:     "vault-token",
 			Namespace: "vault-namespace",
@@ -1100,7 +1222,8 @@ func TestServer_Reload_VaultConfig(t *testing.T) {
 	defer agent.Shutdown()
 
 	newConfig := agent.GetConfig().Copy()
-	newConfig.Vault = &config.VaultConfig{
+	newConfig.Vaults[0] = &config.VaultConfig{
+		Name:      "default",
 		Enabled:   pointer.Of(true),
 		Token:     "vault-token",
 		Namespace: "another-namespace",
@@ -1123,9 +1246,9 @@ func TestServer_ShouldReload_ReturnFalseForNoChanges(t *testing.T) {
 	assert := assert.New(t)
 
 	const (
-		cafile  = "../../helper/tlsutil/testdata/ca.pem"
-		foocert = "../../helper/tlsutil/testdata/nomad-foo.pem"
-		fookey  = "../../helper/tlsutil/testdata/nomad-foo-key.pem"
+		cafile  = "../../helper/tlsutil/testdata/nomad-agent-ca.pem"
+		foocert = "../../helper/tlsutil/testdata/regionFoo-client-nomad.pem"
+		fookey  = "../../helper/tlsutil/testdata/regionFoo-client-nomad-key.pem"
 	)
 
 	sameAgentConfig := &Config{
@@ -1161,9 +1284,9 @@ func TestServer_ShouldReload_ReturnTrueForOnlyHTTPChanges(t *testing.T) {
 	require := require.New(t)
 
 	const (
-		cafile  = "../../helper/tlsutil/testdata/ca.pem"
-		foocert = "../../helper/tlsutil/testdata/nomad-foo.pem"
-		fookey  = "../../helper/tlsutil/testdata/nomad-foo-key.pem"
+		cafile  = "../../helper/tlsutil/testdata/nomad-agent-ca.pem"
+		foocert = "../../helper/tlsutil/testdata/regionFoo-client-nomad.pem"
+		fookey  = "../../helper/tlsutil/testdata/regionFoo-client-nomad-key.pem"
 	)
 
 	sameAgentConfig := &Config{
@@ -1199,9 +1322,9 @@ func TestServer_ShouldReload_ReturnTrueForOnlyRPCChanges(t *testing.T) {
 	assert := assert.New(t)
 
 	const (
-		cafile  = "../../helper/tlsutil/testdata/ca.pem"
-		foocert = "../../helper/tlsutil/testdata/nomad-foo.pem"
-		fookey  = "../../helper/tlsutil/testdata/nomad-foo-key.pem"
+		cafile  = "../../helper/tlsutil/testdata/nomad-agent-ca.pem"
+		foocert = "../../helper/tlsutil/testdata/regionFoo-client-nomad.pem"
+		fookey  = "../../helper/tlsutil/testdata/regionFoo-client-nomad-key.pem"
 	)
 
 	sameAgentConfig := &Config{
@@ -1237,11 +1360,11 @@ func TestServer_ShouldReload_ReturnTrueForConfigChanges(t *testing.T) {
 	assert := assert.New(t)
 
 	const (
-		cafile   = "../../helper/tlsutil/testdata/ca.pem"
-		foocert  = "../../helper/tlsutil/testdata/nomad-foo.pem"
-		fookey   = "../../helper/tlsutil/testdata/nomad-foo-key.pem"
-		foocert2 = "../../helper/tlsutil/testdata/nomad-bad.pem"
-		fookey2  = "../../helper/tlsutil/testdata/nomad-bad-key.pem"
+		cafile  = "../../helper/tlsutil/testdata/nomad-agent-ca.pem"
+		foocert = "../../helper/tlsutil/testdata/regionFoo-client-nomad.pem"
+		fookey  = "../../helper/tlsutil/testdata/regionFoo-client-nomad-key.pem"
+		badcert = "../../helper/tlsutil/testdata/badRegion-client-bad.pem"
+		badkey  = "../../helper/tlsutil/testdata/badRegion-client-bad-key.pem"
 	)
 
 	agent := NewTestAgent(t, t.Name(), func(c *Config) {
@@ -1262,8 +1385,8 @@ func TestServer_ShouldReload_ReturnTrueForConfigChanges(t *testing.T) {
 			EnableRPC:            true,
 			VerifyServerHostname: true,
 			CAFile:               cafile,
-			CertFile:             foocert2,
-			KeyFile:              fookey2,
+			CertFile:             badcert,
+			KeyFile:              badkey,
 		},
 	}
 
@@ -1300,12 +1423,12 @@ func TestServer_ShouldReload_ReturnTrueForFileChanges(t *testing.T) {
 	dir := t.TempDir()
 
 	tmpfn := filepath.Join(dir, "testcert")
-	err := ioutil.WriteFile(tmpfn, content, 0666)
+	err := os.WriteFile(tmpfn, content, 0666)
 	require.Nil(err)
 
 	const (
-		cafile = "../../helper/tlsutil/testdata/ca.pem"
-		key    = "../../helper/tlsutil/testdata/nomad-foo-key.pem"
+		cafile = "../../helper/tlsutil/testdata/nomad-agent-ca.pem"
+		key    = "../../helper/tlsutil/testdata/regionFoo-client-nomad-key.pem"
 	)
 
 	logger := testlog.HCLogger(t)
@@ -1352,7 +1475,7 @@ func TestServer_ShouldReload_ReturnTrueForFileChanges(t *testing.T) {
 	`
 
 	os.Remove(tmpfn)
-	err = ioutil.WriteFile(tmpfn, []byte(newCertificate), 0666)
+	err = os.WriteFile(tmpfn, []byte(newCertificate), 0666)
 	require.Nil(err)
 
 	newAgentConfig := &Config{
@@ -1376,11 +1499,11 @@ func TestServer_ShouldReload_ShouldHandleMultipleChanges(t *testing.T) {
 	require := require.New(t)
 
 	const (
-		cafile   = "../../helper/tlsutil/testdata/ca.pem"
-		foocert  = "../../helper/tlsutil/testdata/nomad-foo.pem"
-		fookey   = "../../helper/tlsutil/testdata/nomad-foo-key.pem"
-		foocert2 = "../../helper/tlsutil/testdata/nomad-bad.pem"
-		fookey2  = "../../helper/tlsutil/testdata/nomad-bad-key.pem"
+		cafile  = "../../helper/tlsutil/testdata/nomad-agent-ca.pem"
+		foocert = "../../helper/tlsutil/testdata/regionFoo-client-nomad.pem"
+		fookey  = "../../helper/tlsutil/testdata/regionFoo-client-nomad-key.pem"
+		badcert = "../../helper/tlsutil/testdata/badRegion-client-bad.pem"
+		badkey  = "../../helper/tlsutil/testdata/badRegion-client-bad-key.pem"
 	)
 
 	sameAgentConfig := &Config{
@@ -1400,8 +1523,8 @@ func TestServer_ShouldReload_ShouldHandleMultipleChanges(t *testing.T) {
 			EnableRPC:            true,
 			VerifyServerHostname: true,
 			CAFile:               cafile,
-			CertFile:             foocert2,
-			KeyFile:              fookey2,
+			CertFile:             badcert,
+			KeyFile:              badkey,
 		}
 	})
 	defer agent.Shutdown()
@@ -1469,4 +1592,145 @@ func TestAgent_ProxyRPC_Dev(t *testing.T) {
 			t.Fatalf("was unable to read ClientStats.Stats RPC: %v", err)
 		})
 
+}
+
+func TestAgent_ServerConfig_JobMaxPriority_Ok(t *testing.T) {
+	ci.Parallel(t)
+
+	cases := []struct {
+		maxPriority    *int
+		jobMaxPriority int
+	}{
+		{
+			maxPriority:    nil,
+			jobMaxPriority: 100,
+		},
+
+		{
+			maxPriority:    pointer.Of(0),
+			jobMaxPriority: 100,
+		},
+		{
+			maxPriority:    pointer.Of(100),
+			jobMaxPriority: 100,
+		},
+		{
+			maxPriority:    pointer.Of(200),
+			jobMaxPriority: 200,
+		},
+		{
+			maxPriority:    pointer.Of(32766),
+			jobMaxPriority: 32766,
+		},
+	}
+
+	for _, tc := range cases {
+		v := "default"
+		if tc.maxPriority != nil {
+			v = fmt.Sprintf("%v", *tc.maxPriority)
+		}
+		t.Run(v, func(t *testing.T) {
+			conf := DevConfig(nil)
+			must.NoError(t, conf.normalizeAddrs())
+
+			conf.Server.JobMaxPriority = tc.maxPriority
+
+			serverConf, err := convertServerConfig(conf)
+			must.NoError(t, err)
+			must.Eq(t, tc.jobMaxPriority, serverConf.JobMaxPriority)
+		})
+	}
+}
+
+func TestAgent_ServerConfig_JobMaxPriority_Bad(t *testing.T) {
+	ci.Parallel(t)
+
+	cases := []int{
+		99,
+		math.MaxInt16,
+	}
+
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("%v", tc), func(t *testing.T) {
+			conf := DevConfig(nil)
+			must.NoError(t, conf.normalizeAddrs())
+
+			conf.Server.JobMaxPriority = &tc
+
+			_, err := convertServerConfig(conf)
+			must.Error(t, err)
+			must.ErrorContains(t, err, "job_max_priority cannot be")
+		})
+	}
+}
+
+func TestAgent_ServerConfig_JobDefaultPriority_Ok(t *testing.T) {
+	ci.Parallel(t)
+
+	cases := []struct {
+		defaultPriority    *int
+		jobDefaultPriority int
+	}{
+		{
+			defaultPriority:    nil,
+			jobDefaultPriority: 50,
+		},
+
+		{
+			defaultPriority:    pointer.Of(0),
+			jobDefaultPriority: 50,
+		},
+		{
+			defaultPriority:    pointer.Of(50),
+			jobDefaultPriority: 50,
+		},
+		{
+			defaultPriority:    pointer.Of(60),
+			jobDefaultPriority: 60,
+		},
+		{
+			defaultPriority:    pointer.Of(99),
+			jobDefaultPriority: 99,
+		},
+	}
+
+	for _, tc := range cases {
+		v := "default"
+		if tc.defaultPriority != nil {
+			v = fmt.Sprintf("%v", *tc.defaultPriority)
+		}
+		t.Run(v, func(t *testing.T) {
+			conf := DevConfig(nil)
+			must.NoError(t, conf.normalizeAddrs())
+
+			conf.Server.JobDefaultPriority = tc.defaultPriority
+
+			serverConf, err := convertServerConfig(conf)
+			must.NoError(t, err)
+
+			must.Eq(t, tc.jobDefaultPriority, serverConf.JobDefaultPriority)
+		})
+	}
+}
+
+func TestAgent_ServerConfig_JobDefaultPriority_Bad(t *testing.T) {
+	ci.Parallel(t)
+
+	cases := []int{
+		49,
+		100,
+	}
+
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("%v", tc), func(t *testing.T) {
+			conf := DevConfig(nil)
+			must.NoError(t, conf.normalizeAddrs())
+
+			conf.Server.JobDefaultPriority = &tc
+
+			_, err := convertServerConfig(conf)
+			must.Error(t, err)
+			must.ErrorContains(t, err, "job_default_priority cannot be")
+		})
+	}
 }

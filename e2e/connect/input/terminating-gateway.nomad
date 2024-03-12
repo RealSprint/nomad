@@ -1,3 +1,6 @@
+# Copyright (c) HashiCorp, Inc.
+# SPDX-License-Identifier: BUSL-1.1
+
 job "countdash-terminating" {
 
   datacenters = ["dc1"]
@@ -50,7 +53,7 @@ job "countdash-terminating" {
             #   port    = <generated listener port>
             # }
             # Additional options are documented at
-            # https://www.nomadproject.io/docs/job-specification/gateway#proxy-parameters
+            # https://developer.hashicorp.com/nomad/docs/job-specification/gateway#proxy-parameters
           }
 
           terminating {
@@ -58,7 +61,7 @@ job "countdash-terminating" {
             # given the parameters in the terminating block.
             #
             # Additional options are documented at
-            # https://www.nomadproject.io/docs/job-specification/gateway#terminating-parameters
+            # https://developer.hashicorp.com/nomad/docs/job-specification/gateway#terminating-parameters
             service {
               name = "count-api"
             }

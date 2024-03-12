@@ -1,12 +1,17 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package agent
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -24,7 +29,7 @@ const (
 )
 
 func (s *HTTPServer) AllocsRequest(resp http.ResponseWriter, req *http.Request) (interface{}, error) {
-	if req.Method != "GET" {
+	if req.Method != http.MethodGet {
 		return nil, CodedError(405, ErrInvalidMethod)
 	}
 
@@ -96,7 +101,7 @@ func (s *HTTPServer) AllocSpecificRequest(resp http.ResponseWriter, req *http.Re
 }
 
 func (s *HTTPServer) allocGet(allocID string, resp http.ResponseWriter, req *http.Request) (interface{}, error) {
-	if req.Method != "GET" {
+	if req.Method != http.MethodGet {
 		return nil, CodedError(405, ErrInvalidMethod)
 	}
 
@@ -222,7 +227,7 @@ func (s *HTTPServer) ClientAllocRequest(resp http.ResponseWriter, req *http.Requ
 	case "exec":
 		return s.allocExec(allocID, resp, req)
 	case "snapshot":
-		if s.agent.client == nil {
+		if s.agent.Client() == nil {
 			return nil, clientNotRunning
 		}
 		return s.allocSnapshot(allocID, resp, req)
@@ -238,17 +243,14 @@ func (s *HTTPServer) ClientAllocRequest(resp http.ResponseWriter, req *http.Requ
 }
 
 func (s *HTTPServer) ClientGCRequest(resp http.ResponseWriter, req *http.Request) (interface{}, error) {
-	// Get the requested Node ID
-	requestedNode := req.URL.Query().Get("node_id")
 
-	// Build the request and parse the ACL token
-	args := structs.NodeSpecificRequest{
-		NodeID: requestedNode,
-	}
+	// Build the request and get the requested Node ID
+	args := structs.NodeSpecificRequest{}
 	s.parse(resp, req, &args.QueryOptions.Region, &args.QueryOptions)
+	parseNode(req, &args.NodeID)
 
 	// Determine the handler to use
-	useLocalClient, useClientRPC, useServerRPC := s.rpcHandlerForNode(requestedNode)
+	useLocalClient, useClientRPC, useServerRPC := s.rpcHandlerForNode(args.NodeID)
 
 	// Make the RPC
 	var reply structs.GenericResponse
@@ -515,7 +517,7 @@ func (s *HTTPServer) allocExec(allocID string, resp http.ResponseWriter, req *ht
 		return nil, err
 	}
 
-	return s.execStreamImpl(conn, &args)
+	return s.execStream(conn, &args)
 }
 
 // readWsHandshake reads the websocket handshake message and sets
@@ -551,7 +553,9 @@ type wsHandshakeMessage struct {
 	AuthToken string `json:"auth_token"`
 }
 
-func (s *HTTPServer) execStreamImpl(ws *websocket.Conn, args *cstructs.AllocExecRequest) (interface{}, error) {
+// execStream finds the appropriate RPC handler and then runs the bidirectional
+// websocket-to-RPC stream
+func (s *HTTPServer) execStream(ws *websocket.Conn, args *cstructs.AllocExecRequest) (any, error) {
 	allocID := args.AllocID
 	method := "Allocations.Exec"
 
@@ -571,6 +575,13 @@ func (s *HTTPServer) execStreamImpl(ws *websocket.Conn, args *cstructs.AllocExec
 		return nil, CodedError(500, handlerErr.Error())
 	}
 
+	return s.execStreamImpl(ws, args, handler)
+}
+
+// execStreamImpl is called by execStream with the appropriate RPC handler and
+// then runs the bidirectional websocket-to-RPC stream.
+func (s *HTTPServer) execStreamImpl(ws *websocket.Conn, args *cstructs.AllocExecRequest, handler structs.StreamingRpcHandler) (any, error) {
+
 	// Create a pipe connecting the (possibly remote) handler to the http response
 	httpPipe, handlerPipe := net.Pipe()
 	decoder := codec.NewDecoder(httpPipe, structs.MsgpackHandle)
@@ -585,33 +596,37 @@ func (s *HTTPServer) execStreamImpl(ws *websocket.Conn, args *cstructs.AllocExec
 		// don't close ws - wait to drain messages
 	}()
 
-	// Create a channel that decodes the results
-	errCh := make(chan HTTPCodedError, 2)
+	// Create a channel for the final result
+	resultCh := make(chan HTTPCodedError, 1)
 
-	// stream response
+	// stream response back to the websocket: this should be the only goroutine
+	// that writes to this websocket connection
 	go func() {
 		defer cancel()
+		errCh := make(chan HTTPCodedError, 2)
 
 		// Send the request
 		if err := encoder.Encode(args); err != nil {
-			errCh <- CodedError(500, err.Error())
+			resultCh <- s.execStreamHandleError(ws, CodedError(500, err.Error()))
 			return
 		}
 
-		go forwardExecInput(encoder, ws, errCh)
+		// only start this after we've tried to send the initial args
+		go forwardExecInput(ctx, encoder, ws, errCh)
 
 		for {
-			var res cstructs.StreamErrWrapper
-			err := decoder.Decode(&res)
-			if isClosedError(err) {
-				ws.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-				errCh <- nil
+			select {
+			case codedErr := <-errCh:
+				resultCh <- s.execStreamHandleError(ws, codedErr)
 				return
+			default:
 			}
 
+			var res cstructs.StreamErrWrapper
+			err := decoder.Decode(&res)
 			if err != nil {
 				errCh <- CodedError(500, err.Error())
-				return
+				continue
 			}
 			decoder.Reset(httpPipe)
 
@@ -621,39 +636,47 @@ func (s *HTTPServer) execStreamImpl(ws *websocket.Conn, args *cstructs.AllocExec
 					code = int(*err.Code)
 				}
 				errCh <- CodedError(code, err.Error())
-				return
+				continue
 			}
-
 			if err := ws.WriteMessage(websocket.TextMessage, res.Payload); err != nil {
 				errCh <- CodedError(500, err.Error())
-				return
+				continue
 			}
 		}
 	}()
 
-	// start streaming request to streaming RPC - returns when streaming completes or errors
+	// start streaming request to streaming RPC - returns when streaming
+	// completes or errors
 	handler(handlerPipe)
-	// stop streaming background goroutines for streaming - but not websocket activity
-	cancel()
-	// retrieve any error and/or wait until goroutine stop and close errCh connection before
-	// closing websocket connection
-	codedErr := <-errCh
 
+	// stop streaming background goroutines for streaming - but not websocket
+	// activity
+	cancel()
+
+	// retrieve any error and/or wait until goroutine stop and close errCh
+	// connection before closing websocket connection
+	result := <-resultCh
+	ws.Close()
+	return nil, result
+}
+
+// execStreamHandleError writes a CloseMessage to the websocket if we get an
+// error that isn't a "close error" caused by the RPC pipe finishing up. Note
+// that this should *only* ever be called in the same goroutine as we're
+// streaming the responses
+func (s *HTTPServer) execStreamHandleError(ws *websocket.Conn, codedErr HTTPCodedError) HTTPCodedError {
 	// we won't return an error on ws close, but at least make it available in
 	// the logs so we can trace spurious disconnects
-	if codedErr != nil {
-		s.logger.Debug("alloc exec channel closed with error", "error", codedErr)
-	}
+	s.logger.Trace("alloc exec channel closed with error", "error", codedErr)
 
 	if isClosedError(codedErr) {
-		codedErr = nil
+		return nil // we're intentionally throwing this error away
 	} else if codedErr != nil {
 		ws.WriteMessage(websocket.CloseMessage,
 			websocket.FormatCloseMessage(toWsCode(codedErr.Code()), codedErr.Error()))
+		return codedErr
 	}
-	ws.Close()
-
-	return nil, codedErr
+	return nil
 }
 
 func toWsCode(httpCode int) int {
@@ -666,21 +689,34 @@ func toWsCode(httpCode int) int {
 	}
 }
 
+// isClosedError checks if the websocket "error" is one of the benign "close" status codes
 func isClosedError(err error) bool {
 	if err == nil {
 		return false
 	}
 
-	return err == io.EOF ||
+	return errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrClosedPipe) ||
 		err == io.ErrClosedPipe ||
-		strings.Contains(err.Error(), "closed") ||
-		strings.Contains(err.Error(), "EOF")
+		slices.ContainsFunc([]string{
+			"closed", // msgpack decode error [pos 0]: io: read/write on closed pipe"
+			"EOF",
+			"close 1000", // CLOSE_NORMAL
+			"close 1001", // CLOSE_GOING_AWAY
+			"close 1005", // CLOSED_NO_STATUS
+		}, func(s string) bool { return strings.Contains(err.Error(), s) })
 }
 
 // forwardExecInput forwards exec input (e.g. stdin) from websocket connection
 // to the streaming RPC connection to client
-func forwardExecInput(encoder *codec.Encoder, ws *websocket.Conn, errCh chan<- HTTPCodedError) {
+func forwardExecInput(ctx context.Context, encoder *codec.Encoder, ws *websocket.Conn, errCh chan<- HTTPCodedError) {
 	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
 		sf := &drivers.ExecTaskStreamingRequestMsg{}
 		err := ws.ReadJSON(sf)
 		if err == io.EOF {

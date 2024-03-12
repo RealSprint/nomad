@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
@@ -9,7 +12,7 @@ import (
 	"github.com/hashicorp/nomad/nomad/structs"
 	"github.com/mitchellh/cli"
 	"github.com/posener/complete"
-	"github.com/stretchr/testify/assert"
+	"github.com/shoenig/test/must"
 )
 
 func TestEvalStatusCommand_Implements(t *testing.T) {
@@ -65,7 +68,6 @@ func TestEvalStatusCommand_Fails(t *testing.T) {
 
 func TestEvalStatusCommand_AutocompleteArgs(t *testing.T) {
 	ci.Parallel(t)
-	assert := assert.New(t)
 
 	srv, _, url := testServer(t, true, nil)
 	defer srv.Shutdown()
@@ -76,13 +78,13 @@ func TestEvalStatusCommand_AutocompleteArgs(t *testing.T) {
 	// Create a fake eval
 	state := srv.Agent.Server().State()
 	e := mock.Eval()
-	assert.Nil(state.UpsertEvals(structs.MsgTypeTestSetup, 1000, []*structs.Evaluation{e}))
+	must.NoError(t, state.UpsertEvals(structs.MsgTypeTestSetup, 1000, []*structs.Evaluation{e}))
 
 	prefix := e.ID[:5]
 	args := complete.Args{Last: prefix}
 	predictor := cmd.AutocompleteArgs()
 
 	res := predictor.Predict(args)
-	assert.Equal(1, len(res))
-	assert.Equal(e.ID, res[0])
+	must.SliceLen(t, 1, res)
+	must.Eq(t, e.ID, res[0])
 }

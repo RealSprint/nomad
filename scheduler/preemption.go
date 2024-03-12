@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package scheduler
 
 import (
@@ -9,7 +12,7 @@ import (
 
 // maxParallelPenalty is a score penalty applied to allocations to mitigate against
 // too many allocations of the same job being preempted. This penalty is applied after the
-// number of allocations being preempted exceeds max_parallel value in the job's migrate stanza
+// number of allocations being preempted exceeds max_parallel value in the job's migrate block
 const maxParallelPenalty = 50.0
 
 type groupedAllocs struct {
@@ -133,10 +136,10 @@ func NewPreemptor(jobPriority int, ctx Context, jobID *structs.NamespacedID) *Pr
 
 // SetNode sets the node
 func (p *Preemptor) SetNode(node *structs.Node) {
-	nodeRemainingResources := node.ComparableResources()
+	nodeRemainingResources := node.NodeResources.Comparable()
 
 	// Subtract the reserved resources of the node
-	if c := node.ComparableReservedResources(); c != nil {
+	if c := node.ReservedResources.Comparable(); c != nil {
 		nodeRemainingResources.Subtract(c)
 	}
 	p.nodeRemainingResources = nodeRemainingResources
@@ -158,7 +161,7 @@ func (p *Preemptor) SetCandidates(allocs []*structs.Allocation) {
 		if tg != nil && tg.Migrate != nil {
 			maxParallel = tg.Migrate.MaxParallel
 		}
-		p.allocDetails[alloc.ID] = &allocInfo{maxParallel: maxParallel, resources: alloc.ComparableResources()}
+		p.allocDetails[alloc.ID] = &allocInfo{maxParallel: maxParallel, resources: alloc.AllocatedResources.Comparable()}
 		p.currentAllocs = append(p.currentAllocs, alloc)
 	}
 }

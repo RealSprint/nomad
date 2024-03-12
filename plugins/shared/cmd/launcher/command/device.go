@@ -1,10 +1,12 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package command
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"strings"
@@ -95,7 +97,7 @@ func (c *Device) Run(args []string) int {
 	var config []byte
 	if numArgs == 2 {
 		var err error
-		config, err = ioutil.ReadFile(args[1])
+		config, err = os.ReadFile(args[1])
 		if err != nil {
 			c.logger.Error("failed to read config file", "error", err)
 			return 1

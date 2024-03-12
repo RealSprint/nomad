@@ -1,8 +1,13 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
+	"encoding/json"
 	"testing"
 
+	"github.com/hashicorp/nomad/api"
 	"github.com/hashicorp/nomad/ci"
 	"github.com/hashicorp/nomad/nomad/mock"
 	"github.com/hashicorp/nomad/nomad/structs"
@@ -19,9 +24,7 @@ func TestAllocChecksCommand_Implements(t *testing.T) {
 func TestAllocChecksCommand_Fails(t *testing.T) {
 	ci.Parallel(t)
 	srv, _, url := testServer(t, false, nil)
-	t.Cleanup(func() {
-		_ = srv.Shutdown()
-	})
+	defer srv.Shutdown()
 
 	ui := cli.NewMockUi()
 	cmd := &AllocChecksCommand{Meta: Meta{Ui: ui}}
@@ -63,7 +66,7 @@ func TestAllocChecksCommand_AutocompleteArgs(t *testing.T) {
 	ci.Parallel(t)
 
 	srv, _, url := testServer(t, true, nil)
-	defer stopTestAgent(srv)
+	defer srv.Shutdown()
 
 	ui := cli.NewMockUi()
 	cmd := &AllocChecksCommand{Meta: Meta{Ui: ui, flagAddress: url}}
@@ -85,7 +88,8 @@ func TestAllocChecksCommand_AutocompleteArgs(t *testing.T) {
 func TestAllocChecksCommand_Run(t *testing.T) {
 	ci.Parallel(t)
 	srv, client, url := testServer(t, true, nil)
-	defer stopTestAgent(srv)
+
+	defer srv.Shutdown()
 
 	// wait for nodes
 	waitForNodes(t, client)
@@ -119,4 +123,26 @@ func TestAllocChecksCommand_Run(t *testing.T) {
 	must.StrContains(t, out, `Task       =  (group)`)
 	must.StrContains(t, out, `Service    =  service1`)
 	must.StrContains(t, out, `Mode       =  healthiness`)
+
+	ui.OutputWriter.Reset()
+
+	// List json
+	cmd = &AllocChecksCommand{Meta: Meta{Ui: ui, flagAddress: url}}
+	must.Zero(t, cmd.Run([]string{"-address=" + url, "-json", allocID}))
+
+	outJson := api.AllocCheckStatuses{}
+	err = json.Unmarshal(ui.OutputWriter.Bytes(), &outJson)
+	must.NoError(t, err)
+
+	ui.OutputWriter.Reset()
+
+	// Go template to format the output
+	code = cmd.Run([]string{"-address=" + url, "-t", "{{range .}}{{ .Status }}{{end}}", allocID})
+	must.Zero(t, code)
+
+	out = ui.OutputWriter.String()
+	must.StrContains(t, out, "failure")
+
+	ui.OutputWriter.Reset()
+	ui.ErrorWriter.Reset()
 }

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package consul
 
 import (
@@ -9,6 +12,7 @@ import (
 	"github.com/hashicorp/nomad/helper/pointer"
 	"github.com/hashicorp/nomad/helper/uuid"
 	"github.com/hashicorp/nomad/nomad/structs"
+	"github.com/shoenig/test/must"
 	"github.com/stretchr/testify/require"
 )
 
@@ -360,20 +364,25 @@ func TestConnect_connectUpstreams(t *testing.T) {
 	ci.Parallel(t)
 
 	t.Run("nil", func(t *testing.T) {
-		require.Nil(t, connectUpstreams(nil))
+		must.Nil(t, connectUpstreams(nil))
 	})
 
 	t.Run("not empty", func(t *testing.T) {
-		require.Equal(t,
+		must.Eq(t,
 			[]api.Upstream{{
 				DestinationName: "foo",
 				LocalBindPort:   8000,
 			}, {
 				DestinationName:      "bar",
+				DestinationPeer:      "10.0.0.1:6379",
+				DestinationType:      "tcp",
 				DestinationNamespace: "ns2",
 				LocalBindPort:        9000,
+				LocalBindSocketPath:  "/var/run/testsocket.sock",
+				LocalBindSocketMode:  "0666",
 				Datacenter:           "dc2",
 				LocalBindAddress:     "127.0.0.2",
+				Config:               map[string]any{"connect_timeout_ms": 5000},
 			}},
 			connectUpstreams([]structs.ConsulUpstream{{
 				DestinationName: "foo",
@@ -381,9 +390,14 @@ func TestConnect_connectUpstreams(t *testing.T) {
 			}, {
 				DestinationName:      "bar",
 				DestinationNamespace: "ns2",
+				DestinationPeer:      "10.0.0.1:6379",
+				DestinationType:      "tcp",
 				LocalBindPort:        9000,
+				LocalBindSocketPath:  "/var/run/testsocket.sock",
+				LocalBindSocketMode:  "0666",
 				Datacenter:           "dc2",
 				LocalBindAddress:     "127.0.0.2",
+				Config:               map[string]any{"connect_timeout_ms": 5000},
 			}}),
 		)
 	})

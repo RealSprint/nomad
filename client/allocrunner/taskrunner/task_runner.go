@@ -1,15 +1,16 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package taskrunner
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/hashicorp/nomad/client/lib/cgutil"
-	"golang.org/x/exp/slices"
 
 	metrics "github.com/armon/go-metrics"
 	log "github.com/hashicorp/go-hclog"
@@ -24,6 +25,7 @@ import (
 	"github.com/hashicorp/nomad/client/devicemanager"
 	"github.com/hashicorp/nomad/client/dynamicplugins"
 	cinterfaces "github.com/hashicorp/nomad/client/interfaces"
+	"github.com/hashicorp/nomad/client/lib/cgroupslib"
 	"github.com/hashicorp/nomad/client/pluginmanager/csimanager"
 	"github.com/hashicorp/nomad/client/pluginmanager/drivermanager"
 	"github.com/hashicorp/nomad/client/serviceregistration"
@@ -32,9 +34,11 @@ import (
 	cstructs "github.com/hashicorp/nomad/client/structs"
 	"github.com/hashicorp/nomad/client/taskenv"
 	"github.com/hashicorp/nomad/client/vaultclient"
+	"github.com/hashicorp/nomad/client/widmgr"
 	"github.com/hashicorp/nomad/helper"
 	"github.com/hashicorp/nomad/helper/pluginutils/hclspecutils"
 	"github.com/hashicorp/nomad/helper/pluginutils/hclutils"
+	"github.com/hashicorp/nomad/helper/users/dynamic"
 	"github.com/hashicorp/nomad/helper/uuid"
 	"github.com/hashicorp/nomad/nomad/structs"
 	bstructs "github.com/hashicorp/nomad/plugins/base/structs"
@@ -175,21 +179,25 @@ type TaskRunner struct {
 	// hookResources captures the resources provided by hooks
 	hookResources *hookResources
 
+	// allocHookResources captures the resources provided by the allocrunner hooks
+	allocHookResources *cstructs.AllocHookResources
+
 	// consulClient is the client used by the consul service hook for
 	// registering services and checks
 	consulServiceClient serviceregistration.Handler
 
-	// consulProxiesClient is the client used by the envoy version hook for
+	// consulProxiesClientFunc gets a client used by the envoy version hook for
 	// asking consul what version of envoy nomad should inject into the connect
 	// sidecar or gateway task.
-	consulProxiesClient consul.SupportedProxiesAPI
+	consulProxiesClientFunc consul.SupportedProxiesAPIFunc
 
 	// sidsClient is the client used by the service identity hook for managing
 	// service identity tokens
 	siClient consul.ServiceIdentityAPI
 
-	// vaultClient is the client to use to derive and renew Vault tokens
-	vaultClient vaultclient.VaultClient
+	// vaultClientFunc is the function to get a client to use to derive and
+	// renew Vault tokens
+	vaultClientFunc vaultclient.VaultClientFunc
 
 	// vaultToken is the current Vault token. It should be accessed with the
 	// getter.
@@ -224,9 +232,6 @@ type TaskRunner struct {
 	// statistics
 	devicemanager devicemanager.Manager
 
-	// cpusetCgroupPathGetter is used to lookup the cgroup path if supported by the platform
-	cpusetCgroupPathGetter cgutil.CgroupPathGetter
-
 	// driverManager is used to dispense driver plugins and register event
 	// handlers
 	driverManager drivermanager.Manager
@@ -253,14 +258,22 @@ type TaskRunner struct {
 	networkIsolationLock sync.Mutex
 	networkIsolationSpec *drivers.NetworkIsolationSpec
 
-	allocHookResources *cstructs.AllocHookResources
-
 	// serviceRegWrapper is the handler wrapper that is used by service hooks
 	// to perform service and check registration and deregistration.
 	serviceRegWrapper *wrapper.HandlerWrapper
 
 	// getter is an interface for retrieving artifacts.
 	getter cinterfaces.ArtifactGetter
+
+	// wranglers manage unix/windows processes leveraging operating
+	// system features like cgroups
+	wranglers cinterfaces.ProcessWranglers
+
+	// widmgr manages workload identities
+	widmgr widmgr.IdentityManager
+
+	// users manages the pool of dynamic workload users
+	users dynamic.Pool
 }
 
 type Config struct {
@@ -270,12 +283,12 @@ type Config struct {
 	TaskDir      *allocdir.TaskDir
 	Logger       log.Logger
 
-	// Consul is the client to use for managing Consul service registrations
-	Consul serviceregistration.Handler
+	// ConsulServices is used for managing Consul service registrations
+	ConsulServices serviceregistration.Handler
 
-	// ConsulProxies is the client to use for looking up supported envoy versions
+	// ConsulProxiesFunc gets a client to use for looking up supported envoy versions
 	// from Consul.
-	ConsulProxies consul.SupportedProxiesAPI
+	ConsulProxiesFunc consul.SupportedProxiesAPIFunc
 
 	// ConsulSI is the client to use for managing Consul SI tokens
 	ConsulSI consul.ServiceIdentityAPI
@@ -283,8 +296,8 @@ type Config struct {
 	// DynamicRegistry is where dynamic plugins should be registered.
 	DynamicRegistry dynamicplugins.Registry
 
-	// Vault is the client to use to derive and renew Vault tokens
-	Vault vaultclient.VaultClient
+	// VaultFunc is function to get the client to use to derive and renew Vault tokens
+	VaultFunc vaultclient.VaultClientFunc
 
 	// StateDB is used to store and restore state.
 	StateDB cstate.StateDB
@@ -297,9 +310,6 @@ type Config struct {
 
 	// CSIManager is used to manage the mounting of CSI volumes into tasks
 	CSIManager csimanager.Manager
-
-	// CpusetCgroupPathGetter is used to lookup the cgroup path if supported by the platform
-	CpusetCgroupPathGetter cgutil.CgroupPathGetter
 
 	// DeviceManager is used to mount devices as well as lookup device
 	// statistics
@@ -329,6 +339,19 @@ type Config struct {
 
 	// Getter is an interface for retrieving artifacts.
 	Getter cinterfaces.ArtifactGetter
+
+	// Wranglers is an interface for managing OS processes.
+	Wranglers cinterfaces.ProcessWranglers
+
+	// AllocHookResources is how taskrunner hooks can get state written by
+	// allocrunner hooks
+	AllocHookResources *cstructs.AllocHookResources
+
+	// WIDMgr manages workload identities
+	WIDMgr widmgr.IdentityManager
+
+	// Users manages a pool of dynamic workload users
+	Users dynamic.Pool
 }
 
 func NewTaskRunner(config *Config) (*TaskRunner, error) {
@@ -353,42 +376,44 @@ func NewTaskRunner(config *Config) (*TaskRunner, error) {
 	}
 
 	tr := &TaskRunner{
-		alloc:                  config.Alloc,
-		allocID:                config.Alloc.ID,
-		clientConfig:           config.ClientConfig,
-		task:                   config.Task,
-		taskDir:                config.TaskDir,
-		taskName:               config.Task.Name,
-		taskLeader:             config.Task.Leader,
-		envBuilder:             envBuilder,
-		dynamicRegistry:        config.DynamicRegistry,
-		consulServiceClient:    config.Consul,
-		consulProxiesClient:    config.ConsulProxies,
-		siClient:               config.ConsulSI,
-		vaultClient:            config.Vault,
-		state:                  tstate,
-		localState:             state.NewLocalState(),
-		stateDB:                config.StateDB,
-		stateUpdater:           config.StateUpdater,
-		deviceStatsReporter:    config.DeviceStatsReporter,
-		killCtx:                killCtx,
-		killCtxCancel:          killCancel,
-		shutdownCtx:            trCtx,
-		shutdownCtxCancel:      trCancel,
-		triggerUpdateCh:        make(chan struct{}, triggerUpdateChCap),
-		restartCh:              make(chan struct{}, restartChCap),
-		waitCh:                 make(chan struct{}),
-		csiManager:             config.CSIManager,
-		cpusetCgroupPathGetter: config.CpusetCgroupPathGetter,
-		devicemanager:          config.DeviceManager,
-		driverManager:          config.DriverManager,
-		maxEvents:              defaultMaxEvents,
-		serversContactedCh:     config.ServersContactedCh,
-		startConditionMetCh:    config.StartConditionMetCh,
-		shutdownDelayCtx:       config.ShutdownDelayCtx,
-		shutdownDelayCancelFn:  config.ShutdownDelayCancelFn,
-		serviceRegWrapper:      config.ServiceRegWrapper,
-		getter:                 config.Getter,
+		alloc:                   config.Alloc,
+		allocID:                 config.Alloc.ID,
+		clientConfig:            config.ClientConfig,
+		task:                    config.Task,
+		taskDir:                 config.TaskDir,
+		taskName:                config.Task.Name,
+		taskLeader:              config.Task.Leader,
+		envBuilder:              envBuilder,
+		dynamicRegistry:         config.DynamicRegistry,
+		consulServiceClient:     config.ConsulServices,
+		consulProxiesClientFunc: config.ConsulProxiesFunc,
+		siClient:                config.ConsulSI,
+		vaultClientFunc:         config.VaultFunc,
+		state:                   tstate,
+		localState:              state.NewLocalState(),
+		allocHookResources:      config.AllocHookResources,
+		stateDB:                 config.StateDB,
+		stateUpdater:            config.StateUpdater,
+		deviceStatsReporter:     config.DeviceStatsReporter,
+		killCtx:                 killCtx,
+		killCtxCancel:           killCancel,
+		shutdownCtx:             trCtx,
+		shutdownCtxCancel:       trCancel,
+		triggerUpdateCh:         make(chan struct{}, triggerUpdateChCap),
+		restartCh:               make(chan struct{}, restartChCap),
+		waitCh:                  make(chan struct{}),
+		csiManager:              config.CSIManager,
+		devicemanager:           config.DeviceManager,
+		driverManager:           config.DriverManager,
+		maxEvents:               defaultMaxEvents,
+		serversContactedCh:      config.ServersContactedCh,
+		startConditionMetCh:     config.StartConditionMetCh,
+		shutdownDelayCtx:        config.ShutdownDelayCtx,
+		shutdownDelayCancelFn:   config.ShutdownDelayCancelFn,
+		serviceRegWrapper:       config.ServiceRegWrapper,
+		getter:                  config.Getter,
+		wranglers:               config.Wranglers,
+		widmgr:                  config.WIDMgr,
 	}
 
 	// Create the logger based on the allocation ID
@@ -486,30 +511,20 @@ func (tr *TaskRunner) initLabels() {
 	}
 }
 
-// MarkFailedDead marks a task as failed and not to run. Aimed to be invoked
-// when alloc runner prestart hooks failed. Should never be called with Run().
-func (tr *TaskRunner) MarkFailedDead(reason string) {
-	defer close(tr.waitCh)
-
-	tr.stateLock.Lock()
-	if err := tr.stateDB.PutTaskRunnerLocalState(tr.allocID, tr.taskName, tr.localState); err != nil {
-		//TODO Nomad will be unable to restore this task; try to kill
-		//     it now and fail? In general we prefer to leave running
-		//     tasks running even if the agent encounters an error.
-		tr.logger.Warn("error persisting local failed task state; may be unable to restore after a Nomad restart",
-			"error", err)
-	}
-	tr.stateLock.Unlock()
-
+// MarkFailedKill marks a task as failed and should be killed.
+// It should be invoked when alloc runner prestart hooks fail.
+// Afterwards, Run() will perform any necessary cleanup.
+func (tr *TaskRunner) MarkFailedKill(reason string) {
+	// Emit an event that fails the task and gives reasons for humans.
 	event := structs.NewTaskEvent(structs.TaskSetupFailure).
+		SetKillReason(structs.TaskRestoreFailed).
 		SetDisplayMessage(reason).
 		SetFailsTask()
-	tr.UpdateState(structs.TaskStateDead, event)
+	tr.EmitEvent(event)
 
-	// Run the stop hooks in case task was a restored task that failed prestart
-	if err := tr.stop(); err != nil {
-		tr.logger.Error("stop failed while marking task dead", "error", err)
-	}
+	// Cancel kill context, so later when allocRunner runs tr.Run(),
+	// we'll follow the usual kill path and do all the appropriate cleanup steps.
+	tr.killCtxCancel()
 }
 
 // Run the TaskRunner. Starts the user's task or reattaches to a restored task.
@@ -589,6 +604,12 @@ MAIN:
 			tr.logger.Error("prestart failed", "error", err)
 			tr.restartTracker.SetStartError(err)
 			goto RESTART
+		}
+
+		// Check for a terminal allocation once more before proceeding as the
+		// prestart hooks may have been skipped.
+		if tr.shouldShutdown() {
+			break MAIN
 		}
 
 		select {
@@ -841,19 +862,17 @@ func (tr *TaskRunner) shouldRestart() (bool, time.Duration) {
 	}
 }
 
+func (tr *TaskRunner) assignCgroup(taskConfig *drivers.TaskConfig) {
+	reserveCores := len(tr.taskResources.Cpu.ReservedCores) > 0
+	p := cgroupslib.LinuxResourcesPath(taskConfig.AllocID, taskConfig.Name, reserveCores)
+	taskConfig.Resources.LinuxResources.CpusetCgroupPath = p
+}
+
 // runDriver runs the driver and waits for it to exit
 // runDriver emits an appropriate task event on success/failure
 func (tr *TaskRunner) runDriver() error {
-
 	taskConfig := tr.buildTaskConfig()
-	if tr.cpusetCgroupPathGetter != nil {
-		tr.logger.Trace("waiting for cgroup to exist for", "allocID", tr.allocID, "task", tr.task)
-		cpusetCgroupPath, err := tr.cpusetCgroupPathGetter(tr.killCtx)
-		if err != nil {
-			return err
-		}
-		taskConfig.Resources.LinuxResources.CpusetCgroupPath = cpusetCgroupPath
-	}
+	tr.assignCgroup(taskConfig)
 
 	// Build hcl context variables
 	vars, errs, err := tr.envBuilder.Build().AllValues()
@@ -985,10 +1004,16 @@ func (tr *TaskRunner) handleKill(resultCh <-chan *drivers.ExitResult) *drivers.E
 	// This allows for things like service de-registration to run
 	// before waiting to kill task
 	if delay := tr.Task().ShutdownDelay; delay != 0 {
-		tr.logger.Debug("waiting before killing task", "shutdown_delay", delay)
-
-		ev := structs.NewTaskEvent(structs.TaskWaitingShuttingDownDelay).
-			SetDisplayMessage(fmt.Sprintf("Waiting for shutdown_delay of %s before killing the task.", delay))
+		var ev *structs.TaskEvent
+		if tr.alloc.DesiredTransition.ShouldIgnoreShutdownDelay() {
+			tr.logger.Debug("skipping shutdown_delay", "shutdown_delay", delay)
+			ev = structs.NewTaskEvent(structs.TaskSkippingShutdownDelay).
+				SetDisplayMessage(fmt.Sprintf("Skipping shutdown_delay of %s before killing the task.", delay))
+		} else {
+			tr.logger.Debug("waiting before killing task", "shutdown_delay", delay)
+			ev = structs.NewTaskEvent(structs.TaskWaitingShuttingDownDelay).
+				SetDisplayMessage(fmt.Sprintf("Waiting for shutdown_delay of %s before killing the task.", delay))
+		}
 		tr.UpdateState(structs.TaskStatePending, ev)
 
 		select {
@@ -1099,7 +1124,7 @@ func (tr *TaskRunner) persistLocalState() error {
 func (tr *TaskRunner) buildTaskConfig() *drivers.TaskConfig {
 	task := tr.Task()
 	alloc := tr.Alloc()
-	invocationid := uuid.Generate()[:8]
+	invocationid := uuid.Short()
 	taskResources := tr.taskResources
 	ports := tr.Alloc().AllocatedResources.Shared.Ports
 	env := tr.envBuilder.Build()
@@ -1107,6 +1132,18 @@ func (tr *TaskRunner) buildTaskConfig() *drivers.TaskConfig {
 	defer tr.networkIsolationLock.Unlock()
 
 	var dns *drivers.DNSConfig
+
+	// set DNS from any CNI plugins
+	netStatus := tr.allocHookResources.GetAllocNetworkStatus()
+	if netStatus != nil && netStatus.DNS != nil {
+		dns = &drivers.DNSConfig{
+			Servers:  netStatus.DNS.Servers,
+			Searches: netStatus.DNS.Searches,
+			Options:  netStatus.DNS.Options,
+		}
+	}
+
+	// override DNS if set by job submitter
 	if alloc.AllocatedResources != nil && len(alloc.AllocatedResources.Shared.Networks) > 0 {
 		allocDNS := alloc.AllocatedResources.Shared.Networks[0].DNS
 		if allocDNS != nil {
@@ -1138,13 +1175,14 @@ func (tr *TaskRunner) buildTaskConfig() *drivers.TaskConfig {
 		Namespace:     alloc.Namespace,
 		NodeName:      alloc.NodeName,
 		NodeID:        alloc.NodeID,
+		ParentJobID:   alloc.Job.ParentID,
 		Resources: &drivers.Resources{
 			NomadResources: taskResources,
 			LinuxResources: &drivers.LinuxResources{
 				MemoryLimitBytes: memoryLimit * 1024 * 1024,
 				CPUShares:        taskResources.Cpu.CpuShares,
 				CpusetCpus:       strings.Join(cpusetCpus, ","),
-				PercentTicks:     float64(taskResources.Cpu.CpuShares) / float64(tr.clientConfig.Node.NodeResources.Cpu.CpuShares),
+				PercentTicks:     float64(taskResources.Cpu.CpuShares) / float64(tr.clientConfig.Node.NodeResources.Processors.Topology.UsableCompute()),
 			},
 			Ports: &ports,
 		},
@@ -1256,8 +1294,6 @@ func (tr *TaskRunner) UpdateState(state string, event *structs.TaskEvent) {
 	tr.logger.Trace("setting task state", "state", state)
 
 	if event != nil {
-		tr.logger.Trace("appending task event", "state", state, "event", event.Type)
-
 		// Append the event
 		tr.appendEvent(event)
 	}
@@ -1370,6 +1406,8 @@ func (tr *TaskRunner) appendEvent(event *structs.TaskEvent) error {
 		tr.state.LastRestart = time.Unix(0, event.Time)
 	}
 
+	tr.logger.Info("Task event", "type", event.Type, "msg", event.DisplayMessage, "failed", event.FailsTask)
+
 	// Append event to slice
 	appendTaskEvent(tr.state, event, tr.maxEvents)
 
@@ -1475,9 +1513,11 @@ func (tr *TaskRunner) UpdateStats(ru *cstructs.TaskResourceUsage) {
 func (tr *TaskRunner) setGaugeForMemory(ru *cstructs.TaskResourceUsage) {
 	alloc := tr.Alloc()
 	var allocatedMem float32
+	var allocatedMemMax float32
 	if taskRes := alloc.AllocatedResources.Tasks[tr.taskName]; taskRes != nil {
 		// Convert to bytes to match other memory metrics
 		allocatedMem = float32(taskRes.Memory.MemoryMB) * 1024 * 1024
+		allocatedMemMax = float32(taskRes.Memory.MemoryMaxMB) * 1024 * 1024
 	}
 
 	ms := ru.ResourceUsage.MemoryStats
@@ -1501,6 +1541,10 @@ func (tr *TaskRunner) setGaugeForMemory(ru *cstructs.TaskResourceUsage) {
 		metrics.SetGaugeWithLabels([]string{"client", "allocs", "memory", "allocated"},
 			allocatedMem, tr.baseLabels)
 	}
+	if allocatedMemMax > 0 {
+		metrics.SetGaugeWithLabels([]string{"client", "allocs", "memory", "max_allocated"},
+			allocatedMemMax, tr.baseLabels)
+	}
 }
 
 // TODO Remove Backwardscompat or use tr.Alloc()?
@@ -1522,6 +1566,8 @@ func (tr *TaskRunner) setGaugeForCPU(ru *cstructs.TaskResourceUsage) {
 	metrics.SetGaugeWithLabels([]string{"client", "allocs", "cpu", "throttled_periods"},
 		float32(ru.ResourceUsage.CpuStats.ThrottledPeriods), tr.baseLabels)
 	metrics.SetGaugeWithLabels([]string{"client", "allocs", "cpu", "total_ticks"},
+		float32(ru.ResourceUsage.CpuStats.TotalTicks), tr.baseLabels)
+	metrics.IncrCounterWithLabels([]string{"client", "allocs", "cpu", "total_ticks_count"},
 		float32(ru.ResourceUsage.CpuStats.TotalTicks), tr.baseLabels)
 	if allocatedCPU > 0 {
 		metrics.SetGaugeWithLabels([]string{"client", "allocs", "cpu", "allocated"},
@@ -1578,10 +1624,6 @@ func (tr *TaskRunner) TaskExecHandler() drivermanager.TaskExecHandler {
 
 func (tr *TaskRunner) DriverCapabilities() (*drivers.Capabilities, error) {
 	return tr.driver.Capabilities()
-}
-
-func (tr *TaskRunner) SetAllocHookResources(res *cstructs.AllocHookResources) {
-	tr.allocHookResources = res
 }
 
 // shutdownDelayCancel is used for testing only and cancels the

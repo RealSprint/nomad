@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
@@ -28,7 +31,9 @@ Usage: nomad job promote [options] <job id>
   "nomad job revert" command.
 
   When ACLs are enabled, this command requires a token with the 'submit-job',
-  'list-jobs', and 'read-job' capabilities for the job's namespace.
+  and 'read-job' capabilities for the job's namespace. The 'list-jobs'
+  capability is required to run the command with a job prefix instead of the
+  exact job ID.
 
 General Options:
 
@@ -117,24 +122,13 @@ func (c *JobPromoteCommand) Run(args []string) int {
 	}
 
 	// Check if the job exists
-	jobID := strings.TrimSpace(args[0])
-	jobs, _, err := client.Jobs().PrefixList(jobID)
+	jobIDPrefix := strings.TrimSpace(args[0])
+	jobID, namespace, err := c.JobIDByPrefix(client, jobIDPrefix, nil)
 	if err != nil {
-		c.Ui.Error(fmt.Sprintf("Error promoting job: %s", err))
+		c.Ui.Error(err.Error())
 		return 1
 	}
-	if len(jobs) == 0 {
-		c.Ui.Error(fmt.Sprintf("No job(s) with prefix or id %q found", jobID))
-		return 1
-	}
-	if len(jobs) > 1 {
-		if (jobID != jobs[0].ID) || (c.allNamespaces() && jobs[0].ID == jobs[1].ID) {
-			c.Ui.Error(fmt.Sprintf("Prefix matched multiple jobs\n\n%s", createStatusListOutput(jobs, c.allNamespaces())))
-			return 1
-		}
-	}
-	jobID = jobs[0].ID
-	q := &api.QueryOptions{Namespace: jobs[0].JobSummary.Namespace}
+	q := &api.QueryOptions{Namespace: namespace}
 
 	// Do a prefix lookup
 	deploy, _, err := client.Jobs().LatestDeployment(jobID, q)
@@ -148,7 +142,7 @@ func (c *JobPromoteCommand) Run(args []string) int {
 		return 1
 	}
 
-	wq := &api.WriteOptions{Namespace: jobs[0].JobSummary.Namespace}
+	wq := &api.WriteOptions{Namespace: namespace}
 	var u *api.DeploymentUpdateResponse
 	if len(groups) == 0 {
 		u, _, err = client.Deployments().PromoteAll(deploy.ID, wq)

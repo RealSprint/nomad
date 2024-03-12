@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package fingerprint
 
 import (
@@ -40,24 +43,28 @@ func (f *PluginsCNIFingerprint) Fingerprint(req *FingerprintRequest, resp *Finge
 		return nil
 	}
 
-	// list the cni_path directory
-	entries, err := f.lister(cniPath)
-	switch {
-	case err != nil:
-		f.logger.Warn("failed to read CNI plugins directory", "cni_path", cniPath, "error", err)
-		resp.Detected = false
-		return nil
-	case len(entries) == 0:
-		f.logger.Debug("no CNI plugins found", "cni_path", cniPath)
-		resp.Detected = true
-		return nil
-	}
+	// cniPath could be a multi-path, e.g. /opt/cni/bin:/custom/cni/bin
+	cniPathList := filepath.SplitList(cniPath)
+	for _, cniPath = range cniPathList {
+		// list the cni_path directory
+		entries, err := f.lister(cniPath)
+		switch {
+		case err != nil:
+			f.logger.Warn("failed to read CNI plugins directory", "cni_path", cniPath, "error", err)
+			resp.Detected = false
+			return nil
+		case len(entries) == 0:
+			f.logger.Debug("no CNI plugins found", "cni_path", cniPath)
+			resp.Detected = true
+			return nil
+		}
 
-	// for each file in cni_path, detect executables and try to get their version
-	for _, entry := range entries {
-		v, ok := f.detectOne(cniPath, entry)
-		if ok {
-			resp.AddAttribute(f.attribute(entry.Name()), v)
+		// for each file in cni_path, detect executables and try to get their version
+		for _, entry := range entries {
+			v, ok := f.detectOnePlugin(cniPath, entry)
+			if ok {
+				resp.AddAttribute(f.attribute(entry.Name()), v)
+			}
 		}
 	}
 
@@ -70,7 +77,7 @@ func (f *PluginsCNIFingerprint) attribute(filename string) string {
 	return fmt.Sprintf("%s.%s", cniPluginAttribute, filename)
 }
 
-func (f *PluginsCNIFingerprint) detectOne(cniPath string, entry os.DirEntry) (string, bool) {
+func (f *PluginsCNIFingerprint) detectOnePlugin(pluginPath string, entry os.DirEntry) (string, bool) {
 	fi, err := entry.Info()
 	if err != nil {
 		f.logger.Debug("failed to read cni directory entry", "error", err)
@@ -82,7 +89,7 @@ func (f *PluginsCNIFingerprint) detectOne(cniPath string, entry os.DirEntry) (st
 		return "", false // not executable
 	}
 
-	exePath := filepath.Join(cniPath, fi.Name())
+	exePath := filepath.Join(pluginPath, fi.Name())
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -101,9 +108,9 @@ func (f *PluginsCNIFingerprint) detectOne(cniPath string, entry os.DirEntry) (st
 	// e.g.
 	//  /opt/cni/bin/bridge <no args>
 	//  CNI bridge plugin v1.0.0
+	//  (and optionally another line that contains the supported CNI protocol versions)
 	tokens := strings.Fields(string(output))
-	for i := len(tokens) - 1; i >= 0; i-- {
-		token := tokens[i]
+	for _, token := range tokens {
 		if _, parseErr := version.NewSemver(token); parseErr == nil {
 			return token, true
 		}

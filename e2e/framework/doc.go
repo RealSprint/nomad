@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 /*
 Package framework implements a model for developing end-to-end test suites. The
 model includes a top level Framework which TestSuites can be added to. TestSuites
@@ -120,4 +123,6 @@ string that is unique with in a test. Therefore, multiple tests with in the case
 can reliably create unique IDs between tests and setup/teardown. The string
 returned is 8 alpha numeric characters.
 */
+
+// Deprecated: no longer use e2e/framework for new tests; see TestExample for new e2e test structure.
 package framework

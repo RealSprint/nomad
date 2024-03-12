@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package jobspec2
 
 // This file is copied verbatim from Packer: https://github.com/hashicorp/packer/blob/7a1680df97e028c4a75622effe08f6610d0ee5b4/hcl2template/types.variables.go
@@ -95,6 +98,17 @@ func (v *Variable) validateValue(val VariableAssignment) (diags hcl.Diagnostics)
 	for _, validation := range v.Validations {
 		const errInvalidCondition = "Invalid variable validation result"
 
+		if validation.Condition == nil {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity:    hcl.DiagError,
+				Summary:     "Invalid variable validation specification",
+				Detail:      "validation requires a condition.",
+				Subject:     validation.DeclRange.Ptr(),
+				EvalContext: hclCtx,
+			})
+			continue
+		}
+
 		result, moreDiags := validation.Condition.Value(hclCtx)
 		diags = append(diags, moreDiags...)
 		if !result.IsKnown() {
@@ -149,7 +163,7 @@ func (v *Variable) Value() (cty.Value, hcl.Diagnostics) {
 			Severity: hcl.DiagError,
 			Summary:  fmt.Sprintf("Unset variable %q", v.Name),
 			Detail: "A used variable must be set or have a default value; see " +
-				"https://www.nomadproject.io/docs/job-specification/hcl2/variables for " +
+				"https://developer.hashicorp.com/nomad/docs/job-specification/hcl2/variables for " +
 				"details.",
 			Context: v.Range.Ptr(),
 		}}

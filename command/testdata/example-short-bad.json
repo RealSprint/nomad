@@ -2,7 +2,7 @@
     "Job": {
         "Region": null,
         "Namespace": null,
-        "ID": "example",
+        "ID": "bad example",
         "Name": "example",
         "Type": null,
         "Priority": null,
@@ -90,6 +90,10 @@
                 "ShutdownDelay": null,
                 "StopAfterClientDisconnect": null,
                 "MaxClientDisconnect": null,
+                "Disconnect":{
+                    "StopAfterClient": null,
+                    "LostAfter": null
+                },
                 "Scaling": null,
                 "Consul": null
             }

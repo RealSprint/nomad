@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 import { inject as service } from '@ember/service';
 import Controller from '@ember/controller';
 import { action, computed } from '@ember/object';
@@ -75,7 +80,10 @@ export default class ExecController extends Controller {
     if (this.allocationShortId) {
       allocation = this.allocations.findBy('shortId', this.allocationShortId);
     } else {
-      allocation = this.allocations.find((allocation) =>
+      let allocationPool = this.taskGroupName
+        ? this.allocations.filterBy('taskGroupName', this.taskGroupName)
+        : this.allocations;
+      allocation = allocationPool.find((allocation) =>
         allocation.states
           .filterBy('isActive')
           .mapBy('name')

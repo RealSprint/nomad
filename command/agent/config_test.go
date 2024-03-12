@@ -1,14 +1,15 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package agent
 
 import (
 	"fmt"
-	"io/ioutil"
 	"net"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
-	"strings"
 	"testing"
 	"time"
 
@@ -16,10 +17,10 @@ import (
 	"github.com/hashicorp/nomad/ci"
 	client "github.com/hashicorp/nomad/client/config"
 	"github.com/hashicorp/nomad/client/testutil"
-	"github.com/hashicorp/nomad/helper/freeport"
 	"github.com/hashicorp/nomad/helper/pointer"
 	"github.com/hashicorp/nomad/nomad/structs"
 	"github.com/hashicorp/nomad/nomad/structs/config"
+	"github.com/shoenig/test/must"
 	"github.com/stretchr/testify/require"
 )
 
@@ -43,8 +44,6 @@ func TestConfig_Merge(t *testing.T) {
 		Ports:          &Ports{},
 		Addresses:      &Addresses{},
 		AdvertiseAddrs: &AdvertiseAddrs{},
-		Vault:          &config.VaultConfig{},
-		Consul:         &config.ConsulConfig{},
 		Sentinel:       &config.SentinelConfig{},
 		Autopilot:      &config.AutopilotConfig{},
 	}
@@ -56,6 +55,7 @@ func TestConfig_Merge(t *testing.T) {
 		DataDir:                   "/tmp/dir1",
 		PluginDir:                 "/tmp/pluginDir1",
 		LogLevel:                  "INFO",
+		LogIncludeLocation:        false,
 		LogJson:                   false,
 		EnableDebug:               false,
 		LeaveOnInt:                false,
@@ -108,6 +108,7 @@ func TestConfig_Merge(t *testing.T) {
 			StateDir:  "/tmp/state1",
 			AllocDir:  "/tmp/alloc1",
 			NodeClass: "class1",
+			NodePool:  "dev",
 			Options: map[string]string{
 				"foo": "bar",
 			},
@@ -139,8 +140,12 @@ func TestConfig_Merge(t *testing.T) {
 			ProtocolVersion:        1,
 			RaftProtocol:           1,
 			RaftMultiplier:         pointer.Of(5),
+			RaftSnapshotThreshold:  pointer.Of(100),
+			RaftSnapshotInterval:   pointer.Of("30m"),
+			RaftTrailingLogs:       pointer.Of(200),
 			NumSchedulers:          pointer.Of(1),
 			NodeGCThreshold:        "1h",
+			BatchEvalGCThreshold:   "4h",
 			HeartbeatGrace:         30 * time.Second,
 			MinHeartbeatTTL:        30 * time.Second,
 			MaxHeartbeatsPerSecond: 30.0,
@@ -153,6 +158,7 @@ func TestConfig_Merge(t *testing.T) {
 				NodeThreshold: 100,
 				NodeWindow:    11 * time.Minute,
 			},
+			OIDCIssuer: "https://oidc.test.nomadproject.io",
 		},
 		ACL: &ACLConfig{
 			Enabled:               true,
@@ -180,7 +186,8 @@ func TestConfig_Merge(t *testing.T) {
 		HTTPAPIResponseHeaders: map[string]string{
 			"Access-Control-Allow-Origin": "*",
 		},
-		Vault: &config.VaultConfig{
+		Vaults: []*config.VaultConfig{{
+			Name:                 structs.VaultDefaultCluster,
 			Token:                "1",
 			AllowUnauthenticated: &falseValue,
 			TaskTokenTTL:         "1",
@@ -191,8 +198,8 @@ func TestConfig_Merge(t *testing.T) {
 			TLSKeyFile:           "1",
 			TLSSkipVerify:        &falseValue,
 			TLSServerName:        "1",
-		},
-		Consul: &config.ConsulConfig{
+		}},
+		Consuls: []*config.ConsulConfig{{
 			ServerServiceName:    "1",
 			ClientServiceName:    "1",
 			AutoAdvertise:        &falseValue,
@@ -209,7 +216,7 @@ func TestConfig_Merge(t *testing.T) {
 			ServerAutoJoin:       &falseValue,
 			ClientAutoJoin:       &falseValue,
 			ChecksUseAdvertise:   &falseValue,
-		},
+		}},
 		Autopilot: &config.AutopilotConfig{
 			CleanupDeadServers:      &falseValue,
 			ServerStabilizationTime: 1 * time.Second,
@@ -238,6 +245,7 @@ func TestConfig_Merge(t *testing.T) {
 		DataDir:                   "/tmp/dir2",
 		PluginDir:                 "/tmp/pluginDir2",
 		LogLevel:                  "DEBUG",
+		LogIncludeLocation:        true,
 		LogJson:                   true,
 		EnableDebug:               true,
 		LeaveOnInt:                true,
@@ -287,6 +295,7 @@ func TestConfig_Merge(t *testing.T) {
 			CirconusBrokerSelectTag:            "dc:dc2",
 			PrefixFilter:                       []string{"prefix1", "prefix2"},
 			DisableDispatchedJobSummaryMetrics: true,
+			DisableRPCRateMetricsLabels:        true,
 			FilterDefault:                      pointer.Of(false),
 		},
 		Client: &ClientConfig{
@@ -294,6 +303,7 @@ func TestConfig_Merge(t *testing.T) {
 			StateDir:  "/tmp/state2",
 			AllocDir:  "/tmp/alloc2",
 			NodeClass: "class2",
+			NodePool:  "dev",
 			Servers:   []string{"server2"},
 			Meta: map[string]string{
 				"baz": "zip",
@@ -336,9 +346,13 @@ func TestConfig_Merge(t *testing.T) {
 			ProtocolVersion:        2,
 			RaftProtocol:           2,
 			RaftMultiplier:         pointer.Of(6),
+			RaftSnapshotThreshold:  pointer.Of(100),
+			RaftSnapshotInterval:   pointer.Of("30m"),
+			RaftTrailingLogs:       pointer.Of(200),
 			NumSchedulers:          pointer.Of(2),
 			EnabledSchedulers:      []string{structs.JobTypeBatch},
 			NodeGCThreshold:        "12h",
+			BatchEvalGCThreshold:   "4h",
 			HeartbeatGrace:         2 * time.Minute,
 			MinHeartbeatTTL:        2 * time.Minute,
 			MaxHeartbeatsPerSecond: 200.0,
@@ -356,6 +370,9 @@ func TestConfig_Merge(t *testing.T) {
 				NodeThreshold: 100,
 				NodeWindow:    11 * time.Minute,
 			},
+			JobMaxPriority:     pointer.Of(200),
+			JobDefaultPriority: pointer.Of(100),
+			OIDCIssuer:         "https://oidc.test.nomadproject.io",
 		},
 		ACL: &ACLConfig{
 			Enabled:               true,
@@ -384,7 +401,8 @@ func TestConfig_Merge(t *testing.T) {
 			"Access-Control-Allow-Origin":  "*",
 			"Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 		},
-		Vault: &config.VaultConfig{
+		Vaults: []*config.VaultConfig{{
+			Name:                 structs.VaultDefaultCluster,
 			Token:                "2",
 			AllowUnauthenticated: &trueValue,
 			TaskTokenTTL:         "2",
@@ -395,25 +413,34 @@ func TestConfig_Merge(t *testing.T) {
 			TLSKeyFile:           "2",
 			TLSSkipVerify:        &trueValue,
 			TLSServerName:        "2",
-		},
-		Consul: &config.ConsulConfig{
-			ServerServiceName:    "2",
-			ClientServiceName:    "2",
-			AutoAdvertise:        &trueValue,
-			Addr:                 "2",
-			AllowUnauthenticated: &trueValue,
-			Timeout:              2 * time.Second,
-			Token:                "2",
-			Auth:                 "2",
-			EnableSSL:            &trueValue,
-			VerifySSL:            &trueValue,
-			CAFile:               "2",
-			CertFile:             "2",
-			KeyFile:              "2",
-			ServerAutoJoin:       &trueValue,
-			ClientAutoJoin:       &trueValue,
-			ChecksUseAdvertise:   &trueValue,
-		},
+			ConnectionRetryIntv:  time.Duration(30000000000),
+			JWTAuthBackendPath:   "jwt",
+		}},
+		Consuls: []*config.ConsulConfig{{
+			Name:                      "default",
+			ServerServiceName:         "2",
+			ClientServiceName:         "2",
+			AutoAdvertise:             &trueValue,
+			Addr:                      "2",
+			AllowUnauthenticated:      &trueValue,
+			Timeout:                   2 * time.Second,
+			Token:                     "2",
+			Auth:                      "2",
+			EnableSSL:                 &trueValue,
+			VerifySSL:                 &trueValue,
+			CAFile:                    "2",
+			CertFile:                  "2",
+			KeyFile:                   "2",
+			ServerAutoJoin:            &trueValue,
+			ClientAutoJoin:            &trueValue,
+			ChecksUseAdvertise:        &trueValue,
+			ServerHTTPCheckName:       "Nomad Server HTTP Check",
+			ServerSerfCheckName:       "Nomad Server Serf Check",
+			ServerRPCCheckName:        "Nomad Server RPC Check",
+			ClientHTTPCheckName:       "Nomad Client HTTP Check",
+			ServiceIdentityAuthMethod: structs.ConsulWorkloadsDefaultAuthMethodName,
+			TaskIdentityAuthMethod:    structs.ConsulWorkloadsDefaultAuthMethodName,
+		}},
 		Sentinel: &config.SentinelConfig{
 			Imports: []*config.SentinelImport{
 				{
@@ -449,12 +476,19 @@ func TestConfig_Merge(t *testing.T) {
 				},
 			},
 		},
+		Reporting: &config.ReportingConfig{
+			License: &config.LicenseReportingConfig{
+				Enabled: pointer.Of(true),
+			},
+		},
 	}
 
 	result := c0.Merge(c1)
 	result = result.Merge(c2)
 	result = result.Merge(c3)
-	require.Equal(t, c3, result)
+	expected := c3.Copy()
+
+	must.Eq(t, expected, result)
 }
 
 func TestConfig_ParseConfigFile(t *testing.T) {
@@ -465,7 +499,7 @@ func TestConfig_ParseConfigFile(t *testing.T) {
 		t.Fatalf("expected error, got nothing")
 	}
 
-	fh, err := ioutil.TempFile("", "nomad")
+	fh, err := os.CreateTemp("", "nomad")
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -519,19 +553,19 @@ func TestConfig_LoadConfigDir(t *testing.T) {
 	}
 
 	file1 := filepath.Join(dir, "conf1.hcl")
-	err = ioutil.WriteFile(file1, []byte(`{"region":"west"}`), 0600)
+	err = os.WriteFile(file1, []byte(`{"region":"west"}`), 0600)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
 
 	file2 := filepath.Join(dir, "conf2.hcl")
-	err = ioutil.WriteFile(file2, []byte(`{"datacenter":"sfo"}`), 0600)
+	err = os.WriteFile(file2, []byte(`{"datacenter":"sfo"}`), 0600)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
 
 	file3 := filepath.Join(dir, "conf3.hcl")
-	err = ioutil.WriteFile(file3, []byte(`nope;!!!`), 0600)
+	err = os.WriteFile(file3, []byte(`nope;!!!`), 0600)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -563,7 +597,7 @@ func TestConfig_LoadConfig(t *testing.T) {
 		t.Fatalf("expected error, got nothing")
 	}
 
-	fh, err := ioutil.TempFile("", "nomad")
+	fh, err := os.CreateTemp("", "nomad")
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -591,7 +625,7 @@ func TestConfig_LoadConfig(t *testing.T) {
 	dir := t.TempDir()
 
 	file1 := filepath.Join(dir, "config1.hcl")
-	err = ioutil.WriteFile(file1, []byte(`{"datacenter":"sfo"}`), 0600)
+	err = os.WriteFile(file1, []byte(`{"datacenter":"sfo"}`), 0600)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -660,8 +694,7 @@ func TestConfig_Listener(t *testing.T) {
 	}
 
 	// Works with valid inputs
-	ports := freeport.MustTake(2)
-	defer freeport.Return(ports)
+	ports := ci.PortAllocator.Grab(2)
 
 	ln, err := config.Listener("tcp", "127.0.0.1", ports[0])
 	if err != nil {
@@ -691,59 +724,61 @@ func TestConfig_Listener(t *testing.T) {
 	}
 }
 
-func TestConfig_DevModeFlag(t *testing.T) {
+func TestConfig_DevMode_validate(t *testing.T) {
 	ci.Parallel(t)
 
 	cases := []struct {
-		dev         bool
-		connect     bool
-		expected    *devModeConfig
+		devConfig   *devModeConfig
 		expectedErr string
 	}{}
 	if runtime.GOOS != "linux" {
 		cases = []struct {
-			dev         bool
-			connect     bool
-			expected    *devModeConfig
+			devConfig   *devModeConfig
 			expectedErr string
 		}{
-			{false, false, nil, ""},
-			{true, false, &devModeConfig{defaultMode: true, connectMode: false}, ""},
-			{true, true, nil, "-dev-connect is only supported on linux"},
-			{false, true, nil, "-dev-connect is only supported on linux"},
+			{
+				devConfig: &devModeConfig{
+					connectMode: true,
+				},
+				expectedErr: "-dev-connect is only supported on linux",
+			},
+			{
+				devConfig: &devModeConfig{
+					defaultMode: true,
+					connectMode: true,
+				},
+				expectedErr: "-dev-connect is only supported on linux",
+			},
 		}
 	}
 	if runtime.GOOS == "linux" {
 		testutil.RequireRoot(t)
 		cases = []struct {
-			dev         bool
-			connect     bool
-			expected    *devModeConfig
+			devConfig   *devModeConfig
 			expectedErr string
 		}{
-			{false, false, nil, ""},
-			{true, false, &devModeConfig{defaultMode: true, connectMode: false}, ""},
-			{true, true, &devModeConfig{defaultMode: true, connectMode: true}, ""},
-			{false, true, &devModeConfig{defaultMode: false, connectMode: true}, ""},
+			{
+				devConfig: &devModeConfig{
+					connectMode: true,
+				},
+				expectedErr: "",
+			},
+			{
+				devConfig: &devModeConfig{
+					defaultMode: true,
+					connectMode: true,
+				},
+				expectedErr: "",
+			},
 		}
 	}
 	for _, c := range cases {
 		t.Run("", func(t *testing.T) {
-			mode, err := newDevModeConfig(c.dev, c.connect)
-			if err != nil && c.expectedErr == "" {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if err != nil && !strings.Contains(err.Error(), c.expectedErr) {
-				t.Fatalf("expected %s; got %v", c.expectedErr, err)
-			}
-			if mode == nil && c.expected != nil {
-				t.Fatalf("expected %+v but got nil", c.expected)
-			}
-			if mode != nil {
-				if c.expected.defaultMode != mode.defaultMode ||
-					c.expected.connectMode != mode.connectMode {
-					t.Fatalf("expected %+v, got %+v", c.expected, mode)
-				}
+			err := c.devConfig.validate()
+			if c.expectedErr != "" {
+				must.Error(t, err)
+			} else {
+				must.NoError(t, err)
 			}
 		})
 	}
@@ -1348,10 +1383,11 @@ func TestTelemetry_Parse(t *testing.T) {
 	dir := t.TempDir()
 
 	file1 := filepath.Join(dir, "config1.hcl")
-	err := ioutil.WriteFile(file1, []byte(`telemetry{
+	err := os.WriteFile(file1, []byte(`telemetry{
 		prefix_filter = ["+nomad.raft"]
 		filter_default = false
 		disable_dispatched_job_summary_metrics = true
+		disable_rpc_rate_metrics_labels = true
 	}`), 0600)
 	require.NoError(err)
 
@@ -1362,6 +1398,7 @@ func TestTelemetry_Parse(t *testing.T) {
 	require.False(*config.Telemetry.FilterDefault)
 	require.Exactly([]string{"+nomad.raft"}, config.Telemetry.PrefixFilter)
 	require.True(config.Telemetry.DisableDispatchedJobSummaryMetrics)
+	require.True(config.Telemetry.DisableRPCRateMetricsLabels)
 }
 
 func TestEventBroker_Parse(t *testing.T) {

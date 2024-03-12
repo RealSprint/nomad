@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package exec
 
 import (
@@ -5,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,7 +19,8 @@ import (
 	"time"
 
 	"github.com/hashicorp/nomad/ci"
-	"github.com/hashicorp/nomad/client/lib/cgutil"
+	"github.com/hashicorp/nomad/client/lib/cgroupslib"
+	"github.com/hashicorp/nomad/client/lib/numalib"
 	ctestutils "github.com/hashicorp/nomad/client/testutil"
 	"github.com/hashicorp/nomad/drivers/shared/executor"
 	"github.com/hashicorp/nomad/helper/pluginutils/hclutils"
@@ -25,15 +28,12 @@ import (
 	"github.com/hashicorp/nomad/helper/testtask"
 	"github.com/hashicorp/nomad/helper/uuid"
 	"github.com/hashicorp/nomad/nomad/structs"
-	basePlug "github.com/hashicorp/nomad/plugins/base"
+	"github.com/hashicorp/nomad/plugins/base"
 	"github.com/hashicorp/nomad/plugins/drivers"
 	dtestutil "github.com/hashicorp/nomad/plugins/drivers/testutils"
 	"github.com/hashicorp/nomad/testutil"
+	"github.com/shoenig/test/must"
 	"github.com/stretchr/testify/require"
-)
-
-const (
-	cgroupParent = "testing.slice"
 )
 
 func TestMain(m *testing.M) {
@@ -59,14 +59,18 @@ func testResources(allocID, task string) *drivers.Resources {
 		LinuxResources: &drivers.LinuxResources{
 			MemoryLimitBytes: 134217728,
 			CPUShares:        100,
+			CpusetCgroupPath: cgroupslib.LinuxResourcesPath(allocID, task, false),
 		},
 	}
 
-	if cgutil.UseV2 {
-		r.LinuxResources.CpusetCgroupPath = filepath.Join(cgutil.CgroupRoot, cgroupParent, cgutil.CgroupScope(allocID, task))
-	}
-
 	return r
+}
+
+func newExecDriverTest(t *testing.T, ctx context.Context) drivers.DriverPlugin {
+	topology := numalib.Scan(numalib.PlatformScanners())
+	d := NewExecDriver(ctx, testlog.HCLogger(t))
+	d.(*Driver).nomadConfig = &base.ClientDriverConfig{Topology: topology}
+	return d
 }
 
 func TestExecDriver_Fingerprint_NonLinux(t *testing.T) {
@@ -79,7 +83,7 @@ func TestExecDriver_Fingerprint_NonLinux(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	d := NewExecDriver(ctx, testlog.HCLogger(t))
+	d := newExecDriverTest(t, ctx)
 	harness := dtestutil.NewDriverHarness(t, d)
 
 	fingerCh, err := harness.Fingerprint(context.Background())
@@ -101,7 +105,7 @@ func TestExecDriver_Fingerprint(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	d := NewExecDriver(ctx, testlog.HCLogger(t))
+	d := newExecDriverTest(t, ctx)
 	harness := dtestutil.NewDriverHarness(t, d)
 
 	fingerCh, err := harness.Fingerprint(context.Background())
@@ -122,9 +126,7 @@ func TestExecDriver_StartWait(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	logger := testlog.HCLogger(t)
-
-	d := NewExecDriver(ctx, logger)
+	d := newExecDriverTest(t, ctx)
 	harness := dtestutil.NewDriverHarness(t, d)
 	allocID := uuid.Generate()
 	task := &drivers.TaskConfig{
@@ -160,7 +162,7 @@ func TestExecDriver_StartWaitStopKill(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	d := NewExecDriver(ctx, testlog.HCLogger(t))
+	d := newExecDriverTest(t, ctx)
 	harness := dtestutil.NewDriverHarness(t, d)
 	allocID := uuid.Generate()
 	task := &drivers.TaskConfig{
@@ -225,7 +227,7 @@ func TestExecDriver_StartWaitRecover(t *testing.T) {
 	dCtx, dCancel := context.WithCancel(context.Background())
 	defer dCancel()
 
-	d := NewExecDriver(dCtx, testlog.HCLogger(t))
+	d := newExecDriverTest(t, dCtx)
 	harness := dtestutil.NewDriverHarness(t, d)
 	allocID := uuid.Generate()
 	task := &drivers.TaskConfig{
@@ -301,7 +303,7 @@ func TestExecDriver_NoOrphans(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	d := NewExecDriver(ctx, testlog.HCLogger(t))
+	d := newExecDriverTest(t, ctx)
 	harness := dtestutil.NewDriverHarness(t, d)
 	defer harness.Kill()
 
@@ -312,19 +314,24 @@ func TestExecDriver_NoOrphans(t *testing.T) {
 	}
 
 	var data []byte
-	require.NoError(t, basePlug.MsgPackEncode(&data, config))
-	baseConfig := &basePlug.Config{PluginConfig: data}
+	require.NoError(t, base.MsgPackEncode(&data, config))
+	baseConfig := &base.Config{
+		PluginConfig: data,
+		AgentConfig: &base.AgentConfig{
+			Driver: &base.ClientDriverConfig{
+				Topology: d.(*Driver).nomadConfig.Topology,
+			},
+		},
+	}
 	require.NoError(t, harness.SetConfig(baseConfig))
 
 	allocID := uuid.Generate()
+	taskName := "test"
 	task := &drivers.TaskConfig{
-		AllocID: allocID,
-		ID:      uuid.Generate(),
-		Name:    "test",
-	}
-
-	if cgutil.UseV2 {
-		task.Resources = testResources(allocID, "test")
+		AllocID:   allocID,
+		ID:        uuid.Generate(),
+		Name:      taskName,
+		Resources: testResources(allocID, taskName),
 	}
 
 	cleanup := harness.MkAllocDir(task, true)
@@ -353,7 +360,7 @@ func TestExecDriver_NoOrphans(t *testing.T) {
 			return false, fmt.Errorf("task PID is zero")
 		}
 
-		children, err := ioutil.ReadFile(fmt.Sprintf("/proc/%d/task/%d/children", taskState.Pid, taskState.Pid))
+		children, err := os.ReadFile(fmt.Sprintf("/proc/%d/task/%d/children", taskState.Pid, taskState.Pid))
 		if err != nil {
 			return false, fmt.Errorf("error reading /proc for children: %v", err)
 		}
@@ -422,7 +429,7 @@ func TestExecDriver_Stats(t *testing.T) {
 	dctx, dcancel := context.WithCancel(context.Background())
 	defer dcancel()
 
-	d := NewExecDriver(dctx, testlog.HCLogger(t))
+	d := newExecDriverTest(t, dctx)
 	harness := dtestutil.NewDriverHarness(t, d)
 
 	allocID := uuid.Generate()
@@ -470,7 +477,7 @@ func TestExecDriver_Start_Wait_AllocDir(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	d := NewExecDriver(ctx, testlog.HCLogger(t))
+	d := newExecDriverTest(t, ctx)
 	harness := dtestutil.NewDriverHarness(t, d)
 	allocID := uuid.Generate()
 	task := &drivers.TaskConfig{
@@ -509,7 +516,7 @@ func TestExecDriver_Start_Wait_AllocDir(t *testing.T) {
 
 	// Check that data was written to the shared alloc directory.
 	outputFile := filepath.Join(task.TaskDir().SharedAllocDir, file)
-	act, err := ioutil.ReadFile(outputFile)
+	act, err := os.ReadFile(outputFile)
 	require.NoError(t, err)
 	require.Exactly(t, exp, act)
 
@@ -523,7 +530,7 @@ func TestExecDriver_User(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	d := NewExecDriver(ctx, testlog.HCLogger(t))
+	d := newExecDriverTest(t, ctx)
 	harness := dtestutil.NewDriverHarness(t, d)
 	allocID := uuid.Generate()
 	task := &drivers.TaskConfig{
@@ -561,7 +568,7 @@ func TestExecDriver_HandlerExec(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	d := NewExecDriver(ctx, testlog.HCLogger(t))
+	d := newExecDriverTest(t, ctx)
 	harness := dtestutil.NewDriverHarness(t, d)
 	allocID := uuid.Generate()
 	task := &drivers.TaskConfig{
@@ -588,7 +595,8 @@ func TestExecDriver_HandlerExec(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, res.ExitResult.Successful())
 	stdout := strings.TrimSpace(string(res.Stdout))
-	if !cgutil.UseV2 {
+	switch cgroupslib.GetMode() {
+	case cgroupslib.CG1:
 		for _, line := range strings.Split(stdout, "\n") {
 			// skip empty lines
 			if line == "" {
@@ -603,7 +611,7 @@ func TestExecDriver_HandlerExec(t *testing.T) {
 				t.Fatalf("not a member of the allocs nomad cgroup: %q", line)
 			}
 		}
-	} else {
+	default:
 		require.True(t, strings.HasSuffix(stdout, ".scope"), "actual stdout %q", stdout)
 	}
 
@@ -624,13 +632,13 @@ func TestExecDriver_DevicesAndMounts(t *testing.T) {
 
 	tmpDir := t.TempDir()
 
-	err := ioutil.WriteFile(filepath.Join(tmpDir, "testfile"), []byte("from-host"), 600)
+	err := os.WriteFile(filepath.Join(tmpDir, "testfile"), []byte("from-host"), 600)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	d := NewExecDriver(ctx, testlog.HCLogger(t))
+	d := newExecDriverTest(t, ctx)
 	harness := dtestutil.NewDriverHarness(t, d)
 	allocID := uuid.Generate()
 	task := &drivers.TaskConfig{
@@ -661,8 +669,8 @@ func TestExecDriver_DevicesAndMounts(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, ioutil.WriteFile(task.StdoutPath, []byte{}, 660))
-	require.NoError(t, ioutil.WriteFile(task.StderrPath, []byte{}, 660))
+	require.NoError(t, os.WriteFile(task.StdoutPath, []byte{}, 660))
+	require.NoError(t, os.WriteFile(task.StderrPath, []byte{}, 660))
 
 	tc := &TaskConfig{
 		Command: "/bin/bash",
@@ -691,7 +699,7 @@ exit 0
 	result := <-ch
 	require.NoError(t, harness.DestroyTask(task.ID, true))
 
-	stdout, err := ioutil.ReadFile(task.StdoutPath)
+	stdout, err := os.ReadFile(task.StdoutPath)
 	require.NoError(t, err)
 	require.Equal(t, `mounted device /inserted-random: 1:8
 reading from ro path: from-host
@@ -699,7 +707,7 @@ reading from rw path: from-host
 overwriting file in rw succeeded
 writing new file in rw succeeded`, strings.TrimSpace(string(stdout)))
 
-	stderr, err := ioutil.ReadFile(task.StderrPath)
+	stderr, err := os.ReadFile(task.StderrPath)
 	require.NoError(t, err)
 	require.Equal(t, `touch: cannot touch '/tmp/task-path-ro/testfile': Read-only file system
 touch: cannot touch '/tmp/task-path-ro/testfile-from-ro': Read-only file system`, strings.TrimSpace(string(stderr)))
@@ -707,7 +715,7 @@ touch: cannot touch '/tmp/task-path-ro/testfile-from-ro': Read-only file system`
 	// testing exit code last so we can inspect output first
 	require.Zero(t, result.ExitCode)
 
-	fromRWContent, err := ioutil.ReadFile(filepath.Join(tmpDir, "testfile-from-rw"))
+	fromRWContent, err := os.ReadFile(filepath.Join(tmpDir, "testfile-from-rw"))
 	require.NoError(t, err)
 	require.Equal(t, "from-exec", strings.TrimSpace(string(fromRWContent)))
 }
@@ -738,7 +746,7 @@ func TestExecDriver_NoPivotRoot(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	d := NewExecDriver(ctx, testlog.HCLogger(t))
+	d := newExecDriverTest(t, ctx)
 	harness := dtestutil.NewDriverHarness(t, d)
 
 	config := &Config{
@@ -748,8 +756,15 @@ func TestExecDriver_NoPivotRoot(t *testing.T) {
 	}
 
 	var data []byte
-	require.NoError(t, basePlug.MsgPackEncode(&data, config))
-	bconfig := &basePlug.Config{PluginConfig: data}
+	require.NoError(t, base.MsgPackEncode(&data, config))
+	bconfig := &base.Config{
+		PluginConfig: data,
+		AgentConfig: &base.AgentConfig{
+			Driver: &base.ClientDriverConfig{
+				Topology: d.(*Driver).nomadConfig.Topology,
+			},
+		},
+	}
 	require.NoError(t, harness.SetConfig(bconfig))
 
 	allocID := uuid.Generate()
@@ -772,6 +787,48 @@ func TestExecDriver_NoPivotRoot(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, handle)
 	require.NoError(t, harness.DestroyTask(task.ID, true))
+}
+
+func TestExecDriver_OOMKilled(t *testing.T) {
+	ci.Parallel(t)
+	ctestutils.ExecCompatible(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	d := newExecDriverTest(t, ctx)
+	harness := dtestutil.NewDriverHarness(t, d)
+	allocID := uuid.Generate()
+	name := "oom-killed"
+	task := &drivers.TaskConfig{
+		AllocID:   allocID,
+		ID:        uuid.Generate(),
+		Name:      name,
+		Resources: testResources(allocID, name),
+	}
+	task.Resources.LinuxResources.MemoryLimitBytes = 10 * 1024 * 1024
+	task.Resources.NomadResources.Memory.MemoryMB = 10
+
+	tc := &TaskConfig{
+		Command: "/bin/tail",
+		Args:    []string{"/dev/zero"},
+	}
+	must.NoError(t, task.EncodeConcreteDriverConfig(&tc))
+
+	cleanup := harness.MkAllocDir(task, false)
+	defer cleanup()
+
+	handle, _, err := harness.StartTask(task)
+	must.NoError(t, err)
+
+	ch, err := harness.WaitTask(context.Background(), handle.Config.ID)
+	must.NoError(t, err)
+	result := <-ch
+	must.False(t, result.Successful(), must.Sprint("container should OOM"))
+	must.True(t, result.OOMKilled, must.Sprintf("got non-OOM error, code: %d, err: %v", result.ExitCode, result.Err))
+
+	t.Logf("Successfully killed by OOM killer")
+	must.NoError(t, harness.DestroyTask(task.ID, true))
 }
 
 func TestDriver_Config_validate(t *testing.T) {

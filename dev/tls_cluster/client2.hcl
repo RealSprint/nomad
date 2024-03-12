@@ -1,3 +1,6 @@
+# Copyright (c) HashiCorp, Inc.
+# SPDX-License-Identifier: BUSL-1.1
+
 # Increase log verbosity
 log_level = "DEBUG"
 
@@ -25,9 +28,9 @@ tls {
   http = true
   rpc  = true
 
-  ca_file   = "certs/nomad-ca.pem"
-  cert_file = "certs/client.pem"
-  key_file  = "certs/client-key.pem"
+  ca_file   = "certs/nomad-agent-ca.pem"
+  cert_file = "certs/foo-client-nomad.pem"
+  key_file  = "certs/foo-client-nomad-key.pem"
 
   verify_server_hostname = true
   verify_https_client    = true

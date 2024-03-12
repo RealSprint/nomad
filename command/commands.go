@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
@@ -107,6 +110,36 @@ func Commands(metaPtr *Meta, agentUi cli.Ui) map[string]cli.CommandFactory {
 				Meta: meta,
 			}, nil
 		},
+		"acl binding-rule": func() (cli.Command, error) {
+			return &ACLBindingRuleCommand{
+				Meta: meta,
+			}, nil
+		},
+		"acl binding-rule create": func() (cli.Command, error) {
+			return &ACLBindingRuleCreateCommand{
+				Meta: meta,
+			}, nil
+		},
+		"acl binding-rule delete": func() (cli.Command, error) {
+			return &ACLBindingRuleDeleteCommand{
+				Meta: meta,
+			}, nil
+		},
+		"acl binding-rule info": func() (cli.Command, error) {
+			return &ACLBindingRuleInfoCommand{
+				Meta: meta,
+			}, nil
+		},
+		"acl binding-rule list": func() (cli.Command, error) {
+			return &ACLBindingRuleListCommand{
+				Meta: meta,
+			}, nil
+		},
+		"acl binding-rule update": func() (cli.Command, error) {
+			return &ACLBindingRuleUpdateCommand{
+				Meta: meta,
+			}, nil
+		},
 		"acl bootstrap": func() (cli.Command, error) {
 			return &ACLBootstrapCommand{
 				Meta: meta,
@@ -199,6 +232,11 @@ func Commands(metaPtr *Meta, agentUi cli.Ui) map[string]cli.CommandFactory {
 		},
 		"acl token self": func() (cli.Command, error) {
 			return &ACLTokenSelfCommand{
+				Meta: meta,
+			}, nil
+		},
+		"action": func() (cli.Command, error) {
+			return &ActionCommand{
 				Meta: meta,
 			}, nil
 		},
@@ -380,8 +418,21 @@ func Commands(metaPtr *Meta, agentUi cli.Ui) map[string]cli.CommandFactory {
 				Meta: meta,
 			}, nil
 		},
+		"job action": func() (cli.Command, error) {
+			return &JobActionCommand{
+				Meta: meta,
+			}, nil
+		},
 		"job allocs": func() (cli.Command, error) {
 			return &JobAllocsCommand{
+				Meta: meta,
+			}, nil
+		},
+		"job restart": func() (cli.Command, error) {
+			// Use a *cli.ConcurrentUi because this command spawns several
+			// goroutines that write to the terminal concurrently.
+			meta.Ui = &cli.ConcurrentUi{Ui: meta.Ui}
+			return &JobRestartCommand{
 				Meta: meta,
 			}, nil
 		},
@@ -480,6 +531,11 @@ func Commands(metaPtr *Meta, agentUi cli.Ui) map[string]cli.CommandFactory {
 				Meta: meta,
 			}, nil
 		},
+		"login": func() (cli.Command, error) {
+			return &LoginCommand{
+				Meta: meta,
+			}, nil
+		},
 		"logs": func() (cli.Command, error) {
 			return &AllocLogsCommand{
 				Meta: meta,
@@ -545,6 +601,21 @@ func Commands(metaPtr *Meta, agentUi cli.Ui) map[string]cli.CommandFactory {
 				Meta: meta,
 			}, nil
 		},
+		"node meta": func() (cli.Command, error) {
+			return &NodeMetaCommand{
+				Meta: meta,
+			}, nil
+		},
+		"node meta apply": func() (cli.Command, error) {
+			return &NodeMetaApplyCommand{
+				Meta: meta,
+			}, nil
+		},
+		"node meta read": func() (cli.Command, error) {
+			return &NodeMetaReadCommand{
+				Meta: meta,
+			}, nil
+		},
 		"node-status": func() (cli.Command, error) {
 			return &NodeStatusCommand{
 				Meta: meta,
@@ -552,6 +623,46 @@ func Commands(metaPtr *Meta, agentUi cli.Ui) map[string]cli.CommandFactory {
 		},
 		"node status": func() (cli.Command, error) {
 			return &NodeStatusCommand{
+				Meta: meta,
+			}, nil
+		},
+		"node pool": func() (cli.Command, error) {
+			return &NodePoolCommand{
+				Meta: meta,
+			}, nil
+		},
+		"node pool apply": func() (cli.Command, error) {
+			return &NodePoolApplyCommand{
+				Meta: meta,
+			}, nil
+		},
+		"node pool delete": func() (cli.Command, error) {
+			return &NodePoolDeleteCommand{
+				Meta: meta,
+			}, nil
+		},
+		"node pool info": func() (cli.Command, error) {
+			return &NodePoolInfoCommand{
+				Meta: meta,
+			}, nil
+		},
+		"node pool init": func() (cli.Command, error) {
+			return &NodePoolInitCommand{
+				Meta: meta,
+			}, nil
+		},
+		"node pool jobs": func() (cli.Command, error) {
+			return &NodePoolJobsCommand{
+				Meta: meta,
+			}, nil
+		},
+		"node pool list": func() (cli.Command, error) {
+			return &NodePoolListCommand{
+				Meta: meta,
+			}, nil
+		},
+		"node pool nodes": func() (cli.Command, error) {
+			return &NodePoolNodesCommand{
 				Meta: meta,
 			}, nil
 		},
@@ -584,23 +695,17 @@ func Commands(metaPtr *Meta, agentUi cli.Ui) map[string]cli.CommandFactory {
 				Meta: meta,
 			}, nil
 		},
+
+		"operator client-state": func() (cli.Command, error) {
+			return &OperatorClientStateCommand{
+				Meta: meta,
+			}, nil
+		},
 		"operator debug": func() (cli.Command, error) {
 			return &OperatorDebugCommand{
 				Meta: meta,
 			}, nil
 		},
-
-		// COMPAT(1.4.0): deprecated, remove in Nomad 1.5.0
-		// Note: we can't just put this in the DeprecatedCommand list
-		// because the flags have changed too. So we've provided the
-		// deprecation warning in the original command and when it's
-		// time to remove it we can remove the entire command
-		"operator keyring": func() (cli.Command, error) {
-			return &OperatorKeyringCommand{
-				Meta: meta,
-			}, nil
-		},
-
 		"operator gossip keyring": func() (cli.Command, error) {
 			return &OperatorGossipKeyringCommand{
 				Meta: meta,
@@ -651,6 +756,11 @@ func Commands(metaPtr *Meta, agentUi cli.Ui) map[string]cli.CommandFactory {
 
 		"operator raft remove-peer": func() (cli.Command, error) {
 			return &OperatorRaftRemoveCommand{
+				Meta: meta,
+			}, nil
+		},
+		"operator raft transfer-leadership": func() (cli.Command, error) {
+			return &OperatorRaftTransferLeadershipCommand{
 				Meta: meta,
 			}, nil
 		},
@@ -926,6 +1036,21 @@ func Commands(metaPtr *Meta, agentUi cli.Ui) map[string]cli.CommandFactory {
 				Meta: meta,
 			}, nil
 		},
+		"setup": func() (cli.Command, error) {
+			return &SetupCommand{
+				Meta: meta,
+			}, nil
+		},
+		"setup consul": func() (cli.Command, error) {
+			return &SetupConsulCommand{
+				Meta: meta,
+			}, nil
+		},
+		"setup vault": func() (cli.Command, error) {
+			return &SetupVaultCommand{
+				Meta: meta,
+			}, nil
+		},
 		"status": func() (cli.Command, error) {
 			return &StatusCommand{
 				Meta: meta,
@@ -1026,6 +1151,13 @@ func Commands(metaPtr *Meta, agentUi cli.Ui) map[string]cli.CommandFactory {
 				Meta: meta,
 			}, nil
 		},
+		"var lock": func() (cli.Command, error) {
+			return &VarLockCommand{
+				varPutCommand: &VarPutCommand{
+					Meta: meta,
+				},
+			}, nil
+		},
 		"var get": func() (cli.Command, error) {
 			return &VarGetCommand{
 				Meta: meta,
@@ -1106,39 +1238,6 @@ func Commands(metaPtr *Meta, agentUi cli.Ui) map[string]cli.CommandFactory {
 				New:  "node config",
 				Meta: meta,
 				Command: &NodeConfigCommand{
-					Meta: meta,
-				},
-			}, nil
-		},
-
-		"keygen": func() (cli.Command, error) {
-			return &DeprecatedCommand{
-				Old:  "keygen",
-				New:  "operator gossip keyring generate",
-				Meta: meta,
-				Command: &OperatorGossipKeyringGenerateCommand{
-					Meta: meta,
-				},
-			}, nil
-		},
-
-		"operator keygen": func() (cli.Command, error) {
-			return &DeprecatedCommand{
-				Old:  "operator keygen",
-				New:  "operator gossip keyring generate",
-				Meta: meta,
-				Command: &OperatorGossipKeyringGenerateCommand{
-					Meta: meta,
-				},
-			}, nil
-		},
-
-		"keyring": func() (cli.Command, error) {
-			return &DeprecatedCommand{
-				Old:  "keyring",
-				New:  "operator gossip keyring",
-				Meta: meta,
-				Command: &OperatorKeyringCommand{
 					Meta: meta,
 				},
 			}, nil

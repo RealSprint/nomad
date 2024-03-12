@@ -1,5 +1,7 @@
+# Copyright (c) HashiCorp, Inc.
+# SPDX-License-Identifier: BUSL-1.1
+
 job "template-shared-alloc" {
-  datacenters = ["dc1", "dc2"]
 
   constraint {
     attribute = "${attr.kernel.name}"

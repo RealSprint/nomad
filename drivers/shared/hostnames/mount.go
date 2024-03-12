@@ -1,8 +1,10 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package hostnames
 
 import (
 	"fmt"
-	"io/ioutil"
 	"net"
 	"os"
 	"path/filepath"
@@ -61,7 +63,7 @@ ff02::3 ip6-allhosts
 	// tasks within an alloc should be able to share and modify the file, so
 	// only write to it if it doesn't exist
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		err := ioutil.WriteFile(path, []byte(content.String()), 0644)
+		err := os.WriteFile(path, []byte(content.String()), 0644)
 		if err != nil {
 			return nil, err
 		}

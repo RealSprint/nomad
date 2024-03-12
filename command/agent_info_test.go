@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
@@ -16,7 +19,7 @@ func TestAgentInfoCommand_Implements(t *testing.T) {
 func TestAgentInfoCommand_Run(t *testing.T) {
 	ci.Parallel(t)
 	srv, _, url := testServer(t, false, nil)
-	defer stopTestAgent(srv)
+	defer srv.Shutdown()
 
 	ui := cli.NewMockUi()
 	cmd := &AgentInfoCommand{Meta: Meta{Ui: ui}}
@@ -28,7 +31,7 @@ func TestAgentInfoCommand_Run(t *testing.T) {
 func TestAgentInfoCommand_Run_JSON(t *testing.T) {
 	ci.Parallel(t)
 	srv, _, url := testServer(t, false, nil)
-	defer stopTestAgent(srv)
+	defer srv.Shutdown()
 
 	ui := cli.NewMockUi()
 	cmd := &AgentInfoCommand{Meta: Meta{Ui: ui}}
@@ -43,7 +46,7 @@ func TestAgentInfoCommand_Run_JSON(t *testing.T) {
 func TestAgentInfoCommand_Run_Gotemplate(t *testing.T) {
 	ci.Parallel(t)
 	srv, _, url := testServer(t, false, nil)
-	defer stopTestAgent(srv)
+	defer srv.Shutdown()
 
 	ui := cli.NewMockUi()
 	cmd := &AgentInfoCommand{Meta: Meta{Ui: ui}}

@@ -1,3 +1,10 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
+// @ts-check
+
 /* eslint-disable ember/no-incorrect-calls-with-inline-anonymous-functions */
 import { alias, readOnly } from '@ember/object/computed';
 import { inject as service } from '@ember/service';
@@ -41,9 +48,6 @@ export default class IndexController extends Controller.extend(
       qpClass: 'class',
     },
     {
-      qpState: 'state',
-    },
-    {
       qpDatacenter: 'dc',
     },
     {
@@ -52,7 +56,114 @@ export default class IndexController extends Controller.extend(
     {
       qpVolume: 'volume',
     },
+    {
+      qpNodePool: 'nodePool',
+    },
   ];
+
+  filterFunc = (node) => {
+    return node.isEligible;
+  };
+
+  clientFilterToggles = {
+    state: [
+      {
+        label: 'initializing',
+        qp: 'state_initializing',
+        default: true,
+        filter: (node) => node.status === 'initializing',
+      },
+      {
+        label: 'ready',
+        qp: 'state_ready',
+        default: true,
+        filter: (node) => node.status === 'ready',
+      },
+      {
+        label: 'down',
+        qp: 'state_down',
+        default: true,
+        filter: (node) => node.status === 'down',
+      },
+      {
+        label: 'disconnected',
+        qp: 'state_disconnected',
+        default: true,
+        filter: (node) => node.status === 'disconnected',
+      },
+    ],
+    eligibility: [
+      {
+        label: 'eligible',
+        qp: 'eligibility_eligible',
+        default: true,
+        filter: (node) => node.isEligible,
+      },
+      {
+        label: 'ineligible',
+        qp: 'eligibility_ineligible',
+        default: true,
+        filter: (node) => !node.isEligible,
+      },
+    ],
+    drainStatus: [
+      {
+        label: 'draining',
+        qp: 'drain_status_draining',
+        default: true,
+        filter: (node) => node.isDraining,
+      },
+      {
+        label: 'not draining',
+        qp: 'drain_status_not_draining',
+        default: true,
+        filter: (node) => !node.isDraining,
+      },
+    ],
+  };
+
+  @computed(
+    'state_initializing',
+    'state_ready',
+    'state_down',
+    'state_disconnected',
+    'eligibility_eligible',
+    'eligibility_ineligible',
+    'drain_status_draining',
+    'drain_status_not_draining',
+    'allToggles.[]'
+  )
+  get activeToggles() {
+    return this.allToggles.filter((t) => this[t.qp]);
+  }
+
+  get allToggles() {
+    return Object.values(this.clientFilterToggles).reduce(
+      (acc, filters) => acc.concat(filters),
+      []
+    );
+  }
+
+  // eslint-disable-next-line ember/classic-decorator-hooks
+  constructor() {
+    super(...arguments);
+    this.addDynamicQueryParams();
+  }
+
+  addDynamicQueryParams() {
+    this.clientFilterToggles.state.forEach((filter) => {
+      this.queryParams.push({ [filter.qp]: filter.qp });
+      this.set(filter.qp, filter.default);
+    });
+    this.clientFilterToggles.eligibility.forEach((filter) => {
+      this.queryParams.push({ [filter.qp]: filter.qp });
+      this.set(filter.qp, filter.default);
+    });
+    this.clientFilterToggles.drainStatus.forEach((filter) => {
+      this.queryParams.push({ [filter.qp]: filter.qp });
+      this.set(filter.qp, filter.default);
+    });
+  }
 
   currentPage = 1;
   @readOnly('userSettings.pageSize') pageSize;
@@ -66,16 +177,16 @@ export default class IndexController extends Controller.extend(
   }
 
   qpClass = '';
-  qpState = '';
   qpDatacenter = '';
   qpVersion = '';
   qpVolume = '';
+  qpNodePool = '';
 
   @selection('qpClass') selectionClass;
-  @selection('qpState') selectionState;
   @selection('qpDatacenter') selectionDatacenter;
   @selection('qpVersion') selectionVersion;
   @selection('qpVolume') selectionVolume;
+  @selection('qpNodePool') selectionNodePool;
 
   @computed('nodes.[]', 'selectionClass')
   get optionsClass() {
@@ -93,18 +204,6 @@ export default class IndexController extends Controller.extend(
     });
 
     return classes.sort().map((dc) => ({ key: dc, label: dc }));
-  }
-
-  @computed
-  get optionsState() {
-    return [
-      { key: 'initializing', label: 'Initializing' },
-      { key: 'ready', label: 'Ready' },
-      { key: 'down', label: 'Down' },
-      { key: 'ineligible', label: 'Ineligible' },
-      { key: 'draining', label: 'Draining' },
-      { key: 'disconnected', label: 'Disconnected' },
-    ];
   }
 
   @computed('nodes.[]', 'selectionDatacenter')
@@ -159,33 +258,75 @@ export default class IndexController extends Controller.extend(
     return volumes.sort().map((volume) => ({ key: volume, label: volume }));
   }
 
+  @computed('selectionNodePool', 'model.nodePools.[]')
+  get optionsNodePool() {
+    const availableNodePools = this.model.nodePools.filter(
+      (p) => p.name !== 'all'
+    );
+
+    scheduleOnce('actions', () => {
+      // eslint-disable-next-line ember/no-side-effects
+      this.set(
+        'qpNodePool',
+        serialize(
+          intersection(
+            availableNodePools.map(({ name }) => name),
+            this.selectionNodePool
+          )
+        )
+      );
+    });
+
+    return availableNodePools.map((nodePool) => ({
+      key: nodePool.name,
+      label: nodePool.name,
+    }));
+  }
+
   @computed(
+    'clientFilterToggles',
+    'drain_status_draining',
+    'drain_status_not_draining',
+    'eligibility_eligible',
+    'eligibility_ineligible',
     'nodes.[]',
     'selectionClass',
-    'selectionState',
     'selectionDatacenter',
+    'selectionNodePool',
     'selectionVersion',
-    'selectionVolume'
+    'selectionVolume',
+    'state_disconnected',
+    'state_down',
+    'state_initializing',
+    'state_ready'
   )
   get filteredNodes() {
     const {
       selectionClass: classes,
-      selectionState: states,
       selectionDatacenter: datacenters,
+      selectionNodePool: nodePools,
       selectionVersion: versions,
       selectionVolume: volumes,
     } = this;
 
-    const onlyIneligible = states.includes('ineligible');
-    const onlyDraining = states.includes('draining');
+    let nodes = this.nodes;
 
-    // states is a composite of node status and other node states
-    const statuses = states.without('ineligible').without('draining');
+    // new QP style filtering
+    for (let category in this.clientFilterToggles) {
+      nodes = nodes.filter((node) => {
+        let includeNode = false;
+        for (let filter of this.clientFilterToggles[category]) {
+          if (this[filter.qp] && filter.filter(node)) {
+            includeNode = true;
+            break;
+          }
+        }
+        return includeNode;
+      });
+    }
 
-    return this.nodes.filter((node) => {
+    return nodes.filter((node) => {
       if (classes.length && !classes.includes(node.get('nodeClass')))
-        return false;
-      if (statuses.length && !statuses.includes(node.get('status')))
         return false;
       if (datacenters.length && !datacenters.includes(node.get('datacenter')))
         return false;
@@ -196,9 +337,9 @@ export default class IndexController extends Controller.extend(
         !node.hostVolumes.find((volume) => volumes.includes(volume.name))
       )
         return false;
-
-      if (onlyIneligible && node.get('isEligible')) return false;
-      if (onlyDraining && !node.get('isDraining')) return false;
+      if (nodePools.length && !nodePools.includes(node.get('nodePool'))) {
+        return false;
+      }
 
       return true;
     });
@@ -212,6 +353,16 @@ export default class IndexController extends Controller.extend(
 
   setFacetQueryParam(queryParam, selection) {
     this.set(queryParam, serialize(selection));
+  }
+
+  @action
+  handleFilterChange(queryParamValue, option, queryParamLabel) {
+    if (queryParamValue.includes(option)) {
+      queryParamValue.removeObject(option);
+    } else {
+      queryParamValue.addObject(option);
+    }
+    this.set(queryParamLabel, serialize(queryParamValue));
   }
 
   @action

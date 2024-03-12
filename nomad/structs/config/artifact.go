@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package config
 
 import (
@@ -9,7 +12,7 @@ import (
 	"github.com/hashicorp/nomad/helper/pointer"
 )
 
-// ArtifactConfig is the configuration specific to the Artifact stanza
+// ArtifactConfig is the configuration specific to the Artifact block
 type ArtifactConfig struct {
 	// HTTPReadTimeout is the duration in which a download must complete or
 	// it will be canceled. Defaults to 30m.
@@ -34,65 +37,97 @@ type ArtifactConfig struct {
 	// S3Timeout is the duration in which an S3 operation must complete or
 	// it will be canceled. Defaults to 30m.
 	S3Timeout *string `hcl:"s3_timeout"`
+
+	// DecompressionFileCountLimit is the maximum number of files that will
+	// be decompressed before triggering an error and cancelling the operation.
+	//
+	// Default is 4006 files.
+	DecompressionFileCountLimit *int `hcl:"decompression_file_count_limit"`
+
+	// DecompressionSizeLimit is the maximum amount of data that will be
+	// decompressed before triggering an error and cancelling the operation.
+	//
+	// Default is 100GB.
+	DecompressionSizeLimit *string `hcl:"decompression_size_limit"`
+
+	// DisableFilesystemIsolation will turn off the security feature where the
+	// artifact downloader can write only to the task sandbox directory, and can
+	// read only from specific locations on the host filesystem.
+	DisableFilesystemIsolation *bool `hcl:"disable_filesystem_isolation"`
+
+	// SetEnvironmentVariables is a comma-separated list of environment
+	// variable names to inherit from the Nomad Client and set in the artifact
+	// download sandbox process.
+	SetEnvironmentVariables *string `hcl:"set_environment_variables"`
 }
 
 func (a *ArtifactConfig) Copy() *ArtifactConfig {
 	if a == nil {
 		return nil
 	}
-
-	newCopy := &ArtifactConfig{}
-	if a.HTTPReadTimeout != nil {
-		newCopy.HTTPReadTimeout = pointer.Of(*a.HTTPReadTimeout)
+	return &ArtifactConfig{
+		HTTPReadTimeout:             pointer.Copy(a.HTTPReadTimeout),
+		HTTPMaxSize:                 pointer.Copy(a.HTTPMaxSize),
+		GCSTimeout:                  pointer.Copy(a.GCSTimeout),
+		GitTimeout:                  pointer.Copy(a.GitTimeout),
+		HgTimeout:                   pointer.Copy(a.HgTimeout),
+		S3Timeout:                   pointer.Copy(a.S3Timeout),
+		DecompressionFileCountLimit: pointer.Copy(a.DecompressionFileCountLimit),
+		DecompressionSizeLimit:      pointer.Copy(a.DecompressionSizeLimit),
+		DisableFilesystemIsolation:  pointer.Copy(a.DisableFilesystemIsolation),
+		SetEnvironmentVariables:     pointer.Copy(a.SetEnvironmentVariables),
 	}
-	if a.HTTPMaxSize != nil {
-		newCopy.HTTPMaxSize = pointer.Of(*a.HTTPMaxSize)
-	}
-	if a.GCSTimeout != nil {
-		newCopy.GCSTimeout = pointer.Of(*a.GCSTimeout)
-	}
-	if a.GitTimeout != nil {
-		newCopy.GitTimeout = pointer.Of(*a.GitTimeout)
-	}
-	if a.HgTimeout != nil {
-		newCopy.HgTimeout = pointer.Of(*a.HgTimeout)
-	}
-	if a.S3Timeout != nil {
-		newCopy.S3Timeout = pointer.Of(*a.S3Timeout)
-	}
-
-	return newCopy
 }
 
 func (a *ArtifactConfig) Merge(o *ArtifactConfig) *ArtifactConfig {
-	if a == nil {
+	switch {
+	case a == nil:
 		return o.Copy()
-	}
-	if o == nil {
+	case o == nil:
 		return a.Copy()
+	default:
+		return &ArtifactConfig{
+			HTTPReadTimeout:             pointer.Merge(a.HTTPReadTimeout, o.HTTPReadTimeout),
+			HTTPMaxSize:                 pointer.Merge(a.HTTPMaxSize, o.HTTPMaxSize),
+			GCSTimeout:                  pointer.Merge(a.GCSTimeout, o.GCSTimeout),
+			GitTimeout:                  pointer.Merge(a.GitTimeout, o.GitTimeout),
+			HgTimeout:                   pointer.Merge(a.HgTimeout, o.HgTimeout),
+			S3Timeout:                   pointer.Merge(a.S3Timeout, o.S3Timeout),
+			DecompressionFileCountLimit: pointer.Merge(a.DecompressionFileCountLimit, o.DecompressionFileCountLimit),
+			DecompressionSizeLimit:      pointer.Merge(a.DecompressionSizeLimit, o.DecompressionSizeLimit),
+			DisableFilesystemIsolation:  pointer.Merge(a.DisableFilesystemIsolation, o.DisableFilesystemIsolation),
+			SetEnvironmentVariables:     pointer.Merge(a.SetEnvironmentVariables, o.SetEnvironmentVariables),
+		}
 	}
+}
 
-	newCopy := a.Copy()
-	if o.HTTPReadTimeout != nil {
-		newCopy.HTTPReadTimeout = pointer.Of(*o.HTTPReadTimeout)
+func (a *ArtifactConfig) Equal(o *ArtifactConfig) bool {
+	if a == nil || o == nil {
+		return a == o
 	}
-	if o.HTTPMaxSize != nil {
-		newCopy.HTTPMaxSize = pointer.Of(*o.HTTPMaxSize)
+	switch {
+	case !pointer.Eq(a.HTTPReadTimeout, o.HTTPReadTimeout):
+		return false
+	case !pointer.Eq(a.HTTPMaxSize, o.HTTPMaxSize):
+		return false
+	case !pointer.Eq(a.GCSTimeout, o.GCSTimeout):
+		return false
+	case !pointer.Eq(a.GitTimeout, o.GitTimeout):
+		return false
+	case !pointer.Eq(a.HgTimeout, o.HgTimeout):
+		return false
+	case !pointer.Eq(a.S3Timeout, o.S3Timeout):
+		return false
+	case !pointer.Eq(a.DecompressionFileCountLimit, o.DecompressionFileCountLimit):
+		return false
+	case !pointer.Eq(a.DecompressionSizeLimit, o.DecompressionSizeLimit):
+		return false
+	case !pointer.Eq(a.DisableFilesystemIsolation, o.DisableFilesystemIsolation):
+		return false
+	case !pointer.Eq(a.SetEnvironmentVariables, o.SetEnvironmentVariables):
+		return false
 	}
-	if o.GCSTimeout != nil {
-		newCopy.GCSTimeout = pointer.Of(*o.GCSTimeout)
-	}
-	if o.GitTimeout != nil {
-		newCopy.GitTimeout = pointer.Of(*o.GitTimeout)
-	}
-	if o.HgTimeout != nil {
-		newCopy.HgTimeout = pointer.Of(*o.HgTimeout)
-	}
-	if o.S3Timeout != nil {
-		newCopy.S3Timeout = pointer.Of(*o.S3Timeout)
-	}
-
-	return newCopy
+	return true
 }
 
 func (a *ArtifactConfig) Validate() error {
@@ -154,6 +189,30 @@ func (a *ArtifactConfig) Validate() error {
 		return fmt.Errorf("s3_timeout must be > 0")
 	}
 
+	if a.DecompressionFileCountLimit == nil {
+		return fmt.Errorf("decompression_file_count_limit must not be nil")
+	}
+	if v := *a.DecompressionFileCountLimit; v < 0 {
+		return fmt.Errorf("decompression_file_count_limit must be >= 0 but found %d", v)
+	}
+
+	if a.DecompressionSizeLimit == nil {
+		return fmt.Errorf("decompression_size_limit must not be nil")
+	}
+	if v, err := humanize.ParseBytes(*a.DecompressionSizeLimit); err != nil {
+		return fmt.Errorf("decompression_size_limit is not a valid size: %w", err)
+	} else if v > math.MaxInt64 {
+		return fmt.Errorf("decompression_size_limit must be < %d but found %d", int64(math.MaxInt64), v)
+	}
+
+	if a.DisableFilesystemIsolation == nil {
+		return fmt.Errorf("disable_filesystem_isolation must be set")
+	}
+
+	if a.SetEnvironmentVariables == nil {
+		return fmt.Errorf("set_environment_variables must be set")
+	}
+
 	return nil
 }
 
@@ -182,5 +241,20 @@ func DefaultArtifactConfig() *ArtifactConfig {
 		// Timeout for S3 operations. Must be long enough to
 		// accommodate large/slow downloads.
 		S3Timeout: pointer.Of("30m"),
+
+		// DecompressionFileCountLimit limits the number of files decompressed
+		// for a single artifact. Must be large enough for payloads with lots
+		// of files.
+		DecompressionFileCountLimit: pointer.Of(4096),
+
+		// DecompressionSizeLimit limits the amount of data decompressed for
+		// a single artifact. Must be large enough to accommodate large payloads.
+		DecompressionSizeLimit: pointer.Of("100GB"),
+
+		// Toggle for disabling filesystem isolation, where available.
+		DisableFilesystemIsolation: pointer.Of(false),
+
+		// No environment variables are inherited from Client by default.
+		SetEnvironmentVariables: pointer.Of(""),
 	}
 }

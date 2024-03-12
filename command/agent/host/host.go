@@ -1,7 +1,10 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package host
 
 import (
-	"io/ioutil"
+	"io"
 	"os"
 	"strings"
 )
@@ -90,7 +93,7 @@ func environment() map[string]string {
 // DefaultEnvDenyList is the default set of environment variables that are
 // filtered when passing the environment variables of the host to the task.
 //
-// Update https://www.nomadproject.io/docs/configuration/client#env-denylist
+// Update https://developer.hashicorp.com/nomad/docs/configuration/client#env-denylist
 // whenever this is changed.
 var DefaultEnvDenyList = []string{
 	"CONSUL_TOKEN",
@@ -119,7 +122,7 @@ func slurp(path string) string {
 		return err.Error()
 	}
 
-	bs, err := ioutil.ReadAll(fh)
+	bs, err := io.ReadAll(fh)
 	if err != nil {
 		return err.Error()
 	}

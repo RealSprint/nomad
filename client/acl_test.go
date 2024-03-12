@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package client
 
 import (
@@ -12,13 +15,13 @@ import (
 	"github.com/hashicorp/nomad/nomad/mock"
 	"github.com/hashicorp/nomad/nomad/structs"
 	"github.com/hashicorp/nomad/testutil"
+	"github.com/shoenig/test"
 	"github.com/shoenig/test/must"
-	"github.com/stretchr/testify/assert"
 )
 
 func Test_clientACLResolver_init(t *testing.T) {
-	resolver := &clientACLResolver{}
-	must.NoError(t, resolver.init())
+	resolver := new(clientACLResolver)
+	resolver.init()
 	must.NotNil(t, resolver.aclCache)
 	must.NotNil(t, resolver.policyCache)
 	must.NotNil(t, resolver.tokenCache)
@@ -47,33 +50,29 @@ func TestClient_ACL_resolveTokenValue(t *testing.T) {
 	token2.Type = structs.ACLManagementToken
 	token2.Policies = nil
 	err := s1.State().UpsertACLPolicies(structs.MsgTypeTestSetup, 100, []*structs.ACLPolicy{policy, policy2})
-	assert.Nil(t, err)
+	must.NoError(t, err)
 	err = s1.State().UpsertACLTokens(structs.MsgTypeTestSetup, 110, []*structs.ACLToken{token, token2})
-	assert.Nil(t, err)
+	must.NoError(t, err)
 
 	// Test the client resolution
 	out0, err := c1.resolveTokenValue("")
-	assert.Nil(t, err)
-	assert.NotNil(t, out0)
-	assert.Equal(t, structs.AnonymousACLToken, out0)
+	test.Nil(t, err)
+	must.NotNil(t, out0)
+	test.Eq(t, structs.AnonymousACLToken, out0.ACLToken)
 
-	// Test the client resolution
 	out1, err := c1.resolveTokenValue(token.SecretID)
-	assert.Nil(t, err)
-	assert.NotNil(t, out1)
-	assert.Equal(t, token, out1)
+	test.Nil(t, err)
+	must.NotNil(t, out1)
+	test.Eq(t, token, out1.ACLToken)
 
 	out2, err := c1.resolveTokenValue(token2.SecretID)
-	assert.Nil(t, err)
-	assert.NotNil(t, out2)
-	assert.Equal(t, token2, out2)
+	test.Nil(t, err)
+	must.NotNil(t, out2)
+	test.Eq(t, token2, out2.ACLToken)
 
 	out3, err := c1.resolveTokenValue(token.SecretID)
-	assert.Nil(t, err)
-	assert.NotNil(t, out3)
-	if out1 != out3 {
-		t.Fatalf("bad caching")
-	}
+	test.Nil(t, err)
+	must.Eq(t, out1, out3, must.Sprintf("bad caching"))
 }
 
 func TestClient_ACL_resolvePolicies(t *testing.T) {
@@ -98,19 +97,19 @@ func TestClient_ACL_resolvePolicies(t *testing.T) {
 	token2.Type = structs.ACLManagementToken
 	token2.Policies = nil
 	err := s1.State().UpsertACLPolicies(structs.MsgTypeTestSetup, 100, []*structs.ACLPolicy{policy, policy2})
-	assert.Nil(t, err)
+	must.NoError(t, err)
 	err = s1.State().UpsertACLTokens(structs.MsgTypeTestSetup, 110, []*structs.ACLToken{token, token2})
-	assert.Nil(t, err)
+	must.NoError(t, err)
 
 	// Test the client resolution
 	out, err := c1.resolvePolicies(root.SecretID, []string{policy.Name, policy2.Name})
-	assert.Nil(t, err)
-	assert.Equal(t, 2, len(out))
+	must.NoError(t, err)
+	test.Len(t, 2, out)
 
 	// Test caching
 	out2, err := c1.resolvePolicies(root.SecretID, []string{policy.Name, policy2.Name})
-	assert.Nil(t, err)
-	assert.Equal(t, 2, len(out2))
+	must.NoError(t, err)
+	test.Len(t, 2, out2)
 
 	// Check we get the same objects back (ignore ordering)
 	if out[0] != out2[0] && out[0] != out2[1] {
@@ -132,13 +131,13 @@ func TestClient_resolveTokenACLRoles(t *testing.T) {
 	defer cleanup()
 
 	// Create an ACL Role and a client token which is linked to this.
-	mockACLRole := mock.ACLRole()
+	mockACLRole1 := mock.ACLRole()
 
 	mockACLToken := mock.ACLToken()
 	mockACLToken.Policies = []string{}
-	mockACLToken.Roles = []*structs.ACLTokenRoleLink{{ID: mockACLRole.ID}}
+	mockACLToken.Roles = []*structs.ACLTokenRoleLink{{ID: mockACLRole1.ID}}
 
-	err := testServer.State().UpsertACLRoles(structs.MsgTypeTestSetup, 10, []*structs.ACLRole{mockACLRole}, true)
+	err := testServer.State().UpsertACLRoles(structs.MsgTypeTestSetup, 10, []*structs.ACLRole{mockACLRole1}, true)
 	must.NoError(t, err)
 	err = testServer.State().UpsertACLTokens(structs.MsgTypeTestSetup, 20, []*structs.ACLToken{mockACLToken})
 	must.NoError(t, err)
@@ -151,12 +150,32 @@ func TestClient_resolveTokenACLRoles(t *testing.T) {
 	// Test the cache directly and check that the ACL role previously queried
 	// is now cached.
 	must.Eq(t, 1, testClient.roleCache.Len())
-	must.True(t, testClient.roleCache.Contains(mockACLRole.ID))
+	must.True(t, testClient.roleCache.Contains(mockACLRole1.ID))
 
 	// Resolve the roles again to check we get the same results.
 	resolvedRoles2, err := testClient.resolveTokenACLRoles(rootACLToken.SecretID, mockACLToken.Roles)
 	must.NoError(t, err)
 	must.SliceContainsAll(t, resolvedRoles1, resolvedRoles2)
+
+	// Create another ACL role which will have the same ACL policy links as the
+	// previous
+	mockACLRole2 := mock.ACLRole()
+	must.NoError(t,
+		testServer.State().UpsertACLRoles(
+			structs.MsgTypeTestSetup, 30, []*structs.ACLRole{mockACLRole2}, true))
+
+	// Update the ACL token so that it links to two ACL roles, which include
+	// duplicate ACL policies.
+	mockACLToken.Roles = append(mockACLToken.Roles, &structs.ACLTokenRoleLink{ID: mockACLRole2.ID})
+	must.NoError(t,
+		testServer.State().UpsertACLTokens(
+			structs.MsgTypeTestSetup, 40, []*structs.ACLToken{mockACLToken}))
+
+	// Ensure when resolving the ACL token, we are returned a deduplicated list
+	// of ACL policy names.
+	resolvedRoles3, err := testClient.resolveTokenACLRoles(rootACLToken.SecretID, mockACLToken.Roles)
+	must.NoError(t, err)
+	must.SliceContainsAll(t, []string{"mocked-test-policy-1", "mocked-test-policy-2"}, resolvedRoles3)
 }
 
 func TestClient_ACL_ResolveToken_Disabled(t *testing.T) {
@@ -171,10 +190,11 @@ func TestClient_ACL_ResolveToken_Disabled(t *testing.T) {
 	})
 	defer cleanup()
 
-	// Should always get nil when disabled
+	// Should never get nil, even when disabled
 	aclObj, err := c1.ResolveToken("blah")
-	assert.Nil(t, err)
-	assert.Nil(t, aclObj)
+	must.NoError(t, err)
+	must.NotNil(t, aclObj)
+	must.Eq(t, acl.ACLsDisabledACL, aclObj)
 }
 
 func TestClient_ACL_ResolveToken(t *testing.T) {
@@ -199,36 +219,32 @@ func TestClient_ACL_ResolveToken(t *testing.T) {
 	token2.Type = structs.ACLManagementToken
 	token2.Policies = nil
 	err := s1.State().UpsertACLPolicies(structs.MsgTypeTestSetup, 100, []*structs.ACLPolicy{policy, policy2})
-	assert.Nil(t, err)
+	must.NoError(t, err)
 	err = s1.State().UpsertACLTokens(structs.MsgTypeTestSetup, 110, []*structs.ACLToken{token, token2})
-	assert.Nil(t, err)
+	must.NoError(t, err)
 
 	// Test the client resolution
 	out, err := c1.ResolveToken(token.SecretID)
-	assert.Nil(t, err)
-	assert.NotNil(t, out)
+	must.NoError(t, err)
+	test.NotNil(t, out)
 
 	// Test caching
 	out2, err := c1.ResolveToken(token.SecretID)
-	assert.Nil(t, err)
-	if out != out2 {
-		t.Fatalf("should be cached")
-	}
+	must.NoError(t, err)
+	must.Eq(t, out, out2, must.Sprintf("should be cached"))
 
 	// Test management token
 	out3, err := c1.ResolveToken(token2.SecretID)
-	assert.Nil(t, err)
-	if acl.ManagementACL != out3 {
-		t.Fatalf("should be management")
-	}
+	must.NoError(t, err)
+	must.Eq(t, acl.ManagementACL, out3)
 
 	// Test bad token
 	out4, err := c1.ResolveToken(uuid.Generate())
-	assert.Equal(t, structs.ErrTokenNotFound, err)
-	assert.Nil(t, out4)
+	test.EqError(t, err, structs.ErrPermissionDenied.Error())
+	test.Nil(t, out4)
 }
 
-func TestClient_ACL_ResolveSecretToken(t *testing.T) {
+func TestClient_ACL_ResolveToken_Expired(t *testing.T) {
 	ci.Parallel(t)
 
 	s1, _, _, cleanupS1 := testACLServer(t, nil)
@@ -241,25 +257,118 @@ func TestClient_ACL_ResolveSecretToken(t *testing.T) {
 	})
 	defer cleanup()
 
-	token := mock.ACLToken()
-
-	err := s1.State().UpsertACLTokens(structs.MsgTypeTestSetup, 110, []*structs.ACLToken{token})
-	assert.Nil(t, err)
-
-	respToken, err := c1.ResolveSecretToken(token.SecretID)
-	assert.Nil(t, err)
-	if assert.NotNil(t, respToken) {
-		assert.NotEmpty(t, respToken.AccessorID)
-	}
-
 	// Create and upsert a token which has just expired.
 	mockExpiredToken := mock.ACLToken()
 	mockExpiredToken.ExpirationTime = pointer.Of(time.Now().Add(-5 * time.Minute))
 
-	err = s1.State().UpsertACLTokens(structs.MsgTypeTestSetup, 120, []*structs.ACLToken{mockExpiredToken})
+	err := s1.State().UpsertACLTokens(structs.MsgTypeTestSetup, 120, []*structs.ACLToken{mockExpiredToken})
 	must.NoError(t, err)
 
-	expiredTokenResp, err := c1.ResolveSecretToken(mockExpiredToken.SecretID)
+	expiredTokenResp, err := c1.ResolveToken(mockExpiredToken.SecretID)
 	must.Nil(t, expiredTokenResp)
-	must.StrContains(t, err.Error(), "ACL token expired")
+	must.ErrorContains(t, err, "ACL token expired")
+}
+
+// TestClient_ACL_ResolveToken_Claims asserts that ResolveToken
+// properly resolves valid workload identity claims.
+func TestClient_ACL_ResolveToken_Claims(t *testing.T) {
+	ci.Parallel(t)
+
+	s1, _, rootToken, cleanupS1 := testACLServer(t, nil)
+	defer cleanupS1()
+	testutil.WaitForLeader(t, s1.RPC)
+
+	c1, cleanup := TestClient(t, func(c *config.Config) {
+		c.RPCHandler = s1
+		c.ACLEnabled = true
+	})
+	defer cleanup()
+
+	// Create a minimal job
+	job := mock.MinJob()
+
+	// Add a job policy
+	polArgs := structs.ACLPolicyUpsertRequest{
+		Policies: []*structs.ACLPolicy{
+			{
+				Name:        "nw",
+				Description: "test job can write to nodes",
+				Rules:       `node { policy = "write" }`,
+				JobACL: &structs.JobACL{
+					Namespace: job.Namespace,
+					JobID:     job.ID,
+				},
+			},
+		},
+		WriteRequest: structs.WriteRequest{
+			Region:    job.Region,
+			AuthToken: rootToken.SecretID,
+			Namespace: job.Namespace,
+		},
+	}
+	polReply := structs.GenericResponse{}
+	must.NoError(t, s1.RPC("ACL.UpsertPolicies", &polArgs, &polReply))
+	must.NonZero(t, polReply.WriteMeta.Index)
+
+	allocs := testutil.WaitForRunningWithToken(t, s1.RPC, job, rootToken.SecretID)
+	must.Len(t, 1, allocs)
+
+	alloc, err := s1.State().AllocByID(nil, allocs[0].ID)
+	must.NoError(t, err)
+	must.MapContainsKey(t, alloc.SignedIdentities, "t")
+	wid := alloc.SignedIdentities["t"]
+
+	aclObj, err := c1.ResolveToken(wid)
+	must.NoError(t, err)
+	must.True(t, aclObj.AllowNodeWrite(), must.Sprintf("expected workload id to allow node write"))
+}
+
+// TestClient_ACL_ResolveToken_InvalidClaims asserts that ResolveToken properly
+// rejects invalid workload identity claims.
+func TestClient_ACL_ResolveToken_InvalidClaims(t *testing.T) {
+	ci.Parallel(t)
+
+	s1, _, rootToken, cleanupS1 := testACLServer(t, nil)
+	defer cleanupS1()
+	testutil.WaitForLeader(t, s1.RPC)
+
+	c1, cleanup := TestClient(t, func(c *config.Config) {
+		c.RPCHandler = s1
+		c.ACLEnabled = true
+	})
+	defer cleanup()
+
+	// Create a minimal job
+	job := mock.MinJob()
+	allocs := testutil.WaitForRunningWithToken(t, s1.RPC, job, rootToken.SecretID)
+	must.Len(t, 1, allocs)
+
+	// Get wid while it's still running
+	alloc, err := s1.State().AllocByID(nil, allocs[0].ID)
+	must.NoError(t, err)
+	must.MapContainsKey(t, alloc.SignedIdentities, "t")
+	wid := alloc.SignedIdentities["t"]
+
+	// Stop job
+	deregArgs := structs.JobDeregisterRequest{
+		JobID: job.ID,
+		WriteRequest: structs.WriteRequest{
+			Region:    job.Region,
+			Namespace: job.Namespace,
+			AuthToken: rootToken.SecretID,
+		},
+	}
+	deregReply := structs.JobDeregisterResponse{}
+	must.NoError(t, s1.RPC("Job.Deregister", &deregArgs, &deregReply))
+
+	cond := map[string]int{
+		structs.AllocClientStatusComplete: 1,
+	}
+	allocs = testutil.WaitForJobAllocStatusWithToken(t, s1.RPC, job, cond, rootToken.SecretID)
+	must.Len(t, 1, allocs)
+
+	// ResolveToken should error now that alloc is dead
+	aclObj, err := c1.ResolveToken(wid)
+	must.ErrorContains(t, err, "allocation is terminal")
+	must.Nil(t, aclObj)
 }

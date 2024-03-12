@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package structs
 
 import (
@@ -7,9 +10,11 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"maps"
 	"net/url"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,13 +22,11 @@ import (
 
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/go-multierror"
-	"github.com/hashicorp/go-set"
+	"github.com/hashicorp/go-set/v2"
 	"github.com/hashicorp/nomad/helper"
 	"github.com/hashicorp/nomad/helper/args"
 	"github.com/hashicorp/nomad/helper/pointer"
 	"github.com/mitchellh/copystructure"
-	"golang.org/x/exp/maps"
-	"golang.org/x/exp/slices"
 )
 
 const (
@@ -65,7 +68,8 @@ type ServiceCheck struct {
 	Interval               time.Duration       // Interval of the check
 	Timeout                time.Duration       // Timeout of the response from the check before consul fails the check
 	InitialStatus          string              // Initial status of the check
-	TLSSkipVerify          bool                // Skip TLS verification when Protocol=https
+	TLSServerName          string              // ServerName to use for SNI and TLS verification when (Type=https and Protocol=https) or (Type=grpc and GRPCUseTLS=true)
+	TLSSkipVerify          bool                // Skip TLS verification when (type=https and Protocol=https) or (type=grpc and grpc_use_tls=true)
 	Method                 string              // HTTP Method to use (GET by default)
 	Header                 map[string][]string // HTTP Headers for Consul to set when making HTTP checks
 	CheckRestart           *CheckRestart       // If and when a task should be restarted based on checks
@@ -74,6 +78,7 @@ type ServiceCheck struct {
 	TaskName               string              // What task to execute this check in
 	SuccessBeforePassing   int                 // Number of consecutive successes required before considered healthy
 	FailuresBeforeCritical int                 // Number of consecutive failures required before considered unhealthy
+	FailuresBeforeWarning  int                 // Number of consecutive failures required before showing warning
 	Body                   string              // Body to use in HTTP check
 	OnUpdate               string
 }
@@ -84,7 +89,7 @@ func (sc *ServiceCheck) IsReadiness() bool {
 	return sc != nil && sc.OnUpdate == OnUpdateIgnore
 }
 
-// Copy the stanza recursively. Returns nil if nil.
+// Copy the block recursively. Returns nil if nil.
 func (sc *ServiceCheck) Copy() *ServiceCheck {
 	if sc == nil {
 		return nil
@@ -131,6 +136,10 @@ func (sc *ServiceCheck) Equal(o *ServiceCheck) bool {
 		return false
 	}
 
+	if sc.FailuresBeforeWarning != o.FailuresBeforeWarning {
+		return false
+	}
+
 	if sc.Command != o.Command {
 		return false
 	}
@@ -164,7 +173,7 @@ func (sc *ServiceCheck) Equal(o *ServiceCheck) bool {
 		return false
 	}
 
-	if sc.PortLabel != o.Path {
+	if sc.PortLabel != o.PortLabel {
 		return false
 	}
 
@@ -177,6 +186,10 @@ func (sc *ServiceCheck) Equal(o *ServiceCheck) bool {
 	}
 
 	if sc.TLSSkipVerify != o.TLSSkipVerify {
+		return false
+	}
+
+	if sc.TLSServerName != o.TLSServerName {
 		return false
 	}
 
@@ -336,12 +349,12 @@ func (sc *ServiceCheck) validateNomad() error {
 
 	// expose is connect (consul) specific
 	if sc.Expose {
-		return fmt.Errorf("expose may only be set for Consul service checks")
+		return errors.New("expose may only be set for Consul service checks")
 	}
 
 	// nomad checks do not have warnings
 	if sc.OnUpdate == OnUpdateIgnoreWarn {
-		return fmt.Errorf("on_update may only be set to ignore_warnings for Consul service checks")
+		return errors.New("on_update may only be set to ignore_warnings for Consul service checks")
 	}
 
 	// below are temporary limitations on checks in nomad
@@ -350,13 +363,13 @@ func (sc *ServiceCheck) validateNomad() error {
 	// check_restart.ignore_warnings is not a thing in Nomad (which has no warnings in checks)
 	if sc.CheckRestart != nil {
 		if sc.CheckRestart.IgnoreWarnings {
-			return fmt.Errorf("ignore_warnings on check_restart only supported for Consul service checks")
+			return errors.New("ignore_warnings on check_restart only supported for Consul service checks")
 		}
 	}
 
 	// address_mode="driver" not yet supported on nomad
 	if sc.AddressMode == "driver" {
-		return fmt.Errorf("address_mode = driver may only be set for Consul service checks")
+		return errors.New("address_mode = driver may only be set for Consul service checks")
 	}
 
 	if sc.Type == "http" {
@@ -367,12 +380,27 @@ func (sc *ServiceCheck) validateNomad() error {
 
 	// success_before_passing is consul only
 	if sc.SuccessBeforePassing != 0 {
-		return fmt.Errorf("success_before_passing may only be set for Consul service checks")
+		return errors.New("success_before_passing may only be set for Consul service checks")
 	}
 
 	// failures_before_critical is consul only
 	if sc.FailuresBeforeCritical != 0 {
-		return fmt.Errorf("failures_before_critical may only be set for Consul service checks")
+		return errors.New("failures_before_critical may only be set for Consul service checks")
+	}
+
+	// failures_before_warning is consul only
+	if sc.FailuresBeforeWarning != 0 {
+		return errors.New("failures_before_warning may only be set for Consul service checks")
+	}
+
+	// tls_server_name is consul only
+	if sc.TLSServerName != "" {
+		return errors.New("tls_server_name may only be set for Consul service checks")
+	}
+
+	// tls_skip_verify is consul only
+	if sc.TLSSkipVerify {
+		return errors.New("tls_skip_verify may only be set for Consul service checks")
 	}
 
 	return nil
@@ -420,6 +448,12 @@ func (sc *ServiceCheck) validateConsul() error {
 		return fmt.Errorf("failures_before_critical not supported for check of type %q", sc.Type)
 	}
 
+	if sc.FailuresBeforeWarning < 0 {
+		return fmt.Errorf("failures_before_warning must be non-negative")
+	} else if sc.FailuresBeforeWarning > 0 && !slices.Contains(passFailCheckTypes, sc.Type) {
+		return fmt.Errorf("failures_before_warning not supported for check of type %q", sc.Type)
+	}
+
 	return nil
 }
 
@@ -462,6 +496,9 @@ func (sc *ServiceCheck) Hash(serviceID string) string {
 	// use name "true" to maintain ID stability
 	hashBool(h, sc.TLSSkipVerify, "true")
 
+	// Only include TLSServerName if set to maintain ID stability with Nomad <1.6.0
+	hashStringIfNonEmpty(h, sc.TLSServerName)
+
 	// maintain artisanal map hashing to maintain ID stability
 	hashHeader(h, sc.Header)
 
@@ -477,6 +514,7 @@ func (sc *ServiceCheck) Hash(serviceID string) string {
 	// Only include pass/fail if non-zero to maintain ID stability with Nomad < 0.12
 	hashIntIfNonZero(h, "success", sc.SuccessBeforePassing)
 	hashIntIfNonZero(h, "failures", sc.FailuresBeforeCritical)
+	hashIntIfNonZero(h, "failures-before-warning", sc.FailuresBeforeWarning)
 
 	// Hash is used for diffing against the Consul check definition, which does
 	// not have an expose parameter. Instead we rely on implied changes to
@@ -593,9 +631,17 @@ type Service struct {
 	// either ServiceProviderConsul or ServiceProviderNomad and defaults to the former when
 	// left empty by the operator.
 	Provider string
+
+	// Consul Cluster (by name) to send API requests to
+	Cluster string
+
+	// Identity is a field populated automatically by the job mutating hook.
+	// Its name will be `consul-service/${service_name}`, and its contents will
+	// match the server's `consul.service_identity` configuration block.
+	Identity *WorkloadIdentity
 }
 
-// Copy the stanza recursively. Returns nil if nil.
+// Copy the block recursively. Returns nil if nil.
 func (s *Service) Copy() *Service {
 	if s == nil {
 		return nil
@@ -618,6 +664,8 @@ func (s *Service) Copy() *Service {
 	ns.Meta = maps.Clone(s.Meta)
 	ns.CanaryMeta = maps.Clone(s.CanaryMeta)
 	ns.TaggedAddresses = maps.Clone(s.TaggedAddresses)
+
+	ns.Identity = s.Identity.Copy()
 
 	return ns
 }
@@ -676,6 +724,20 @@ func (s *Service) Canonicalize(job, taskGroup, task, jobNamespace string) {
 	}
 }
 
+// Warnings returns a list of warnings that may be from dubious settings or
+// deprecation warnings.
+func (s *Service) Warnings() error {
+	var mErr *multierror.Error
+
+	if s.Identity != nil {
+		if err := s.Identity.Warnings(); err != nil {
+			mErr = multierror.Append(mErr, err)
+		}
+	}
+
+	return mErr.ErrorOrNil()
+}
+
 // Validate checks if the Service definition is valid
 func (s *Service) Validate() error {
 	var mErr multierror.Error
@@ -720,7 +782,37 @@ func (s *Service) Validate() error {
 			ServiceProviderConsul, ServiceProviderNomad, s.Provider))
 	}
 
+	if err := s.validateIdentity(); err != nil {
+		mErr.Errors = append(mErr.Errors, err)
+	}
+
 	return mErr.ErrorOrNil()
+}
+
+// MakeUniqueIdentityName returns a service identity name consisting of: task
+// name, service name and service port label.
+func (s *Service) MakeUniqueIdentityName() string {
+	prefix := ConsulServiceIdentityNamePrefix
+	if s.Provider == ServiceProviderNomad {
+		prefix = "nomad-service"
+	}
+	if s.TaskName != "" {
+		return fmt.Sprintf("%s_%v-%v-%v", prefix, s.TaskName, s.Name, s.PortLabel)
+	}
+	return fmt.Sprintf("%s_%v-%v", prefix, s.Name, s.PortLabel)
+}
+
+// IdentityHandle returns a WorkloadIdentityHandle which is a pair of service
+// identity name and service name.
+func (s *Service) IdentityHandle() *WIHandle {
+	if s.Identity != nil {
+		return &WIHandle{
+			IdentityName:       s.Identity.Name,
+			WorkloadIdentifier: s.Name,
+			WorkloadType:       WorkloadTypeService,
+		}
+	}
+	return nil
 }
 
 func (s *Service) validateCheckPort(c *ServiceCheck) error {
@@ -792,6 +884,20 @@ func (s *Service) validateNomadService(mErr *multierror.Error) {
 	}
 }
 
+// validateIdentity performs validation on workload identity field populated by
+// the job mutating hook
+func (s *Service) validateIdentity() error {
+	if s.Identity == nil {
+		return nil
+	}
+
+	if len(s.Identity.Audience) == 0 {
+		return fmt.Errorf("Service identity must provide at least one target aud value")
+	}
+
+	return nil
+}
+
 // ValidateName checks if the service Name is valid and should be called after
 // the name has been interpolated
 func (s *Service) ValidateName(name string) error {
@@ -799,6 +905,9 @@ func (s *Service) ValidateName(name string) error {
 	// (https://tools.ietf.org/html/rfc952), RFC-1123 §2.1
 	// (https://tools.ietf.org/html/rfc1123), and RFC-2782
 	// (https://tools.ietf.org/html/rfc2782).
+	//  This validation is enforced on Nomad, but not on Consul, however if
+	//  consul-template is being used, service names with dots in them wont be
+	//  admissible.
 	re := regexp.MustCompile(`^(?i:[a-z0-9]|[a-z0-9][a-z0-9\-]{0,61}[a-z0-9])$`)
 	if !re.MatchString(name) {
 		return fmt.Errorf("Service name must be valid per RFC 1123 and can contain only alphanumeric characters or dashes and must be no longer than 63 characters")
@@ -827,6 +936,7 @@ func (s *Service) Hash(allocID, taskName string, canary bool) string {
 	hashConnect(h, s.Connect)
 	hashString(h, s.OnUpdate)
 	hashString(h, s.Namespace)
+	hashIdentity(h, s.Identity)
 
 	// Don't hash the provider parameter, so we don't cause churn of all
 	// registered services when upgrading Nomad versions. The provider is not
@@ -854,8 +964,29 @@ func hashConnect(h hash.Hash, connect *ConsulConnect) {
 				hashString(h, strconv.Itoa(upstream.LocalBindPort))
 				hashStringIfNonEmpty(h, upstream.Datacenter)
 				hashStringIfNonEmpty(h, upstream.LocalBindAddress)
+				hashString(h, upstream.DestinationPeer)
+				hashString(h, upstream.DestinationType)
+				hashString(h, upstream.LocalBindSocketPath)
+				hashString(h, upstream.LocalBindSocketMode)
+				hashConfig(h, upstream.Config)
 			}
 		}
+	}
+}
+
+func hashIdentity(h hash.Hash, identity *WorkloadIdentity) {
+	if identity != nil {
+		hashString(h, identity.Name)
+		hashAud(h, identity.Audience)
+		hashBool(h, identity.Env, "Env")
+		hashBool(h, identity.File, "File")
+		hashString(h, identity.ServiceName)
+	}
+}
+
+func hashAud(h hash.Hash, aud []string) {
+	for _, a := range aud {
+		hashString(h, a)
 	}
 }
 
@@ -890,6 +1021,10 @@ func (s *Service) Equal(o *Service) bool {
 	}
 
 	if s.Provider != o.Provider {
+		return false
+	}
+
+	if s.Cluster != o.Cluster {
 		return false
 	}
 
@@ -949,10 +1084,18 @@ func (s *Service) Equal(o *Service) bool {
 		return false
 	}
 
+	if !s.Identity.Equal(o.Identity) {
+		return false
+	}
+
 	return true
 }
 
-// ConsulConnect represents a Consul Connect jobspec stanza.
+func (s *Service) IsConsul() bool {
+	return s.Provider == ServiceProviderConsul || s.Provider == ""
+}
+
+// ConsulConnect represents a Consul Connect jobspec block.
 type ConsulConnect struct {
 	// Native indicates whether the service is Consul Connect Native enabled.
 	Native bool
@@ -967,7 +1110,7 @@ type ConsulConnect struct {
 	Gateway *ConsulGateway
 }
 
-// Copy the stanza recursively. Returns nil if nil.
+// Copy the block recursively. Returns nil if nil.
 func (c *ConsulConnect) Copy() *ConsulConnect {
 	if c == nil {
 		return nil
@@ -1084,7 +1227,7 @@ func (c *ConsulConnect) Validate() error {
 }
 
 // ConsulSidecarService represents a Consul Connect SidecarService jobspec
-// stanza.
+// block.
 type ConsulSidecarService struct {
 	// Tags are optional service tags that get registered with the sidecar service
 	// in Consul. If unset, the sidecar service inherits the parent service tags.
@@ -1094,12 +1237,15 @@ type ConsulSidecarService struct {
 	// a port label or a literal port number.
 	Port string
 
-	// Proxy stanza defining the sidecar proxy configuration.
+	// Proxy block defining the sidecar proxy configuration.
 	Proxy *ConsulProxy
 
 	// DisableDefaultTCPCheck, if true, instructs Nomad to avoid setting a
 	// default TCP check for the sidecar service.
 	DisableDefaultTCPCheck bool
+
+	// Meta specifies arbitrary KV metadata linked to the sidecar service.
+	Meta map[string]string
 }
 
 // HasUpstreams checks if the sidecar service has any upstreams configured
@@ -1107,7 +1253,7 @@ func (s *ConsulSidecarService) HasUpstreams() bool {
 	return s != nil && s.Proxy != nil && len(s.Proxy.Upstreams) > 0
 }
 
-// Copy the stanza recursively. Returns nil if nil.
+// Copy the block recursively. Returns nil if nil.
 func (s *ConsulSidecarService) Copy() *ConsulSidecarService {
 	if s == nil {
 		return nil
@@ -1117,6 +1263,7 @@ func (s *ConsulSidecarService) Copy() *ConsulSidecarService {
 		Port:                   s.Port,
 		Proxy:                  s.Proxy.Copy(),
 		DisableDefaultTCPCheck: s.DisableDefaultTCPCheck,
+		Meta:                   maps.Clone(s.Meta),
 	}
 }
 
@@ -1138,11 +1285,15 @@ func (s *ConsulSidecarService) Equal(o *ConsulSidecarService) bool {
 		return false
 	}
 
+	if !maps.Equal(s.Meta, o.Meta) {
+		return false
+	}
+
 	return s.Proxy.Equal(o.Proxy)
 }
 
 // SidecarTask represents a subset of Task fields that are able to be overridden
-// from the sidecar_task stanza
+// from the sidecar_task block
 type SidecarTask struct {
 	// Name of the task
 	Name string
@@ -1200,8 +1351,8 @@ func (t *SidecarTask) Equal(o *SidecarTask) bool {
 		return false
 	}
 
-	// config compare
-	if !opaqueMapsEqual(t.Config, o.Config) {
+	// task config, use opaque maps equal
+	if !helper.OpaqueMapsEqual(t.Config, o.Config) {
 		return false
 	}
 
@@ -1336,7 +1487,7 @@ func (t *SidecarTask) MergeIntoTask(task *Task) {
 	}
 }
 
-// ConsulProxy represents a Consul Connect sidecar proxy jobspec stanza.
+// ConsulProxy represents a Consul Connect sidecar proxy jobspec block.
 type ConsulProxy struct {
 
 	// LocalServiceAddress is the address the local service binds to.
@@ -1353,18 +1504,16 @@ type ConsulProxy struct {
 	// connect to.
 	Upstreams []ConsulUpstream
 
-	// Expose configures the consul proxy.expose stanza to "open up" endpoints
+	// Expose configures the consul proxy.expose block to "open up" endpoints
 	// used by task-group level service checks using HTTP or gRPC protocols.
-	//
-	// Use json tag to match with field name in api/
-	Expose *ConsulExposeConfig `json:"ExposeConfig"`
+	Expose *ConsulExposeConfig
 
 	// Config is a proxy configuration. It is opaque to Nomad and passed
 	// directly to Consul.
 	Config map[string]interface{}
 }
 
-// Copy the stanza recursively. Returns nil if nil.
+// Copy the block recursively. Returns nil if nil.
 func (p *ConsulProxy) Copy() *ConsulProxy {
 	if p == nil {
 		return nil
@@ -1377,15 +1526,6 @@ func (p *ConsulProxy) Copy() *ConsulProxy {
 		Upstreams:           slices.Clone(p.Upstreams),
 		Config:              maps.Clone(p.Config),
 	}
-}
-
-// opaqueMapsEqual compares map[string]interface{} commonly used for opaque
-// config blocks. Interprets nil and {} as the same.
-func opaqueMapsEqual(a, b map[string]interface{}) bool {
-	if len(a) == 0 && len(b) == 0 {
-		return true
-	}
-	return reflect.DeepEqual(a, b)
 }
 
 // Equal returns true if the structs are recursively equal.
@@ -1410,7 +1550,8 @@ func (p *ConsulProxy) Equal(o *ConsulProxy) bool {
 		return false
 	}
 
-	if !opaqueMapsEqual(p.Config, o.Config) {
+	// envoy config, use reflect
+	if !reflect.DeepEqual(p.Config, o.Config) {
 		return false
 	}
 
@@ -1459,13 +1600,20 @@ func (c *ConsulMeshGateway) Validate() error {
 	}
 }
 
-// ConsulUpstream represents a Consul Connect upstream jobspec stanza.
+// ConsulUpstream represents a Consul Connect upstream jobspec block.
 type ConsulUpstream struct {
 	// DestinationName is the name of the upstream service.
 	DestinationName string
 
 	// DestinationNamespace is the namespace of the upstream service.
 	DestinationNamespace string
+
+	// DestinationPeer the destination service address
+	DestinationPeer string
+
+	// DestinationType is the type of destination. It can be an IP address,
+	// a DNS hostname, or a service name.
+	DestinationType string
 
 	// LocalBindPort is the port the proxy will receive connections for the
 	// upstream on.
@@ -1478,9 +1626,20 @@ type ConsulUpstream struct {
 	// upstream on.
 	LocalBindAddress string
 
+	// LocalBindSocketPath is the path of the local socket file that will be used
+	// to connect to the destination service
+	LocalBindSocketPath string
+
+	// LocalBindSocketMode defines access permissions to the local socket file
+	LocalBindSocketMode string
+
 	// MeshGateway is the optional configuration of the mesh gateway for this
 	// upstream to use.
 	MeshGateway ConsulMeshGateway
+
+	// Config is an upstream configuration. It is opaque to Nomad and passed
+	// directly to Consul.
+	Config map[string]any
 }
 
 // Equal returns true if the structs are recursively equal.
@@ -1488,17 +1647,49 @@ func (u *ConsulUpstream) Equal(o *ConsulUpstream) bool {
 	if u == nil || o == nil {
 		return u == o
 	}
-	return *u == *o
+	switch {
+	case u.DestinationName != o.DestinationName:
+		return false
+	case u.DestinationNamespace != o.DestinationNamespace:
+		return false
+	case u.DestinationPeer != o.DestinationPeer:
+		return false
+	case u.DestinationType != o.DestinationType:
+		return false
+	case u.LocalBindPort != o.LocalBindPort:
+		return false
+	case u.LocalBindSocketPath != o.LocalBindSocketPath:
+		return false
+	case u.LocalBindSocketMode != o.LocalBindSocketMode:
+		return false
+	case u.Datacenter != o.Datacenter:
+		return false
+	case u.LocalBindAddress != o.LocalBindAddress:
+		return false
+	case !u.MeshGateway.Equal(o.MeshGateway):
+		return false
+	case !reflect.DeepEqual(u.Config, o.Config):
+		// envoy config, use reflect
+		return false
+	}
+	return true
+}
+
+// Hash implements a GoString based "hash" function for ConsulUpstream; because
+// this struct now contains an opaque map we cannot do much better than this.
+func (u ConsulUpstream) Hash() string {
+	return fmt.Sprintf("%#v", u)
 }
 
 func upstreamsEquals(a, b []ConsulUpstream) bool {
-	return set.From(a).Equal(set.From(b))
+	setA := set.HashSetFrom[ConsulUpstream, string](a)
+	setB := set.HashSetFrom[ConsulUpstream, string](b)
+	return setA.Equal(setB)
 }
 
-// ConsulExposeConfig represents a Consul Connect expose jobspec stanza.
+// ConsulExposeConfig represents a Consul Connect expose jobspec block.
 type ConsulExposeConfig struct {
-	// Use json tag to match with field name in api/
-	Paths []ConsulExposePath `json:"Path"`
+	Paths []ConsulExposePath
 }
 
 type ConsulExposePath struct {
@@ -1512,7 +1703,7 @@ func exposePathsEqual(a, b []ConsulExposePath) bool {
 	return helper.SliceSetEq(a, b)
 }
 
-// Copy the stanza. Returns nil if e is nil.
+// Copy the block. Returns nil if e is nil.
 func (e *ConsulExposeConfig) Copy() *ConsulExposeConfig {
 	if e == nil {
 		return nil
@@ -1764,7 +1955,8 @@ func (p *ConsulGatewayProxy) Equal(o *ConsulGatewayProxy) bool {
 		return false
 	}
 
-	if !opaqueMapsEqual(p.Config, o.Config) {
+	// envoy config, use reflect
+	if !reflect.DeepEqual(p.Config, o.Config) {
 		return false
 	}
 
@@ -1874,13 +2066,13 @@ func (s *ConsulIngressService) Validate(protocol string) error {
 		return nil
 	}
 
+	// pre-validate service Name and Hosts before passing along to consul:
+	// https://developer.hashicorp.com/consul/docs/connect/config-entries/ingress-gateway#services
+
 	if s.Name == "" {
 		return errors.New("Consul Ingress Service requires a name")
 	}
 
-	// Validation of wildcard service name and hosts varies depending on the
-	// protocol for the gateway.
-	// https://www.consul.io/docs/connect/config-entries/ingress-gateway#hosts
 	switch protocol {
 	case "tcp":
 		if s.Name == "*" {
@@ -1891,12 +2083,8 @@ func (s *ConsulIngressService) Validate(protocol string) error {
 			return errors.New(`Consul Ingress Service doesn't support associating hosts to a service for the "tcp" protocol`)
 		}
 	default:
-		if s.Name == "*" {
-			return nil
-		}
-
-		if len(s.Hosts) == 0 {
-			return fmt.Errorf("Consul Ingress Service requires one or more hosts when using %q protocol", protocol)
+		if s.Name == "*" && len(s.Hosts) != 0 {
+			return errors.New(`Consul Ingress Service with a wildcard "*" service name can not also specify hosts`)
 		}
 	}
 

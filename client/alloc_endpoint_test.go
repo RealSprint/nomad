@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package client
 
 import (
@@ -14,6 +17,7 @@ import (
 	"github.com/hashicorp/nomad/acl"
 	"github.com/hashicorp/nomad/ci"
 	"github.com/hashicorp/nomad/client/config"
+	"github.com/hashicorp/nomad/client/lib/proclib"
 	cstructs "github.com/hashicorp/nomad/client/structs"
 	"github.com/hashicorp/nomad/helper/pluginutils/catalog"
 	"github.com/hashicorp/nomad/helper/uuid"
@@ -78,6 +82,12 @@ func TestAllocations_RestartAllTasks(t *testing.T) {
 	alloc := mock.LifecycleAlloc()
 	require.Nil(client.addAlloc(alloc, ""))
 
+	// setup process wranglers for our tasks to make sure they work with restart
+	client.wranglers.Setup(proclib.Task{AllocID: alloc.ID, Task: "web"})
+	client.wranglers.Setup(proclib.Task{AllocID: alloc.ID, Task: "init"})
+	client.wranglers.Setup(proclib.Task{AllocID: alloc.ID, Task: "side"})
+	client.wranglers.Setup(proclib.Task{AllocID: alloc.ID, Task: "poststart"})
+
 	// Can't restart all tasks while specifying a task name.
 	req := &nstructs.AllocRestartRequest{
 		AllocID:  alloc.ID,
@@ -136,7 +146,7 @@ func TestAllocations_Restart_ACL(t *testing.T) {
 		var resp nstructs.GenericResponse
 		err := client.ClientRPC("Allocations.Restart", &req, &resp)
 		require.NotNil(err)
-		require.EqualError(err, nstructs.ErrPermissionDenied.Error())
+		require.ErrorContains(err, nstructs.ErrPermissionDenied.Error())
 	}
 
 	// Try request with an invalid token and expect failure
@@ -323,7 +333,7 @@ func TestAllocations_GarbageCollect_ACL(t *testing.T) {
 		var resp nstructs.GenericResponse
 		err := client.ClientRPC("Allocations.GarbageCollect", &req, &resp)
 		require.NotNil(err)
-		require.EqualError(err, nstructs.ErrPermissionDenied.Error())
+		require.ErrorContains(err, nstructs.ErrPermissionDenied.Error())
 	}
 
 	// Try request with an invalid token and expect failure
@@ -420,7 +430,7 @@ func TestAllocations_Signal_ACL(t *testing.T) {
 		var resp nstructs.GenericResponse
 		err := client.ClientRPC("Allocations.Signal", &req, &resp)
 		require.NotNil(err)
-		require.EqualError(err, nstructs.ErrPermissionDenied.Error())
+		require.ErrorContains(err, nstructs.ErrPermissionDenied.Error())
 	}
 
 	// Try request with an invalid token and expect failure
@@ -526,7 +536,7 @@ func TestAllocations_Stats_ACL(t *testing.T) {
 		var resp cstructs.AllocStatsResponse
 		err := client.ClientRPC("Allocations.Stats", &req, &resp)
 		require.NotNil(err)
-		require.EqualError(err, nstructs.ErrPermissionDenied.Error())
+		require.ErrorContains(err, nstructs.ErrPermissionDenied.Error())
 	}
 
 	// Try request with an invalid token and expect failure

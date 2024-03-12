@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package executor
 
 import (
@@ -5,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -18,15 +20,19 @@ import (
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/nomad/ci"
 	"github.com/hashicorp/nomad/client/allocdir"
-	"github.com/hashicorp/nomad/client/lib/cgutil"
+	"github.com/hashicorp/nomad/client/lib/cgroupslib"
+	"github.com/hashicorp/nomad/client/lib/cpustats"
+	"github.com/hashicorp/nomad/client/lib/numalib"
 	"github.com/hashicorp/nomad/client/taskenv"
 	"github.com/hashicorp/nomad/client/testutil"
 	"github.com/hashicorp/nomad/helper/testlog"
 	"github.com/hashicorp/nomad/nomad/mock"
 	"github.com/hashicorp/nomad/nomad/structs"
+	"github.com/hashicorp/nomad/plugins/base"
 	"github.com/hashicorp/nomad/plugins/drivers"
 	tu "github.com/hashicorp/nomad/testutil"
 	ps "github.com/mitchellh/go-ps"
+	"github.com/shoenig/test/must"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -34,7 +40,7 @@ import (
 var executorFactories = map[string]executorFactory{}
 
 type executorFactory struct {
-	new              func(hclog.Logger) Executor
+	new              func(hclog.Logger, cpustats.Compute) Executor
 	configureExecCmd func(*testing.T, *ExecCommand)
 }
 
@@ -46,6 +52,11 @@ var universalFactory = executorFactory{
 func init() {
 	executorFactories["UniversalExecutor"] = universalFactory
 }
+
+var (
+	topology = numalib.Scan(numalib.PlatformScanners())
+	compute  = topology.Compute()
+)
 
 type testExecCmd struct {
 	command  *ExecCommand
@@ -88,13 +99,20 @@ func testExecutorCommand(t *testing.T) *testExecCmd {
 			LinuxResources: &drivers.LinuxResources{
 				CPUShares:        500,
 				MemoryLimitBytes: 256 * 1024 * 1024,
+				CpusetCgroupPath: cgroupslib.LinuxResourcesPath(alloc.ID, task.Name, false),
 			},
 		},
 	}
 
-	if cgutil.UseV2 {
-		cmd.Resources.LinuxResources.CpusetCgroupPath = filepath.Join(cgutil.CgroupRoot, "testing.scope", cgutil.CgroupScope(alloc.ID, task.Name))
-	}
+	// create cgroup for our task (because we aren't using task runners)
+	f := cgroupslib.Factory(alloc.ID, task.Name, false)
+	must.NoError(t, f.Setup())
+
+	// cleanup cgroup once test is done (because no task runners)
+	t.Cleanup(func() {
+		_ = f.Kill()
+		_ = f.Teardown()
+	})
 
 	testCmd := &testExecCmd{
 		command:  cmd,
@@ -148,7 +166,7 @@ func TestExecutor_Start_Invalid(t *testing.T) {
 			execCmd.Args = []string{"1"}
 			factory.configureExecCmd(t, execCmd)
 			defer allocDir.Destroy()
-			executor := factory.new(testlog.HCLogger(t))
+			executor := factory.new(testlog.HCLogger(t), compute)
 			defer executor.Shutdown("", 0)
 
 			_, err := executor.Launch(execCmd)
@@ -168,7 +186,7 @@ func TestExecutor_Start_Wait_Failure_Code(t *testing.T) {
 			execCmd.Args = []string{"-c", "sleep 1; /bin/date fail"}
 			factory.configureExecCmd(t, execCmd)
 			defer allocDir.Destroy()
-			executor := factory.new(testlog.HCLogger(t))
+			executor := factory.new(testlog.HCLogger(t), compute)
 			defer executor.Shutdown("", 0)
 
 			ps, err := executor.Launch(execCmd)
@@ -193,7 +211,7 @@ func TestExecutor_Start_Wait(t *testing.T) {
 			factory.configureExecCmd(t, execCmd)
 
 			defer allocDir.Destroy()
-			executor := factory.new(testlog.HCLogger(t))
+			executor := factory.new(testlog.HCLogger(t), compute)
 			defer executor.Shutdown("", 0)
 
 			ps, err := executor.Launch(execCmd)
@@ -230,7 +248,7 @@ func TestExecutor_Start_Wait_Children(t *testing.T) {
 			factory.configureExecCmd(t, execCmd)
 
 			defer allocDir.Destroy()
-			executor := factory.new(testlog.HCLogger(t))
+			executor := factory.new(testlog.HCLogger(t), compute)
 			defer executor.Shutdown("SIGKILL", 0)
 
 			ps, err := executor.Launch(execCmd)
@@ -271,7 +289,7 @@ func TestExecutor_WaitExitSignal(t *testing.T) {
 			factory.configureExecCmd(t, execCmd)
 
 			defer allocDir.Destroy()
-			executor := factory.new(testlog.HCLogger(t))
+			executor := factory.new(testlog.HCLogger(t), compute)
 			defer executor.Shutdown("", 0)
 
 			pState, err := executor.Launch(execCmd)
@@ -329,7 +347,7 @@ func TestExecutor_Start_Kill(t *testing.T) {
 			factory.configureExecCmd(t, execCmd)
 
 			defer allocDir.Destroy()
-			executor := factory.new(testlog.HCLogger(t))
+			executor := factory.new(testlog.HCLogger(t), compute)
 			defer executor.Shutdown("", 0)
 
 			ps, err := executor.Launch(execCmd)
@@ -351,15 +369,22 @@ func TestExecutor_Start_Kill(t *testing.T) {
 
 func TestExecutor_Shutdown_Exit(t *testing.T) {
 	ci.Parallel(t)
+
 	require := require.New(t)
 	testExecCmd := testExecutorCommand(t)
 	execCmd, allocDir := testExecCmd.command, testExecCmd.allocDir
 	execCmd.Cmd = "/bin/sleep"
 	execCmd.Args = []string{"100"}
+
 	cfg := &ExecutorConfig{
 		LogFile: "/dev/null",
 	}
-	executor, pluginClient, err := CreateExecutor(testlog.HCLogger(t), nil, cfg)
+
+	driverCfg := &base.ClientDriverConfig{
+		Topology: numalib.Scan(numalib.PlatformScanners()),
+	}
+
+	executor, pluginClient, err := CreateExecutor(testlog.HCLogger(t), driverCfg, cfg)
 	require.NoError(err)
 
 	proc, err := executor.Launch(execCmd)
@@ -383,7 +408,7 @@ func TestExecutor_Shutdown_Exit(t *testing.T) {
 func TestUniversalExecutor_MakeExecutable(t *testing.T) {
 	ci.Parallel(t)
 	// Create a temp file
-	f, err := ioutil.TempFile("", "")
+	f, err := os.CreateTemp("", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -422,7 +447,7 @@ func TestUniversalExecutor_LookupPath(t *testing.T) {
 
 	// Write a file under foo
 	filePath := filepath.Join(tmpDir, "foo", "tmp.txt")
-	err := ioutil.WriteFile(filePath, []byte{1, 2}, os.ModeAppend)
+	err := os.WriteFile(filePath, []byte{1, 2}, os.ModeAppend)
 	require.Nil(err)
 
 	// Lookup with full path on host to binary
@@ -436,7 +461,7 @@ func TestUniversalExecutor_LookupPath(t *testing.T) {
 
 	// Write a file under task dir
 	filePath3 := filepath.Join(tmpDir, "tmp.txt")
-	ioutil.WriteFile(filePath3, []byte{1, 2}, os.ModeAppend)
+	os.WriteFile(filePath3, []byte{1, 2}, os.ModeAppend)
 
 	// Lookup with file name, should find the one we wrote above
 	path, err = lookupBin(tmpDir, "tmp.txt")
@@ -446,7 +471,7 @@ func TestUniversalExecutor_LookupPath(t *testing.T) {
 	// Write a file under local subdir
 	os.MkdirAll(filepath.Join(tmpDir, "local"), 0700)
 	filePath2 := filepath.Join(tmpDir, "local", "tmp.txt")
-	ioutil.WriteFile(filePath2, []byte{1, 2}, os.ModeAppend)
+	os.WriteFile(filePath2, []byte{1, 2}, os.ModeAppend)
 
 	// Lookup with file name, should find the one we wrote above
 	path, err = lookupBin(tmpDir, "tmp.txt")
@@ -534,7 +559,7 @@ func TestExecutor_Start_Kill_Immediately_NoGrace(t *testing.T) {
 			execCmd.Args = []string{"100"}
 			factory.configureExecCmd(t, execCmd)
 			defer allocDir.Destroy()
-			executor := factory.new(testlog.HCLogger(t))
+			executor := factory.new(testlog.HCLogger(t), compute)
 			defer executor.Shutdown("", 0)
 
 			ps, err := executor.Launch(execCmd)
@@ -570,7 +595,7 @@ func TestExecutor_Start_Kill_Immediately_WithGrace(t *testing.T) {
 			execCmd.Args = []string{"100"}
 			factory.configureExecCmd(t, execCmd)
 			defer allocDir.Destroy()
-			executor := factory.new(testlog.HCLogger(t))
+			executor := factory.new(testlog.HCLogger(t), compute)
 			defer executor.Shutdown("", 0)
 
 			ps, err := executor.Launch(execCmd)
@@ -607,7 +632,7 @@ func TestExecutor_Start_NonExecutableBinaries(t *testing.T) {
 			tmpDir := t.TempDir()
 
 			nonExecutablePath := filepath.Join(tmpDir, "nonexecutablefile")
-			ioutil.WriteFile(nonExecutablePath,
+			os.WriteFile(nonExecutablePath,
 				[]byte("#!/bin/sh\necho hello world"),
 				0600)
 
@@ -616,7 +641,7 @@ func TestExecutor_Start_NonExecutableBinaries(t *testing.T) {
 			execCmd.Cmd = nonExecutablePath
 			factory.configureExecCmd(t, execCmd)
 
-			executor := factory.new(testlog.HCLogger(t))
+			executor := factory.new(testlog.HCLogger(t), compute)
 			defer executor.Shutdown("", 0)
 
 			// need to configure path in chroot with that file if using isolation executor

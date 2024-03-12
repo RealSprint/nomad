@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 /* eslint-disable qunit/require-expect */
 import { currentURL, settled } from '@ember/test-helpers';
 import { module, test } from 'qunit';
@@ -15,6 +20,7 @@ module('Acceptance | clients list', function (hooks) {
 
   hooks.beforeEach(function () {
     window.localStorage.clear();
+    server.createList('node-pool', 3);
   });
 
   test('it passes an accessibility audit', async function (assert) {
@@ -51,7 +57,7 @@ module('Acceptance | clients list', function (hooks) {
       );
     });
 
-    assert.equal(document.title, 'Clients - Nomad');
+    assert.ok(document.title.includes('Clients'));
   });
 
   test('each client record should show high-level info of the client', async function (assert) {
@@ -68,9 +74,10 @@ module('Acceptance | clients list', function (hooks) {
 
     assert.equal(nodeRow.id, node.id.split('-')[0], 'ID');
     assert.equal(nodeRow.name, node.name, 'Name');
+    assert.equal(nodeRow.nodePool, node.nodePool, 'Node Pool');
     assert.equal(
       nodeRow.compositeStatus.text,
-      'draining',
+      'Ready Ineligible Draining',
       'Combined status, draining, and eligbility'
     );
     assert.equal(nodeRow.address, node.httpAddr);
@@ -104,13 +111,13 @@ module('Acceptance | clients list', function (hooks) {
     assert.equal(nodeRow.id, node.id.split('-')[0], 'ID');
     assert.equal(
       nodeRow.compositeStatus.text,
-      'ready',
+      'Ready Eligible Not Draining',
       'Combined status, draining, and eligbility'
     );
     assert.equal(nodeRow.allocations, running.length, '# Allocations');
   });
 
-  test('client status, draining, and eligibility are collapsed into one column that stays sorted', async function (assert) {
+  test('client status, draining, and eligibility are combined into one column that stays sorted on status', async function (assert) {
     server.createList('agent', 1);
 
     server.create('node', {
@@ -144,57 +151,71 @@ module('Acceptance | clients list', function (hooks) {
       drain: false,
     });
     server.create('node', 'draining', {
+      schedulingEligibility: 'eligible',
       modifyIndex: 0,
       status: 'ready',
     });
 
     await ClientsList.visit();
-
-    ClientsList.nodes[0].compositeStatus.as((readyClient) => {
-      assert.equal(readyClient.text, 'ready');
-      assert.ok(readyClient.isUnformatted, 'expected no status class');
-      assert.equal(readyClient.tooltip, 'ready / not draining / eligible');
-    });
-
-    assert.equal(ClientsList.nodes[1].compositeStatus.text, 'initializing');
-    assert.equal(ClientsList.nodes[2].compositeStatus.text, 'down');
+    assert.equal(
+      ClientsList.nodes[0].compositeStatus.text,
+      'Ready Eligible Not Draining'
+    );
+    assert.equal(
+      ClientsList.nodes[1].compositeStatus.text,
+      'Initializing Eligible Not Draining'
+    );
     assert.equal(
       ClientsList.nodes[2].compositeStatus.text,
-      'down',
-      'down takes priority over ineligible'
+      'Down Eligible Not Draining'
+    );
+    assert.equal(
+      ClientsList.nodes[3].compositeStatus.text,
+      'Down Ineligible Not Draining'
+    );
+    assert.equal(
+      ClientsList.nodes[4].compositeStatus.text,
+      'Ready Ineligible Not Draining'
+    );
+    assert.equal(
+      ClientsList.nodes[5].compositeStatus.text,
+      'Ready Eligible Draining'
     );
 
-    assert.equal(ClientsList.nodes[4].compositeStatus.text, 'ineligible');
-    assert.ok(
-      ClientsList.nodes[4].compositeStatus.isWarning,
-      'expected warning class'
-    );
-
-    assert.equal(ClientsList.nodes[5].compositeStatus.text, 'draining');
-    assert.ok(
-      ClientsList.nodes[5].compositeStatus.isInfo,
-      'expected info class'
-    );
-
-    await ClientsList.sortBy('compositeStatus');
+    await ClientsList.sortBy('status');
 
     assert.deepEqual(
       ClientsList.nodes.map((n) => n.compositeStatus.text),
-      ['ready', 'initializing', 'ineligible', 'draining', 'down', 'down']
+      [
+        'Ready Eligible Draining',
+        'Ready Ineligible Not Draining',
+        'Ready Eligible Not Draining',
+        'Initializing Eligible Not Draining',
+        'Down Ineligible Not Draining',
+        'Down Eligible Not Draining',
+      ],
+      'Nodes are sorted only by status, and otherwise default to modifyIndex'
     );
 
     // Simulate a client state change arriving through polling
-    let readyClient = this.owner
+    let discoClient = this.owner
       .lookup('service:store')
       .peekAll('node')
       .findBy('modifyIndex', 5);
-    readyClient.set('schedulingEligibility', 'ineligible');
+    discoClient.set('status', 'disconnected');
 
     await settled();
 
     assert.deepEqual(
       ClientsList.nodes.map((n) => n.compositeStatus.text),
-      ['initializing', 'ineligible', 'ineligible', 'draining', 'down', 'down']
+      [
+        'Ready Eligible Draining',
+        'Ready Ineligible Not Draining',
+        'Disconnected Eligible Not Draining',
+        'Initializing Eligible Not Draining',
+        'Down Ineligible Not Draining',
+        'Down Eligible Not Draining',
+      ]
     );
   });
 
@@ -278,12 +299,14 @@ module('Acceptance | clients list', function (hooks) {
     facet: ClientsList.facets.state,
     paramName: 'state',
     expectedOptions: [
-      'Initializing',
-      'Ready',
-      'Down',
-      'Ineligible',
-      'Draining',
-      'Disconnected',
+      'initializing',
+      'ready',
+      'down',
+      'disconnected',
+      'eligible',
+      'ineligible',
+      'draining',
+      'not draining',
     ],
     async beforeEach() {
       server.create('agent');
@@ -315,8 +338,31 @@ module('Acceptance | clients list', function (hooks) {
       )
         return false;
 
-      return selection.includes(node.status);
+      return !selection.includes(node.status);
     },
+  });
+
+  testFacet('Node Pools', {
+    facet: ClientsList.facets.nodePools,
+    paramName: 'nodePool',
+    expectedOptions() {
+      return server.db.nodePools
+        .filter((p) => p.name !== 'all') // The node pool 'all' should not be a filter.
+        .map((p) => p.name);
+    },
+    async beforeEach() {
+      server.create('agent');
+      server.create('node-pool', { name: 'all' });
+      server.create('node-pool', { name: 'default' });
+      server.createList('node-pool', 10);
+
+      // Make sure each node pool has at least one node.
+      server.db.nodePools.forEach((p) => {
+        server.createList('node', 2, { nodePool: p.name });
+      });
+      await ClientsList.visit();
+    },
+    filter: (node, selection) => selection.includes(node.nodePool),
   });
 
   testFacet('Datacenters', {
@@ -380,9 +426,8 @@ module('Acceptance | clients list', function (hooks) {
     server.createList('node', 2, { status: 'ready' });
 
     await ClientsList.visit();
-
     await ClientsList.facets.state.toggle();
-    await ClientsList.facets.state.options.objectAt(0).toggle();
+    await ClientsList.facets.state.options.objectAt(1).toggle();
     assert.ok(ClientsList.isEmpty, 'There is an empty message');
     assert.equal(
       ClientsList.empty.headline,
@@ -421,7 +466,9 @@ module('Acceptance | clients list', function (hooks) {
       }
 
       assert.deepEqual(
-        facet.options.map((option) => option.label.trim()),
+        facet.options.map((option) => {
+          return option.key.trim();
+        }),
         expectation,
         'Options for facet are as expected'
       );
@@ -491,11 +538,20 @@ module('Acceptance | clients list', function (hooks) {
       await option2.toggle();
       selection.push(option2.key);
 
+      // State is different from the other facets, in that it is an "exclusive" filter, whete others are "inclusive".
+      // Because of this, it doesn't pass "state" as a stringified-array query param; rather, exclusion is indicated
+      // for each option with a "${optionName}=false" query param.
+
+      const stateString = `/clients?${selection
+        .map((option) => `state_${option}=false`)
+        .join('&')}`;
+      const nonStateString = `/clients?${paramName}=${encodeURIComponent(
+        JSON.stringify(selection)
+      )}`;
+
       assert.equal(
         currentURL(),
-        `/clients?${paramName}=${encodeURIComponent(
-          JSON.stringify(selection)
-        )}`,
+        paramName === 'state' ? stateString : nonStateString,
         'URL has the correct query param key and value'
       );
     });

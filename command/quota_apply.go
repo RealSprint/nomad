@@ -1,10 +1,13 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
 	"strings"
 
@@ -85,13 +88,13 @@ func (c *QuotaApplyCommand) Run(args []string) int {
 	var rawQuota []byte
 	var err error
 	if file == "-" {
-		rawQuota, err = ioutil.ReadAll(os.Stdin)
+		rawQuota, err = io.ReadAll(os.Stdin)
 		if err != nil {
 			c.Ui.Error(fmt.Sprintf("Failed to read stdin: %v", err))
 			return 1
 		}
 	} else {
-		rawQuota, err = ioutil.ReadFile(file)
+		rawQuota, err = os.ReadFile(file)
 		if err != nil {
 			c.Ui.Error(fmt.Sprintf("Failed to read file: %v", err))
 			return 1

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
@@ -16,6 +19,13 @@ import (
 
 type MonitorCommand struct {
 	Meta
+
+	// Below this point is where CLI flag options are stored.
+	logLevel           string
+	nodeID             string
+	serverID           string
+	logJSON            bool
+	logIncludeLocation bool
 }
 
 func (c *MonitorCommand) Help() string {
@@ -38,6 +48,9 @@ Monitor Specific Options:
 
   -log-level <level>
     Sets the log level to monitor (default: INFO)
+
+  -log-include-location
+    Include file and line information in each log line. The default is false.
 
   -node-id <node-id>
     Sets the specific node to monitor
@@ -65,17 +78,13 @@ func (c *MonitorCommand) Run(args []string) int {
 		Ui:           c.Ui,
 	}
 
-	var logLevel string
-	var nodeID string
-	var serverID string
-	var logJSON bool
-
 	flags := c.Meta.FlagSet(c.Name(), FlagSetClient)
 	flags.Usage = func() { c.Ui.Output(c.Help()) }
-	flags.StringVar(&logLevel, "log-level", "", "")
-	flags.StringVar(&nodeID, "node-id", "", "")
-	flags.StringVar(&serverID, "server-id", "", "")
-	flags.BoolVar(&logJSON, "json", false, "")
+	flags.StringVar(&c.logLevel, "log-level", "", "")
+	flags.BoolVar(&c.logIncludeLocation, "log-include-location", false, "")
+	flags.StringVar(&c.nodeID, "node-id", "", "")
+	flags.StringVar(&c.serverID, "server-id", "", "")
+	flags.BoolVar(&c.logJSON, "json", false, "")
 
 	if err := flags.Parse(args); err != nil {
 		return 1
@@ -96,37 +105,20 @@ func (c *MonitorCommand) Run(args []string) int {
 	}
 
 	// Query the node info and lookup prefix
-	if len(nodeID) == 1 {
-		c.Ui.Error("Node identifier must contain at least two characters.")
-		return 1
-	}
-
-	if nodeID != "" {
-		nodeID = sanitizeUUIDPrefix(nodeID)
-		nodes, _, err := client.Nodes().PrefixList(nodeID)
+	if c.nodeID != "" {
+		c.nodeID, err = lookupNodeID(client.Nodes(), c.nodeID)
 		if err != nil {
-			c.Ui.Error(fmt.Sprintf("Error querying node: %v", err))
+			c.Ui.Error(err.Error())
 			return 1
 		}
-
-		if len(nodes) == 0 {
-			c.Ui.Error(fmt.Sprintf("No node(s) with prefix or id %q found", nodeID))
-			return 1
-		}
-
-		if len(nodes) > 1 {
-			out := formatNodeStubList(nodes, false)
-			c.Ui.Output(fmt.Sprintf("Prefix matched multiple nodes\n\n%s", out))
-			return 1
-		}
-		nodeID = nodes[0].ID
 	}
 
 	params := map[string]string{
-		"log_level": logLevel,
-		"node_id":   nodeID,
-		"server_id": serverID,
-		"log_json":  strconv.FormatBool(logJSON),
+		"log_level":            c.logLevel,
+		"node_id":              c.nodeID,
+		"server_id":            c.serverID,
+		"log_json":             strconv.FormatBool(c.logJSON),
+		"log_include_location": strconv.FormatBool(c.logIncludeLocation),
 	}
 
 	query := &api.QueryOptions{

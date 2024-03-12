@@ -1,9 +1,11 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package nomad
 
 import (
 	"context"
 	"io"
-	"io/ioutil"
 	"time"
 
 	"github.com/hashicorp/go-msgpack/codec"
@@ -37,6 +39,8 @@ func (e *Event) stream(conn io.ReadWriteCloser) {
 		return
 	}
 
+	authErr := e.srv.Authenticate(nil, &args)
+
 	// forward to appropriate region
 	if args.Region != e.srv.config.Region {
 		err := e.forwardStreamingRPC(args.Region, "Event.Stream", args, conn)
@@ -44,6 +48,11 @@ func (e *Event) stream(conn io.ReadWriteCloser) {
 			handleJsonResultError(err, pointer.Of(int64(500)), encoder)
 		}
 		return
+	}
+
+	e.srv.MeasureRPCRate("event", structs.RateMetricRead, &args)
+	if authErr != nil {
+		handleJsonResultError(structs.ErrPermissionDenied, pointer.Of(int64(403)), encoder)
 	}
 
 	// Generate the subscription request
@@ -84,7 +93,7 @@ func (e *Event) stream(conn io.ReadWriteCloser) {
 	defer cancel()
 	// goroutine to detect remote side closing
 	go func() {
-		io.Copy(ioutil.Discard, conn)
+		io.Copy(io.Discard, conn)
 		cancel()
 	}()
 

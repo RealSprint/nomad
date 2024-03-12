@@ -1,8 +1,11 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package consul_test
 
 import (
 	"context"
-	"io/ioutil"
+	"io"
 	"testing"
 	"time"
 
@@ -14,15 +17,18 @@ import (
 	"github.com/hashicorp/nomad/client/allocrunner/taskrunner"
 	"github.com/hashicorp/nomad/client/config"
 	"github.com/hashicorp/nomad/client/devicemanager"
+	"github.com/hashicorp/nomad/client/lib/proclib"
 	"github.com/hashicorp/nomad/client/pluginmanager/drivermanager"
 	regMock "github.com/hashicorp/nomad/client/serviceregistration/mock"
 	"github.com/hashicorp/nomad/client/serviceregistration/wrapper"
 	"github.com/hashicorp/nomad/client/state"
+	cstructs "github.com/hashicorp/nomad/client/structs"
 	"github.com/hashicorp/nomad/client/vaultclient"
 	"github.com/hashicorp/nomad/command/agent/consul"
 	"github.com/hashicorp/nomad/helper/testlog"
 	"github.com/hashicorp/nomad/nomad/mock"
 	"github.com/hashicorp/nomad/nomad/structs"
+	"github.com/shoenig/test/must"
 	"github.com/stretchr/testify/require"
 )
 
@@ -46,11 +52,11 @@ func TestConsul_Integration(t *testing.T) {
 
 	// Create an embedded Consul server
 	testconsul, err := testutil.NewTestServerConfigT(t, func(c *testutil.TestServerConfig) {
-		c.Peering = nil  // fix for older versions of Consul (<1.13.0) that don't support peering
+		c.Peering = nil // fix for older versions of Consul (<1.13.0) that don't support peering
 		// If -v wasn't specified squelch consul logging
 		if !testing.Verbose() {
-			c.Stdout = ioutil.Discard
-			c.Stderr = ioutil.Discard
+			c.Stdout = io.Discard
+			c.Stderr = io.Discard
 		}
 	})
 	if err != nil {
@@ -60,8 +66,9 @@ func TestConsul_Integration(t *testing.T) {
 
 	conf := config.DefaultConfig()
 	conf.Node = mock.Node()
-	conf.ConsulConfig.Addr = testconsul.HTTPAddr
-	consulConfig, err := conf.ConsulConfig.ApiConfig()
+	conf.GetDefaultConsul().Addr = testconsul.HTTPAddr
+	conf.APIListenerRegistrar = config.NoopAPIListenerRegistrar{}
+	consulConfig, err := conf.GetDefaultConsul().ApiConfig()
 	if err != nil {
 		t.Fatalf("error generating consul config: %v", err)
 	}
@@ -132,7 +139,8 @@ func TestConsul_Integration(t *testing.T) {
 		r.NoError(allocDir.Destroy())
 	})
 	taskDir := allocDir.NewTaskDir(task.Name)
-	vclient := vaultclient.NewMockVaultClient()
+	vclient, err := vaultclient.NewMockVaultClient("default")
+	must.NoError(t, err)
 	consulClient, err := consulapi.NewClient(consulConfig)
 	r.Nil(err)
 
@@ -154,17 +162,19 @@ func TestConsul_Integration(t *testing.T) {
 	config := &taskrunner.Config{
 		Alloc:               alloc,
 		ClientConfig:        conf,
-		Consul:              serviceClient,
+		ConsulServices:      serviceClient,
 		Task:                task,
 		TaskDir:             taskDir,
 		Logger:              logger,
-		Vault:               vclient,
+		VaultFunc:           func(string) (vaultclient.VaultClient, error) { return vclient, nil },
 		StateDB:             state.NoopDB{},
 		StateUpdater:        logUpdate,
 		DeviceManager:       devicemanager.NoopMockManager(),
 		DriverManager:       drivermanager.TestDriverManager(t),
 		StartConditionMetCh: closedCh,
 		ServiceRegWrapper:   wrapper.NewHandlerWrapper(logger, serviceClient, regMock.NewServiceRegistrationHandler(logger)),
+		Wranglers:           proclib.MockWranglers(t),
+		AllocHookResources:  cstructs.NewAllocHookResources(),
 	}
 
 	tr, err := taskrunner.NewTaskRunner(config)

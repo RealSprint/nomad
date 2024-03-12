@@ -1,16 +1,19 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 import { clickable, hasClass, isPresent, text } from 'ember-cli-page-object';
 import { codeFillable, code } from 'nomad-ui/tests/pages/helpers/codemirror';
 
 import error from 'nomad-ui/tests/pages/components/error';
 
 export default () => ({
-  scope: '[data-test-job-editor]',
-
   isPresent: isPresent(),
 
-  planError: error('data-test-plan-error'),
-  parseError: error('data-test-parse-error'),
-  runError: error('data-test-run-error'),
+  planError: error('data-test-error'),
+  parseError: error('data-test-error'),
+  runError: error('data-test-error'),
 
   plan: clickable('[data-test-plan]'),
   cancel: clickable('[data-test-cancel]'),
@@ -38,7 +41,12 @@ export default () => ({
     scope: '[data-test-dry-run-message]',
     title: text('[data-test-dry-run-title]'),
     body: text('[data-test-dry-run-body]'),
-    errored: hasClass('is-warning'),
-    succeeded: hasClass('is-primary'),
+    errored: hasClass('hds-alert--color-critical'),
+    succeeded: hasClass('hds-alert--color-success'),
+  },
+
+  warningMessage: {
+    scope: '[data-test-dry-run-warnings]',
+    body: text('[data-test-dry-run-warning-body]'),
   },
 });

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package agent
 
 import (
@@ -17,7 +20,7 @@ var (
 // MetricsRequest returns metrics for the agent. Metrics are JSON by default
 // but Prometheus is an optional format.
 func (s *HTTPServer) MetricsRequest(resp http.ResponseWriter, req *http.Request) (interface{}, error) {
-	if req.Method != "GET" {
+	if req.Method != http.MethodGet {
 		return nil, CodedError(405, ErrInvalidMethod)
 	}
 
@@ -25,14 +28,14 @@ func (s *HTTPServer) MetricsRequest(resp http.ResponseWriter, req *http.Request)
 
 		// Only return Prometheus formatted metrics if the user has enabled
 		// this functionality.
-		if !s.agent.config.Telemetry.PrometheusMetrics {
+		if !s.agent.GetConfig().Telemetry.PrometheusMetrics {
 			return nil, CodedError(http.StatusUnsupportedMediaType, "Prometheus is not enabled")
 		}
 		s.prometheusHandler().ServeHTTP(resp, req)
 		return nil, nil
 	}
 
-	return s.agent.InmemSink.DisplayMetrics(resp, req)
+	return s.agent.GetMetricsSink().DisplayMetrics(resp, req)
 }
 
 func (s *HTTPServer) prometheusHandler() http.Handler {

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package taskenv
 
 import (
@@ -15,39 +18,49 @@ func InterpolateServices(taskEnv *TaskEnv, services []*structs.Service) []*struc
 
 	interpolated := make([]*structs.Service, len(services))
 
-	for i, origService := range services {
-		// Create a copy as we need to re-interpolate every time the
-		// environment changes.
-		service := origService.Copy()
-
-		for _, check := range service.Checks {
-			check.Name = taskEnv.ReplaceEnv(check.Name)
-			check.Type = taskEnv.ReplaceEnv(check.Type)
-			check.Command = taskEnv.ReplaceEnv(check.Command)
-			check.Args = taskEnv.ParseAndReplace(check.Args)
-			check.Path = taskEnv.ReplaceEnv(check.Path)
-			check.Protocol = taskEnv.ReplaceEnv(check.Protocol)
-			check.PortLabel = taskEnv.ReplaceEnv(check.PortLabel)
-			check.InitialStatus = taskEnv.ReplaceEnv(check.InitialStatus)
-			check.Method = taskEnv.ReplaceEnv(check.Method)
-			check.GRPCService = taskEnv.ReplaceEnv(check.GRPCService)
-			check.Header = interpolateMapStringSliceString(taskEnv, check.Header)
-		}
-
-		service.Name = taskEnv.ReplaceEnv(service.Name)
-		service.PortLabel = taskEnv.ReplaceEnv(service.PortLabel)
-		service.Address = taskEnv.ReplaceEnv(service.Address)
-		service.Tags = taskEnv.ParseAndReplace(service.Tags)
-		service.CanaryTags = taskEnv.ParseAndReplace(service.CanaryTags)
-		service.Meta = interpolateMapStringString(taskEnv, service.Meta)
-		service.CanaryMeta = interpolateMapStringString(taskEnv, service.CanaryMeta)
-		service.TaggedAddresses = interpolateMapStringString(taskEnv, service.TaggedAddresses)
-		interpolateConnect(taskEnv, service.Connect)
-
-		interpolated[i] = service
+	for i, service := range services {
+		interpolated[i] = InterpolateService(taskEnv, service)
 	}
 
 	return interpolated
+}
+
+func InterpolateService(taskEnv *TaskEnv, origService *structs.Service) *structs.Service {
+	// Guard against not having a valid taskEnv. This can be the case if the
+	// PreKilling or Exited hook is run before Poststart.
+	if taskEnv == nil || origService == nil {
+		return nil
+	}
+
+	// Create a copy as we need to re-interpolate every time the
+	// environment changes.
+	service := origService.Copy()
+
+	for _, check := range service.Checks {
+		check.Name = taskEnv.ReplaceEnv(check.Name)
+		check.Type = taskEnv.ReplaceEnv(check.Type)
+		check.Command = taskEnv.ReplaceEnv(check.Command)
+		check.Args = taskEnv.ParseAndReplace(check.Args)
+		check.Path = taskEnv.ReplaceEnv(check.Path)
+		check.Protocol = taskEnv.ReplaceEnv(check.Protocol)
+		check.PortLabel = taskEnv.ReplaceEnv(check.PortLabel)
+		check.InitialStatus = taskEnv.ReplaceEnv(check.InitialStatus)
+		check.Method = taskEnv.ReplaceEnv(check.Method)
+		check.GRPCService = taskEnv.ReplaceEnv(check.GRPCService)
+		check.Header = interpolateMapStringSliceString(taskEnv, check.Header)
+	}
+
+	service.Name = taskEnv.ReplaceEnv(service.Name)
+	service.PortLabel = taskEnv.ReplaceEnv(service.PortLabel)
+	service.Address = taskEnv.ReplaceEnv(service.Address)
+	service.Tags = taskEnv.ParseAndReplace(service.Tags)
+	service.CanaryTags = taskEnv.ParseAndReplace(service.CanaryTags)
+	service.Meta = interpolateMapStringString(taskEnv, service.Meta)
+	service.CanaryMeta = interpolateMapStringString(taskEnv, service.CanaryMeta)
+	service.TaggedAddresses = interpolateMapStringString(taskEnv, service.TaggedAddresses)
+	interpolateConnect(taskEnv, service.Connect)
+
+	return service
 }
 
 func interpolateMapStringSliceString(taskEnv *TaskEnv, orig map[string][]string) map[string][]string {
@@ -74,12 +87,12 @@ func interpolateMapStringString(taskEnv *TaskEnv, orig map[string]string) map[st
 	return m
 }
 
-func interpolateMapStringInterface(taskEnv *TaskEnv, orig map[string]interface{}) map[string]interface{} {
+func interpolateMapStringInterface(taskEnv *TaskEnv, orig map[string]any) map[string]any {
 	if len(orig) == 0 {
 		return nil
 	}
 
-	m := make(map[string]interface{}, len(orig))
+	m := make(map[string]any, len(orig))
 	for k, v := range orig {
 		envK := taskEnv.ReplaceEnv(k)
 		if vStr, ok := v.(string); ok {
@@ -155,6 +168,7 @@ func interpolateConnectSidecarService(taskEnv *TaskEnv, sidecar *structs.ConsulS
 			sidecar.Proxy.Upstreams[i].Datacenter = taskEnv.ReplaceEnv(sidecar.Proxy.Upstreams[i].Datacenter)
 			sidecar.Proxy.Upstreams[i].DestinationName = taskEnv.ReplaceEnv(sidecar.Proxy.Upstreams[i].DestinationName)
 			sidecar.Proxy.Upstreams[i].LocalBindAddress = taskEnv.ReplaceEnv(sidecar.Proxy.Upstreams[i].LocalBindAddress)
+			sidecar.Proxy.Upstreams[i].Config = interpolateMapStringInterface(taskEnv, sidecar.Proxy.Upstreams[i].Config)
 		}
 		sidecar.Proxy.Config = interpolateMapStringInterface(taskEnv, sidecar.Proxy.Config)
 	}

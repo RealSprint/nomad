@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package nomad
 
 import (
@@ -25,15 +28,21 @@ func NewPeriodicEndpoint(srv *Server, ctx *RPCContext) *Periodic {
 
 // Force is used to force a new instance of a periodic job
 func (p *Periodic) Force(args *structs.PeriodicForceRequest, reply *structs.PeriodicForceResponse) error {
+
+	authErr := p.srv.Authenticate(p.ctx, args)
 	if done, err := p.srv.forward("Periodic.Force", args, args, reply); done {
 		return err
+	}
+	p.srv.MeasureRPCRate("periodic", structs.RateMetricWrite, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
 	}
 	defer metrics.MeasureSince([]string{"nomad", "periodic", "force"}, time.Now())
 
 	// Check for write-job permissions
-	if aclObj, err := p.srv.ResolveToken(args.AuthToken); err != nil {
+	if aclObj, err := p.srv.ResolveACL(args); err != nil {
 		return err
-	} else if aclObj != nil && !aclObj.AllowNsOp(args.RequestNamespace(), acl.NamespaceCapabilityDispatchJob) && !aclObj.AllowNsOp(args.RequestNamespace(), acl.NamespaceCapabilitySubmitJob) {
+	} else if !aclObj.AllowNsOp(args.RequestNamespace(), acl.NamespaceCapabilityDispatchJob) && !aclObj.AllowNsOp(args.RequestNamespace(), acl.NamespaceCapabilitySubmitJob) {
 		return structs.ErrPermissionDenied
 	}
 
@@ -62,7 +71,7 @@ func (p *Periodic) Force(args *structs.PeriodicForceRequest, reply *structs.Peri
 	}
 
 	// Force run the job.
-	eval, err := p.srv.periodicDispatcher.ForceRun(args.RequestNamespace(), job.ID)
+	eval, err := p.srv.periodicDispatcher.ForceEval(args.RequestNamespace(), job.ID)
 	if err != nil {
 		return fmt.Errorf("force launch for job %q failed: %v", job.ID, err)
 	}

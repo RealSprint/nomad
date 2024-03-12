@@ -1,8 +1,10 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package taskrunner
 
 import (
 	"context"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 
@@ -69,5 +71,5 @@ func writeDispatchPayload(base, filename string, payload []byte) error {
 		return err
 	}
 
-	return ioutil.WriteFile(renderTo, decoded, 0777)
+	return os.WriteFile(renderTo, decoded, 0777)
 }

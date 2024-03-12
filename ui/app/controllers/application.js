@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 /* eslint-disable ember/no-observers */
 import { inject as service } from '@ember/service';
 import Controller from '@ember/controller';
@@ -16,7 +21,7 @@ export default class ApplicationController extends Controller {
   @service config;
   @service system;
   @service token;
-  @service flashMessages;
+  @service notifications;
 
   /**
    * @type {KeyboardService}

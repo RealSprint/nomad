@@ -1,9 +1,13 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package acl
 
 import (
 	"testing"
 
 	"github.com/hashicorp/nomad/ci"
+	"github.com/shoenig/test/must"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -68,117 +72,157 @@ func TestMaxPrivilege(t *testing.T) {
 func TestACLManagement(t *testing.T) {
 	ci.Parallel(t)
 
-	assert := assert.New(t)
-
 	// Create management ACL
 	acl, err := NewACL(true, nil)
-	assert.Nil(err)
+	must.NoError(t, err)
 
 	// Check default namespace rights
-	assert.True(acl.AllowNamespaceOperation("default", NamespaceCapabilityListJobs))
-	assert.True(acl.AllowNamespaceOperation("default", NamespaceCapabilitySubmitJob))
-	assert.True(acl.AllowNamespace("default"))
+	must.True(t, acl.AllowNamespaceOperation("default", NamespaceCapabilityListJobs))
+	must.True(t, acl.AllowNamespaceOperation("default", NamespaceCapabilitySubmitJob))
+	must.True(t, acl.AllowNamespace("default"))
 
 	// Check non-specified namespace
-	assert.True(acl.AllowNamespaceOperation("foo", NamespaceCapabilityListJobs))
-	assert.True(acl.AllowNamespace("foo"))
+	must.True(t, acl.AllowNamespaceOperation("foo", NamespaceCapabilityListJobs))
+	must.True(t, acl.AllowNamespace("foo"))
+
+	// Check node pool rights.
+	must.True(t, acl.AllowNodePoolOperation("my-pool", NodePoolCapabilityWrite))
+	must.True(t, acl.AllowNodePool("my-pool"))
 
 	// Check the other simpler operations
-	assert.True(acl.IsManagement())
-	assert.True(acl.AllowAgentRead())
-	assert.True(acl.AllowAgentWrite())
-	assert.True(acl.AllowNodeRead())
-	assert.True(acl.AllowNodeWrite())
-	assert.True(acl.AllowOperatorRead())
-	assert.True(acl.AllowOperatorWrite())
-	assert.True(acl.AllowQuotaRead())
-	assert.True(acl.AllowQuotaWrite())
+	must.True(t, acl.IsManagement())
+	must.True(t, acl.AllowAgentRead())
+	must.True(t, acl.AllowAgentWrite())
+	must.True(t, acl.AllowNodeRead())
+	must.True(t, acl.AllowNodeWrite())
+	must.True(t, acl.AllowOperatorRead())
+	must.True(t, acl.AllowOperatorWrite())
+	must.True(t, acl.AllowQuotaRead())
+	must.True(t, acl.AllowQuotaWrite())
+	must.True(t, acl.AllowServerOp())
+	must.True(t, acl.AllowClientOp())
 }
 
 func TestACLMerge(t *testing.T) {
 	ci.Parallel(t)
 
-	assert := assert.New(t)
-
 	// Merge read + write policy
 	p1, err := Parse(readAll)
-	assert.Nil(err)
+	must.NoError(t, err)
 	p2, err := Parse(writeAll)
-	assert.Nil(err)
+	must.NoError(t, err)
 	acl, err := NewACL(false, []*Policy{p1, p2})
-	assert.Nil(err)
+	must.NoError(t, err)
 
 	// Check default namespace rights
-	assert.True(acl.AllowNamespaceOperation("default", NamespaceCapabilityListJobs))
-	assert.True(acl.AllowNamespaceOperation("default", NamespaceCapabilitySubmitJob))
-	assert.True(acl.AllowNamespace("default"))
+	must.True(t, acl.AllowNamespaceOperation("default", NamespaceCapabilityListJobs))
+	must.True(t, acl.AllowNamespaceOperation("default", NamespaceCapabilitySubmitJob))
+	must.True(t, acl.AllowNamespace("default"))
 
 	// Check non-specified namespace
-	assert.False(acl.AllowNamespaceOperation("foo", NamespaceCapabilityListJobs))
-	assert.False(acl.AllowNamespace("foo"))
+	must.False(t, acl.AllowNamespaceOperation("foo", NamespaceCapabilityListJobs))
+	must.False(t, acl.AllowNamespace("foo"))
+
+	// Check rights in the node pool specified in policies.
+	must.True(t, acl.AllowNodePoolOperation("my-pool", NodePoolCapabilityRead))
+	must.True(t, acl.AllowNodePoolOperation("my-pool", NodePoolCapabilityWrite))
+	must.True(t, acl.AllowNodePool("my-pool"))
+
+	// Check non-specified node pool policies.
+	must.False(t, acl.AllowNodePoolOperation("other-pool", NodePoolCapabilityRead))
+	must.False(t, acl.AllowNodePoolOperation("other-pool", NodePoolCapabilityWrite))
+	must.False(t, acl.AllowNodePool("other-pool"))
 
 	// Check the other simpler operations
-	assert.False(acl.IsManagement())
-	assert.True(acl.AllowAgentRead())
-	assert.True(acl.AllowAgentWrite())
-	assert.True(acl.AllowNodeRead())
-	assert.True(acl.AllowNodeWrite())
-	assert.True(acl.AllowOperatorRead())
-	assert.True(acl.AllowOperatorWrite())
-	assert.True(acl.AllowQuotaRead())
-	assert.True(acl.AllowQuotaWrite())
+	must.False(t, acl.IsManagement())
+	must.True(t, acl.AllowAgentRead())
+	must.True(t, acl.AllowAgentWrite())
+	must.True(t, acl.AllowNodeRead())
+	must.True(t, acl.AllowNodeWrite())
+	must.True(t, acl.AllowOperatorRead())
+	must.True(t, acl.AllowOperatorWrite())
+	must.True(t, acl.AllowQuotaRead())
+	must.True(t, acl.AllowQuotaWrite())
+	must.False(t, acl.AllowServerOp())
+	must.False(t, acl.AllowClientOp())
 
 	// Merge read + blank
 	p3, err := Parse("")
-	assert.Nil(err)
+	must.NoError(t, err)
 	acl, err = NewACL(false, []*Policy{p1, p3})
-	assert.Nil(err)
+	must.NoError(t, err)
 
 	// Check default namespace rights
-	assert.True(acl.AllowNamespaceOperation("default", NamespaceCapabilityListJobs))
-	assert.False(acl.AllowNamespaceOperation("default", NamespaceCapabilitySubmitJob))
+	must.True(t, acl.AllowNamespaceOperation("default", NamespaceCapabilityListJobs))
+	must.False(t, acl.AllowNamespaceOperation("default", NamespaceCapabilitySubmitJob))
 
 	// Check non-specified namespace
-	assert.False(acl.AllowNamespaceOperation("foo", NamespaceCapabilityListJobs))
+	must.False(t, acl.AllowNamespaceOperation("foo", NamespaceCapabilityListJobs))
+
+	// Check rights in the node pool specified in policies.
+	must.True(t, acl.AllowNodePoolOperation("my-pool", NodePoolCapabilityRead))
+	must.False(t, acl.AllowNodePoolOperation("my-pool", NodePoolCapabilityWrite))
+	must.True(t, acl.AllowNodePool("my-pool"))
+
+	// Check non-specified node pool policies.
+	must.False(t, acl.AllowNodePoolOperation("other-pool", NodePoolCapabilityRead))
+	must.False(t, acl.AllowNodePoolOperation("other-pool", NodePoolCapabilityWrite))
+	must.False(t, acl.AllowNodePool("other-pool"))
 
 	// Check the other simpler operations
-	assert.False(acl.IsManagement())
-	assert.True(acl.AllowAgentRead())
-	assert.False(acl.AllowAgentWrite())
-	assert.True(acl.AllowNodeRead())
-	assert.False(acl.AllowNodeWrite())
-	assert.True(acl.AllowOperatorRead())
-	assert.False(acl.AllowOperatorWrite())
-	assert.True(acl.AllowQuotaRead())
-	assert.False(acl.AllowQuotaWrite())
+	must.False(t, acl.IsManagement())
+	must.True(t, acl.AllowAgentRead())
+	must.False(t, acl.AllowAgentWrite())
+	must.True(t, acl.AllowNodeRead())
+	must.False(t, acl.AllowNodeWrite())
+	must.True(t, acl.AllowOperatorRead())
+	must.False(t, acl.AllowOperatorWrite())
+	must.True(t, acl.AllowQuotaRead())
+	must.False(t, acl.AllowQuotaWrite())
+	must.False(t, acl.AllowServerOp())
+	must.False(t, acl.AllowClientOp())
 
 	// Merge read + deny
 	p4, err := Parse(denyAll)
-	assert.Nil(err)
+	must.NoError(t, err)
 	acl, err = NewACL(false, []*Policy{p1, p4})
-	assert.Nil(err)
+	must.NoError(t, err)
 
 	// Check default namespace rights
-	assert.False(acl.AllowNamespaceOperation("default", NamespaceCapabilityListJobs))
-	assert.False(acl.AllowNamespaceOperation("default", NamespaceCapabilitySubmitJob))
+	must.False(t, acl.AllowNamespaceOperation("default", NamespaceCapabilityListJobs))
+	must.False(t, acl.AllowNamespaceOperation("default", NamespaceCapabilitySubmitJob))
 
 	// Check non-specified namespace
-	assert.False(acl.AllowNamespaceOperation("foo", NamespaceCapabilityListJobs))
+	must.False(t, acl.AllowNamespaceOperation("foo", NamespaceCapabilityListJobs))
+
+	// Check rights in the node pool specified in policies.
+	must.False(t, acl.AllowNodePoolOperation("my-pool", NodePoolCapabilityRead))
+	must.False(t, acl.AllowNodePoolOperation("my-pool", NodePoolCapabilityWrite))
+	must.False(t, acl.AllowNodePool("my-pool"))
+
+	// Check non-specified node pool policies.
+	must.False(t, acl.AllowNodePoolOperation("other-pool", NodePoolCapabilityRead))
+	must.False(t, acl.AllowNodePoolOperation("other-pool", NodePoolCapabilityWrite))
+	must.False(t, acl.AllowNodePool("other-pool"))
 
 	// Check the other simpler operations
-	assert.False(acl.IsManagement())
-	assert.False(acl.AllowAgentRead())
-	assert.False(acl.AllowAgentWrite())
-	assert.False(acl.AllowNodeRead())
-	assert.False(acl.AllowNodeWrite())
-	assert.False(acl.AllowOperatorRead())
-	assert.False(acl.AllowOperatorWrite())
-	assert.False(acl.AllowQuotaRead())
-	assert.False(acl.AllowQuotaWrite())
+	must.False(t, acl.IsManagement())
+	must.False(t, acl.AllowAgentRead())
+	must.False(t, acl.AllowAgentWrite())
+	must.False(t, acl.AllowNodeRead())
+	must.False(t, acl.AllowNodeWrite())
+	must.False(t, acl.AllowOperatorRead())
+	must.False(t, acl.AllowOperatorWrite())
+	must.False(t, acl.AllowQuotaRead())
+	must.False(t, acl.AllowQuotaWrite())
+	must.False(t, acl.AllowServerOp())
 }
 
 var readAll = `
 namespace "default" {
+	policy = "read"
+}
+node_pool "my-pool" {
 	policy = "read"
 }
 agent {
@@ -199,6 +243,9 @@ var writeAll = `
 namespace "default" {
 	policy = "write"
 }
+node_pool "my-pool" {
+	policy = "write"
+}
 agent {
 	policy = "write"
 }
@@ -215,6 +262,9 @@ quota {
 
 var denyAll = `
 namespace "default" {
+	policy = "deny"
+}
+node_pool "my-pool" {
 	policy = "deny"
 }
 agent {
@@ -395,6 +445,214 @@ func TestWildcardNamespaceMatching(t *testing.T) {
 	}
 }
 
+func TestNodePool(t *testing.T) {
+	ci.Parallel(t)
+
+	testCases := []struct {
+		name     string
+		policy   string
+		pool     string
+		allowOps []string
+		denyOps  []string
+		allow    bool
+	}{
+		{
+			name: "policy read",
+			policy: `
+node_pool "my-pool" {
+	policy = "read"
+}
+`,
+			pool:     "my-pool",
+			allowOps: []string{NodePoolCapabilityRead},
+			denyOps: []string{
+				NodePoolCapabilityDelete,
+				NodePoolCapabilityWrite,
+			},
+			allow: true,
+		},
+		{
+			name: "policy write",
+			policy: `
+node_pool "my-pool" {
+	policy = "write"
+}
+`,
+			pool: "my-pool",
+			allowOps: []string{
+				NodePoolCapabilityDelete,
+				NodePoolCapabilityRead,
+				NodePoolCapabilityWrite,
+			},
+			denyOps: []string{},
+			allow:   true,
+		},
+		{
+			name: "capability write",
+			policy: `
+node_pool "my-pool" {
+	capabilities = ["write"]
+}
+`,
+			pool: "my-pool",
+			allowOps: []string{
+				NodePoolCapabilityWrite,
+			},
+			denyOps: []string{
+				NodePoolCapabilityDelete,
+				NodePoolCapabilityRead,
+			},
+			allow: true,
+		},
+		{
+			name: "multiple capabilities",
+			policy: `
+node_pool "my-pool" {
+	capabilities = ["read", "delete"]
+}
+`,
+			pool: "my-pool",
+			allowOps: []string{
+				NodePoolCapabilityRead,
+				NodePoolCapabilityDelete,
+			},
+			denyOps: []string{
+				NodePoolCapabilityWrite,
+			},
+			allow: true,
+		},
+		{
+			name: "policy deny takes precedence",
+			policy: `
+node_pool "my-pool" {
+	policy = "deny"
+	capabilities = ["write", "delete"]
+}
+`,
+			pool:     "my-pool",
+			allowOps: []string{},
+			denyOps: []string{
+				NodePoolCapabilityDelete,
+				NodePoolCapabilityRead,
+				NodePoolCapabilityWrite,
+			},
+			allow: false,
+		},
+		{
+			name: "capability deny takes precedence",
+			policy: `
+node_pool "my-pool" {
+	capabilities = ["write", "delete", "deny"]
+}
+`,
+			pool:     "my-pool",
+			allowOps: []string{},
+			denyOps: []string{
+				NodePoolCapabilityDelete,
+				NodePoolCapabilityRead,
+				NodePoolCapabilityWrite,
+			},
+			allow: false,
+		},
+		{
+			name: "wildcard matches all",
+			policy: `
+node_pool "*" {
+	policy = "read"
+}
+`,
+			pool:     "my-pool",
+			allowOps: []string{NodePoolCapabilityRead},
+			denyOps: []string{
+				NodePoolCapabilityDelete,
+				NodePoolCapabilityWrite,
+			},
+			allow: true,
+		},
+		{
+			name: "wildcard matches subset",
+			policy: `
+node_pool "my-pool-*" {
+	policy = "read"
+}
+`,
+			pool:     "my-pool-1",
+			allowOps: []string{NodePoolCapabilityRead},
+			denyOps: []string{
+				NodePoolCapabilityDelete,
+				NodePoolCapabilityWrite,
+			},
+			allow: true,
+		},
+		{
+			name: "wildcard doesn't match subset",
+			policy: `
+node_pool "my-pool-*" {
+	policy = "read"
+}
+`,
+			pool:     "your-pool-1",
+			allowOps: []string{},
+			denyOps: []string{
+				NodePoolCapabilityDelete,
+				NodePoolCapabilityRead,
+				NodePoolCapabilityWrite,
+			},
+			allow: false,
+		},
+		{
+			name: "wildcard matches closest",
+			policy: `
+node_pool "my-pool-dev-*" {
+	policy = "read"
+}
+
+node_pool "my-pool-*" {
+	policy = "write"
+}
+
+node_pool "*" {
+	policy = "deny"
+}
+`,
+			pool:     "my-pool-dev-1",
+			allowOps: []string{NodePoolCapabilityRead},
+			denyOps: []string{
+				NodePoolCapabilityDelete,
+				NodePoolCapabilityWrite,
+			},
+			allow: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			policy, err := Parse(tc.policy)
+			must.NoError(t, err)
+			must.NotNil(t, policy.NodePools)
+
+			acl, err := NewACL(false, []*Policy{policy})
+			must.NoError(t, err)
+
+			for _, op := range tc.allowOps {
+				got := acl.AllowNodePoolOperation(tc.pool, op)
+				assert.True(t, got, must.Sprintf("expected operation %q to be allowed", op))
+			}
+
+			for _, op := range tc.denyOps {
+				got := acl.AllowNodePoolOperation(tc.pool, op)
+				assert.False(t, got, must.Sprintf("expected operation %q to be denied", op))
+			}
+
+			if tc.allow {
+				must.True(t, acl.AllowNodePool(tc.pool), must.Sprint("expected node pool to be allowed"))
+			} else {
+				must.False(t, acl.AllowNodePool(tc.pool), must.Sprint("expected node pool to be denied"))
+			}
+		})
+	}
+}
+
 func TestWildcardHostVolumeMatching(t *testing.T) {
 	ci.Parallel(t)
 
@@ -457,6 +715,7 @@ func TestVariablesMatching(t *testing.T) {
 		ns     string
 		path   string
 		op     string
+		claim  *ACLClaim
 		allow  bool
 	}{
 		{
@@ -611,6 +870,36 @@ func TestVariablesMatching(t *testing.T) {
 			op:    "list",
 			allow: true,
 		},
+		{
+			name: "claim with more specific policy",
+			policy: `namespace "ns" {
+					variables { path "nomad/jobs/example" { capabilities = ["deny"] }}}`,
+			ns:    "ns",
+			path:  "nomad/jobs/example",
+			op:    "read",
+			claim: &ACLClaim{Namespace: "ns", Job: "example", Group: "foo", Task: "bar"},
+			allow: false,
+		},
+		{
+			name: "claim with less specific policy",
+			policy: `namespace "ns" {
+					variables { path "nomad/jobs" { capabilities = ["deny"] }}}`,
+			ns:    "ns",
+			path:  "nomad/jobs/example",
+			op:    "read",
+			claim: &ACLClaim{Namespace: "ns", Job: "example", Group: "foo", Task: "bar"},
+			allow: true,
+		},
+		{
+			name: "claim with less specific wildcard policy",
+			policy: `namespace "ns" {
+					variables { path "nomad/jobs/*" { capabilities = ["deny"] }}}`,
+			ns:    "ns",
+			path:  "nomad/jobs/example",
+			op:    "read",
+			claim: &ACLClaim{Namespace: "ns", Job: "example", Group: "foo", Task: "bar"},
+			allow: true,
+		},
 	}
 
 	for _, tc := range tests {
@@ -622,7 +911,8 @@ func TestVariablesMatching(t *testing.T) {
 
 			acl, err := NewACL(false, []*Policy{policy})
 			require.NoError(t, err)
-			require.Equal(t, tc.allow, acl.AllowVariableOperation(tc.ns, tc.path, tc.op))
+			allowed := acl.AllowVariableOperation(tc.ns, tc.path, tc.op, tc.claim)
+			require.Equal(t, tc.allow, allowed)
 		})
 	}
 
@@ -739,4 +1029,69 @@ func TestACL_matchingCapabilitySet_difference(t *testing.T) {
 		})
 	}
 
+}
+
+func TestAgentDebug(t *testing.T) {
+	ci.Parallel(t)
+
+	testCases := []struct {
+		name           string
+		policy         string
+		aclsDisabled   bool
+		isDebugEnabled bool
+		expect         bool
+	}{
+		{
+			name:           "policy read debug not enabled",
+			policy:         `agent { policy = "read" }`,
+			isDebugEnabled: false,
+			expect:         true,
+		},
+		{
+			name:           "policy read debug enabled",
+			policy:         `agent { policy = "read" }`,
+			isDebugEnabled: true,
+			expect:         true,
+		},
+		{
+			name:           "policy no read debug enabled",
+			policy:         `node { policy = "read" }`,
+			isDebugEnabled: true,
+			expect:         false,
+		},
+		{
+			name:           "policy no read debug not enabled",
+			policy:         `node { policy = "read" }`,
+			isDebugEnabled: false,
+			expect:         false,
+		},
+		{
+			name:           "no acls debug enabled",
+			aclsDisabled:   true,
+			isDebugEnabled: true,
+			expect:         true,
+		},
+		{
+			name:           "no acls debug not enabled",
+			aclsDisabled:   true,
+			isDebugEnabled: false,
+			expect:         false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+
+			acl := ACLsDisabledACL
+			if !tc.aclsDisabled {
+				policy, err := Parse(tc.policy)
+				must.NoError(t, err)
+
+				acl, err = NewACL(false, []*Policy{policy})
+				must.NoError(t, err)
+			}
+
+			must.Eq(t, tc.expect, acl.AllowAgentDebug(tc.isDebugEnabled))
+		})
+	}
 }

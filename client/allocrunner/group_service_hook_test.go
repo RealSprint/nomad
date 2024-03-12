@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package allocrunner
 
 import (
@@ -8,13 +11,14 @@ import (
 	"github.com/hashicorp/nomad/client/allocrunner/interfaces"
 	regMock "github.com/hashicorp/nomad/client/serviceregistration/mock"
 	"github.com/hashicorp/nomad/client/serviceregistration/wrapper"
+	cstructs "github.com/hashicorp/nomad/client/structs"
 	"github.com/hashicorp/nomad/client/taskenv"
 	agentconsul "github.com/hashicorp/nomad/command/agent/consul"
 	"github.com/hashicorp/nomad/helper/pointer"
 	"github.com/hashicorp/nomad/helper/testlog"
 	"github.com/hashicorp/nomad/nomad/mock"
 	"github.com/hashicorp/nomad/nomad/structs"
-	"github.com/stretchr/testify/require"
+	"github.com/shoenig/test/must"
 )
 
 var _ interfaces.RunnerPrerunHook = (*groupServiceHook)(nil)
@@ -49,23 +53,23 @@ func TestGroupServiceHook_NoGroupServices(t *testing.T) {
 		restarter:         agentconsul.NoopRestarter(),
 		taskEnvBuilder:    taskenv.NewBuilder(mock.Node(), alloc, nil, alloc.Job.Region),
 		logger:            logger,
+		hookResources:     cstructs.NewAllocHookResources(),
 	})
-	require.NoError(t, h.Prerun())
+	must.NoError(t, h.Prerun())
 
 	req := &interfaces.RunnerUpdateRequest{Alloc: alloc}
-	require.NoError(t, h.Update(req))
+	must.NoError(t, h.Update(req))
 
-	require.NoError(t, h.Postrun())
+	must.NoError(t, h.Postrun())
 
-	require.NoError(t, h.PreTaskRestart())
+	must.NoError(t, h.PreTaskRestart())
 
 	ops := consulMockClient.GetOps()
-	require.Len(t, ops, 5)
-	require.Equal(t, "add", ops[0].Op)    // Prerun
-	require.Equal(t, "update", ops[1].Op) // Update
-	require.Equal(t, "remove", ops[2].Op) // Postrun
-	require.Equal(t, "remove", ops[3].Op) // Restart -> preKill
-	require.Equal(t, "add", ops[4].Op)    // Restart -> preRun
+	must.Len(t, 4, ops)
+	must.Eq(t, "add", ops[0].Op)    // Prerun
+	must.Eq(t, "update", ops[1].Op) // Update
+	must.Eq(t, "remove", ops[2].Op) // Postrun
+	must.Eq(t, "add", ops[3].Op)    // Restart -> preRun
 }
 
 // TestGroupServiceHook_ShutdownDelayUpdate asserts calling group service hooks
@@ -91,24 +95,25 @@ func TestGroupServiceHook_ShutdownDelayUpdate(t *testing.T) {
 		restarter:         agentconsul.NoopRestarter(),
 		taskEnvBuilder:    taskenv.NewBuilder(mock.Node(), alloc, nil, alloc.Job.Region),
 		logger:            logger,
+		hookResources:     cstructs.NewAllocHookResources(),
 	})
-	require.NoError(t, h.Prerun())
+	must.NoError(t, h.Prerun())
 
 	// Incease shutdown Delay
 	alloc.Job.TaskGroups[0].ShutdownDelay = pointer.Of(15 * time.Second)
 	req := &interfaces.RunnerUpdateRequest{Alloc: alloc}
-	require.NoError(t, h.Update(req))
+	must.NoError(t, h.Update(req))
 
 	// Assert that update updated the delay value
-	require.Equal(t, h.delay, 15*time.Second)
+	must.Eq(t, h.delay, 15*time.Second)
 
 	// Remove shutdown delay
 	alloc.Job.TaskGroups[0].ShutdownDelay = nil
 	req = &interfaces.RunnerUpdateRequest{Alloc: alloc}
-	require.NoError(t, h.Update(req))
+	must.NoError(t, h.Update(req))
 
 	// Assert that update updated the delay value
-	require.Equal(t, h.delay, 0*time.Second)
+	must.Eq(t, h.delay, 0*time.Second)
 }
 
 // TestGroupServiceHook_GroupServices asserts group service hooks with group
@@ -132,23 +137,23 @@ func TestGroupServiceHook_GroupServices(t *testing.T) {
 		restarter:         agentconsul.NoopRestarter(),
 		taskEnvBuilder:    taskenv.NewBuilder(mock.Node(), alloc, nil, alloc.Job.Region),
 		logger:            logger,
+		hookResources:     cstructs.NewAllocHookResources(),
 	})
-	require.NoError(t, h.Prerun())
+	must.NoError(t, h.Prerun())
 
 	req := &interfaces.RunnerUpdateRequest{Alloc: alloc}
-	require.NoError(t, h.Update(req))
+	must.NoError(t, h.Update(req))
 
-	require.NoError(t, h.Postrun())
+	must.NoError(t, h.Postrun())
 
-	require.NoError(t, h.PreTaskRestart())
+	must.NoError(t, h.PreTaskRestart())
 
 	ops := consulMockClient.GetOps()
-	require.Len(t, ops, 5)
-	require.Equal(t, "add", ops[0].Op)    // Prerun
-	require.Equal(t, "update", ops[1].Op) // Update
-	require.Equal(t, "remove", ops[2].Op) // Postrun
-	require.Equal(t, "remove", ops[3].Op) // Restart -> preKill
-	require.Equal(t, "add", ops[4].Op)    // Restart -> preRun
+	must.Len(t, 4, ops)
+	must.Eq(t, "add", ops[0].Op)    // Prerun
+	must.Eq(t, "update", ops[1].Op) // Update
+	must.Eq(t, "remove", ops[2].Op) // Postrun
+	must.Eq(t, "add", ops[3].Op)    // Restart -> preRun
 }
 
 // TestGroupServiceHook_GroupServices_Nomad asserts group service hooks with
@@ -178,26 +183,26 @@ func TestGroupServiceHook_GroupServices_Nomad(t *testing.T) {
 		restarter:         agentconsul.NoopRestarter(),
 		taskEnvBuilder:    taskenv.NewBuilder(mock.Node(), alloc, nil, alloc.Job.Region),
 		logger:            logger,
+		hookResources:     cstructs.NewAllocHookResources(),
 	})
-	require.NoError(t, h.Prerun())
+	must.NoError(t, h.Prerun())
 
 	// Trigger our hook requests.
 	req := &interfaces.RunnerUpdateRequest{Alloc: alloc}
-	require.NoError(t, h.Update(req))
-	require.NoError(t, h.Postrun())
-	require.NoError(t, h.PreTaskRestart())
+	must.NoError(t, h.Update(req))
+	must.NoError(t, h.Postrun())
+	must.NoError(t, h.PreTaskRestart())
 
 	// Ensure the Nomad mock provider has the expected operations.
 	ops := nomadMockClient.GetOps()
-	require.Len(t, ops, 5)
-	require.Equal(t, "add", ops[0].Op)    // Prerun
-	require.Equal(t, "update", ops[1].Op) // Update
-	require.Equal(t, "remove", ops[2].Op) // Postrun
-	require.Equal(t, "remove", ops[3].Op) // Restart -> preKill
-	require.Equal(t, "add", ops[4].Op)    // Restart -> preRun
+	must.Len(t, 4, ops)
+	must.Eq(t, "add", ops[0].Op)    // Prerun
+	must.Eq(t, "update", ops[1].Op) // Update
+	must.Eq(t, "remove", ops[2].Op) // Postrun
+	must.Eq(t, "add", ops[3].Op)    // Restart -> preRun
 
 	// Ensure the Consul mock provider has zero operations.
-	require.Len(t, consulMockClient.GetOps(), 0)
+	must.SliceEmpty(t, consulMockClient.GetOps())
 }
 
 // TestGroupServiceHook_Error asserts group service hooks with group
@@ -233,23 +238,23 @@ func TestGroupServiceHook_NoNetwork(t *testing.T) {
 		restarter:         agentconsul.NoopRestarter(),
 		taskEnvBuilder:    taskenv.NewBuilder(mock.Node(), alloc, nil, alloc.Job.Region),
 		logger:            logger,
+		hookResources:     cstructs.NewAllocHookResources(),
 	})
-	require.NoError(t, h.Prerun())
+	must.NoError(t, h.Prerun())
 
 	req := &interfaces.RunnerUpdateRequest{Alloc: alloc}
-	require.NoError(t, h.Update(req))
+	must.NoError(t, h.Update(req))
 
-	require.NoError(t, h.Postrun())
+	must.NoError(t, h.Postrun())
 
-	require.NoError(t, h.PreTaskRestart())
+	must.NoError(t, h.PreTaskRestart())
 
 	ops := consulMockClient.GetOps()
-	require.Len(t, ops, 5)
-	require.Equal(t, "add", ops[0].Op)    // Prerun
-	require.Equal(t, "update", ops[1].Op) // Update
-	require.Equal(t, "remove", ops[2].Op) // Postrun
-	require.Equal(t, "remove", ops[3].Op) // Restart -> preKill
-	require.Equal(t, "add", ops[4].Op)    // Restart -> preRun
+	must.Len(t, 4, ops)
+	must.Eq(t, "add", ops[0].Op)    // Prerun
+	must.Eq(t, "update", ops[1].Op) // Update
+	must.Eq(t, "remove", ops[2].Op) // Postrun
+	must.Eq(t, "add", ops[3].Op)    // Restart -> preRun
 }
 
 func TestGroupServiceHook_getWorkloadServices(t *testing.T) {
@@ -282,8 +287,9 @@ func TestGroupServiceHook_getWorkloadServices(t *testing.T) {
 		restarter:         agentconsul.NoopRestarter(),
 		taskEnvBuilder:    taskenv.NewBuilder(mock.Node(), alloc, nil, alloc.Job.Region),
 		logger:            logger,
+		hookResources:     cstructs.NewAllocHookResources(),
 	})
 
-	services := h.getWorkloadServices()
-	require.Len(t, services.Services, 1)
+	services := h.getWorkloadServicesLocked()
+	must.Len(t, 1, services.Services)
 }

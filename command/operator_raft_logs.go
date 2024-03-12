@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
@@ -42,7 +45,7 @@ func (c *OperatorRaftLogsCommand) AutocompleteFlags() complete.Flags {
 }
 
 func (c *OperatorRaftLogsCommand) AutocompleteArgs() complete.Predictor {
-	return complete.PredictNothing
+	return complete.PredictFiles("*")
 }
 
 func (c *OperatorRaftLogsCommand) Synopsis() string {

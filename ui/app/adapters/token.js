@@ -1,7 +1,13 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 import { inject as service } from '@ember/service';
 import { default as ApplicationAdapter, namespace } from './application';
 import OTTExchangeError from '../utils/ott-exchange-error';
 import classic from 'ember-classic-decorator';
+import { singularize } from 'ember-inflector';
 
 @classic
 export default class TokenAdapter extends ApplicationAdapter {
@@ -9,15 +15,47 @@ export default class TokenAdapter extends ApplicationAdapter {
 
   namespace = namespace + '/acl';
 
-  findSelf() {
-    return this.ajax(`${this.buildURL()}/token/self`, 'GET').then((token) => {
-      const store = this.store;
-      store.pushPayload('token', {
-        tokens: [token],
-      });
+  methodForRequest(params) {
+    if (params.requestType === 'updateRecord') {
+      return 'POST';
+    }
+    return super.methodForRequest(params);
+  }
 
-      return store.peekRecord('token', store.normalize('token', token).data.id);
+  updateRecord(store, type, snapshot) {
+    let data = this.serialize(snapshot);
+    return this.ajax(`${this.buildURL()}/token/${snapshot.id}`, 'POST', {
+      data,
     });
+  }
+
+  createRecord(_store, type, snapshot) {
+    let data = this.serialize(snapshot);
+    return this.ajax(`${this.buildURL()}/token`, 'POST', { data });
+  }
+
+  // Delete at /token instead of /tokens
+  urlForDeleteRecord(identifier, modelName) {
+    return `${this.buildURL()}/${singularize(modelName)}/${identifier}`;
+  }
+
+  async findSelf() {
+    const response = await this.ajax(`${this.buildURL()}/token/self`, 'GET');
+    const normalized = this.store.normalize('token', response);
+    const tokenRecord = this.store.push(normalized);
+    return tokenRecord;
+  }
+
+  async loginJWT(LoginToken, AuthMethodName) {
+    const response = await this.ajax(`${this.buildURL()}/login`, 'POST', {
+      data: {
+        AuthMethodName,
+        LoginToken,
+      },
+    });
+    const normalized = this.store.normalize('token', response);
+    const tokenRecord = this.store.push(normalized);
+    return tokenRecord;
   }
 
   exchangeOneTimeToken(oneTimeToken) {

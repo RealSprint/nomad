@@ -67,7 +67,21 @@ the exact section.
 The volume specification is documented in the [Volume
 Specification][volume_specification] page.
 
+Not all fields can be updated after the volume is registered:
+
+* The `capacity_min` and `capacity_max` fields can be updated, and may increase
+  the volume size if the CSI plugin supports it. Expansion may or may not be
+  possible while the volume is in use, again depending on the plugin.
+  Reducing volume capacity is not allowed per the CSI spec.
+* The `capability` blocks can be added or removed, but only if the capability is
+  not currently in use by a mounted volume.
+* The `mount_options` block can be updated if the volume is not in use.
+* The `secrets` block can be updated.
+* The `context` block can be updated. The values for this field are typically
+  provided by the CSI plugin, and should not be updated unless recommended by
+  the CSI plugin's documentation.
+
 [csi]: https://github.com/container-storage-interface/spec
-[csi_plugins_internals]: /docs/concepts/plugins/csi#csi-plugins
-[volume_specification]: /docs/other-specifications/volume
-[`volume create`]: /docs/commands/volume/create
+[csi_plugins_internals]: /nomad/docs/concepts/plugins/csi#csi-plugins
+[volume_specification]: /nomad/docs/other-specifications/volume
+[`volume create`]: /nomad/docs/commands/volume/create

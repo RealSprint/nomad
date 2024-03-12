@@ -1,10 +1,12 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package agent
 
 import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 
@@ -81,7 +83,7 @@ func loadKeyringFile(c *serf.Config) error {
 	}
 
 	// Read in the keyring file data
-	keyringData, err := ioutil.ReadFile(c.KeyringFile)
+	keyringData, err := os.ReadFile(c.KeyringFile)
 	if err != nil {
 		return err
 	}

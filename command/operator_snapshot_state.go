@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
@@ -40,7 +43,7 @@ func (c *OperatorSnapshotStateCommand) AutocompleteFlags() complete.Flags {
 }
 
 func (c *OperatorSnapshotStateCommand) AutocompleteArgs() complete.Predictor {
-	return complete.PredictNothing
+	return complete.PredictFiles("*.snap")
 }
 
 func (c *OperatorSnapshotStateCommand) Synopsis() string {

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package taskenv
 
 import (
@@ -9,10 +12,10 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/hashicorp/nomad/client/lib/idset"
 	"github.com/hashicorp/nomad/helper"
 	hargs "github.com/hashicorp/nomad/helper/args"
 	"github.com/hashicorp/nomad/helper/escapingfs"
-	"github.com/hashicorp/nomad/lib/cpuset"
 	"github.com/hashicorp/nomad/nomad/structs"
 	"github.com/hashicorp/nomad/plugins/drivers"
 	"github.com/zclconf/go-cty/cty"
@@ -122,6 +125,9 @@ const (
 
 	// VaultNamespace is the environment variable for passing the Vault namespace, if applicable
 	VaultNamespace = "VAULT_NAMESPACE"
+
+	// WorkloadToken is the environment variable for passing the Nomad Workload Identity token
+	WorkloadToken = "NOMAD_TOKEN"
 )
 
 // The node values that can be interpreted.
@@ -406,25 +412,27 @@ type Builder struct {
 	// clientTaskSecretsDir is the secrets dir from the client's perspective; eg <client_task_root>/secrets
 	clientTaskSecretsDir string
 
-	cpuCores         string
-	cpuLimit         int64
-	memLimit         int64
-	memMaxLimit      int64
-	taskName         string
-	allocIndex       int
-	datacenter       string
-	cgroupParent     string
-	namespace        string
-	region           string
-	allocId          string
-	allocName        string
-	groupName        string
-	vaultToken       string
-	vaultNamespace   string
-	injectVaultToken bool
-	jobID            string
-	jobName          string
-	jobParentID      string
+	cpuCores             string
+	cpuLimit             int64
+	memLimit             int64
+	memMaxLimit          int64
+	taskName             string
+	allocIndex           int
+	datacenter           string
+	cgroupParent         string
+	namespace            string
+	region               string
+	allocId              string
+	allocName            string
+	groupName            string
+	vaultToken           string
+	vaultNamespace       string
+	injectVaultToken     bool
+	workloadTokenDefault string
+	workloadTokens       map[string]string // identity name -> encoded JWT
+	jobID                string
+	jobName              string
+	jobParentID          string
 
 	// otherPorts for tasks in the same alloc
 	otherPorts map[string]string
@@ -565,6 +573,15 @@ func (b *Builder) buildEnv(allocDir, localDir, secretsDir string,
 	// Build the Vault Namespace
 	if b.injectVaultToken && b.vaultNamespace != "" {
 		envMap[VaultNamespace] = b.vaultNamespace
+	}
+
+	// Build the Nomad Workload Token
+	if b.workloadTokenDefault != "" {
+		envMap[WorkloadToken] = b.workloadTokenDefault
+	}
+
+	for name, token := range b.workloadTokens {
+		envMap[WorkloadToken+"_"+name] = token
 	}
 
 	// Copy and interpolate task meta
@@ -756,7 +773,7 @@ func (b *Builder) setAlloc(alloc *structs.Allocation) *Builder {
 		// Populate task resources
 		if tr, ok := alloc.AllocatedResources.Tasks[b.taskName]; ok {
 			b.cpuLimit = tr.Cpu.CpuShares
-			b.cpuCores = cpuset.New(tr.Cpu.ReservedCores...).String()
+			b.cpuCores = idset.From[uint16](tr.Cpu.ReservedCores).String()
 			b.memLimit = tr.Memory.MemoryMB
 			b.memMaxLimit = tr.Memory.MemoryMaxMB
 
@@ -1018,10 +1035,27 @@ func (b *Builder) SetVaultToken(token, namespace string, inject bool) *Builder {
 	return b
 }
 
+func (b *Builder) SetDefaultWorkloadToken(token string) *Builder {
+	b.mu.Lock()
+	b.workloadTokenDefault = token
+	b.mu.Unlock()
+	return b
+}
+
+func (b *Builder) SetWorkloadToken(name, token string) *Builder {
+	b.mu.Lock()
+	if b.workloadTokens == nil {
+		b.workloadTokens = map[string]string{}
+	}
+	b.workloadTokens[name] = token
+	b.mu.Unlock()
+	return b
+}
+
 // addPort keys and values for other tasks to an env var map
 func addPort(m map[string]string, taskName, ip, portLabel string, port int) {
 	key := fmt.Sprintf("%s%s_%s", AddrPrefix, taskName, portLabel)
-	m[key] = fmt.Sprintf("%s:%d", ip, port)
+	m[key] = net.JoinHostPort(ip, strconv.Itoa(port))
 	key = fmt.Sprintf("%s%s_%s", IpPrefix, taskName, portLabel)
 	m[key] = ip
 	key = fmt.Sprintf("%s%s_%s", PortPrefix, taskName, portLabel)
@@ -1042,8 +1076,9 @@ func addGroupPort(m map[string]string, port structs.Port) {
 
 func addPorts(m map[string]string, ports structs.AllocatedPorts) {
 	for _, p := range ports {
-		m[AddrPrefix+p.Label] = fmt.Sprintf("%s:%d", p.HostIP, p.Value)
-		m[HostAddrPrefix+p.Label] = fmt.Sprintf("%s:%d", p.HostIP, p.Value)
+		port := strconv.Itoa(p.Value)
+		m[AddrPrefix+p.Label] = net.JoinHostPort(p.HostIP, port)
+		m[HostAddrPrefix+p.Label] = net.JoinHostPort(p.HostIP, port)
 		m[IpPrefix+p.Label] = p.HostIP
 		m[HostIpPrefix+p.Label] = p.HostIP
 		if p.To > 0 {
@@ -1056,6 +1091,6 @@ func addPorts(m map[string]string, ports structs.AllocatedPorts) {
 			m[AllocPortPrefix+p.Label] = val
 		}
 
-		m[HostPortPrefix+p.Label] = strconv.Itoa(p.Value)
+		m[HostPortPrefix+p.Label] = port
 	}
 }

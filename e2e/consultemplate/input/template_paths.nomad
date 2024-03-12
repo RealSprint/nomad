@@ -1,5 +1,7 @@
+# Copyright (c) HashiCorp, Inc.
+# SPDX-License-Identifier: BUSL-1.1
+
 job "template-paths" {
-  datacenters = ["dc1", "dc2"]
 
   meta {
     ARTIFACT_DEST_DIR = "local/foo/src"

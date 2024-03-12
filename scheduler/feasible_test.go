@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package scheduler
 
 import (
@@ -11,9 +14,8 @@ import (
 	"github.com/hashicorp/nomad/nomad/mock"
 	"github.com/hashicorp/nomad/nomad/structs"
 	psstructs "github.com/hashicorp/nomad/plugins/shared/structs"
+	"github.com/shoenig/test"
 	"github.com/shoenig/test/must"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestStaticIterator_Reset(t *testing.T) {
@@ -103,8 +105,9 @@ func TestHostVolumeChecker(t *testing.T) {
 	}
 	nodes[1].HostVolumes = map[string]*structs.ClientHostVolumeConfig{"foo": {Name: "foo"}}
 	nodes[2].HostVolumes = map[string]*structs.ClientHostVolumeConfig{
-		"foo": {},
-		"bar": {},
+		"foo":              {},
+		"bar":              {},
+		"unique-volume[0]": {},
 	}
 	nodes[3].HostVolumes = map[string]*structs.ClientHostVolumeConfig{
 		"foo": {},
@@ -129,6 +132,11 @@ func TestHostVolumeChecker(t *testing.T) {
 		"baz": {
 			Type:   "nothost",
 			Source: "baz",
+		},
+		"unique": {
+			Type:     "host",
+			Source:   "unique-volume[0]",
+			PerAlloc: true,
 		},
 	}
 
@@ -165,8 +173,11 @@ func TestHostVolumeChecker(t *testing.T) {
 		},
 	}
 
+	alloc := mock.Alloc()
+	alloc.NodeID = nodes[2].ID
+
 	for i, c := range cases {
-		checker.SetVolumes(c.RequestedVolumes)
+		checker.SetVolumes(alloc.Name, c.RequestedVolumes)
 		if act := checker.Feasible(c.Node); act != c.Result {
 			t.Fatalf("case(%d) failed: got %v; want %v", i, act, c.Result)
 		}
@@ -235,8 +246,12 @@ func TestHostVolumeChecker_ReadOnly(t *testing.T) {
 			Result:           true,
 		},
 	}
+
+	alloc := mock.Alloc()
+	alloc.NodeID = nodes[1].ID
+
 	for i, c := range cases {
-		checker.SetVolumes(c.RequestedVolumes)
+		checker.SetVolumes(alloc.Name, c.RequestedVolumes)
 		if act := checker.Feasible(c.Node); act != c.Result {
 			t.Fatalf("case(%d) failed: got %v; want %v", i, act, c.Result)
 		}
@@ -338,7 +353,7 @@ func TestCSIVolumeChecker(t *testing.T) {
 	index := uint64(999)
 	for _, node := range nodes {
 		err := state.UpsertNode(structs.MsgTypeTestSetup, index, node)
-		require.NoError(t, err)
+		must.NoError(t, err)
 		index++
 	}
 
@@ -354,7 +369,7 @@ func TestCSIVolumeChecker(t *testing.T) {
 		{Segments: map[string]string{"rack": "R2"}},
 	}
 	err := state.UpsertCSIVolume(index, []*structs.CSIVolume{vol})
-	require.NoError(t, err)
+	must.NoError(t, err)
 	index++
 
 	// Create some other volumes in use on nodes[3] to trip MaxVolumes
@@ -365,14 +380,14 @@ func TestCSIVolumeChecker(t *testing.T) {
 	vol2.AccessMode = structs.CSIVolumeAccessModeMultiNodeSingleWriter
 	vol2.AttachmentMode = structs.CSIVolumeAttachmentModeFilesystem
 	err = state.UpsertCSIVolume(index, []*structs.CSIVolume{vol2})
-	require.NoError(t, err)
+	must.NoError(t, err)
 	index++
 
 	vid3 := "volume-id[0]"
 	vol3 := vol.Copy()
 	vol3.ID = vid3
 	err = state.UpsertCSIVolume(index, []*structs.CSIVolume{vol3})
-	require.NoError(t, err)
+	must.NoError(t, err)
 	index++
 
 	alloc := mock.Alloc()
@@ -384,14 +399,14 @@ func TestCSIVolumeChecker(t *testing.T) {
 			Source: vid2,
 		},
 	}
-	err = state.UpsertJob(structs.MsgTypeTestSetup, index, alloc.Job)
-	require.NoError(t, err)
+	err = state.UpsertJob(structs.MsgTypeTestSetup, index, nil, alloc.Job)
+	must.NoError(t, err)
 	index++
 	summary := mock.JobSummary(alloc.JobID)
-	require.NoError(t, state.UpsertJobSummary(index, summary))
+	must.NoError(t, state.UpsertJobSummary(index, summary))
 	index++
 	err = state.UpsertAllocs(structs.MsgTypeTestSetup, index, []*structs.Allocation{alloc})
-	require.NoError(t, err)
+	must.NoError(t, err)
 	index++
 
 	// Create volume requests
@@ -483,7 +498,7 @@ func TestCSIVolumeChecker(t *testing.T) {
 
 	for _, c := range cases {
 		checker.SetVolumes(alloc.Name, c.RequestedVolumes)
-		assert.Equal(t, c.Result, checker.Feasible(c.Node), c.Name)
+		test.Eq(t, c.Result, checker.Feasible(c.Node), test.Sprint(c.Name))
 	}
 
 	// add a missing volume
@@ -499,7 +514,7 @@ func TestCSIVolumeChecker(t *testing.T) {
 	for _, node := range nodes {
 		checker.SetVolumes(alloc.Name, volumes)
 		act := checker.Feasible(node)
-		require.False(t, act, "request with missing volume should never be feasible")
+		must.False(t, act, must.Sprint("request with missing volume should never be feasible"))
 	}
 
 }
@@ -645,7 +660,7 @@ func TestNetworkChecker(t *testing.T) {
 	for _, c := range cases {
 		checker.SetNetwork(c.network)
 		for i, node := range nodes {
-			require.Equal(t, c.results[i], checker.Feasible(node), "mode=%q, idx=%d", c.network.Mode, i)
+			must.Eq(t, c.results[i], checker.Feasible(node), must.Sprintf("mode=%q, idx=%d", c.network.Mode, i))
 		}
 	}
 }
@@ -665,7 +680,7 @@ func TestNetworkChecker_bridge_upgrade_path(t *testing.T) {
 		checker.SetNetwork(&structs.NetworkResource{Mode: "bridge"})
 
 		ok := checker.Feasible(oldClient)
-		require.True(t, ok)
+		must.True(t, ok)
 	})
 
 	t.Run("updated client", func(t *testing.T) {
@@ -678,7 +693,7 @@ func TestNetworkChecker_bridge_upgrade_path(t *testing.T) {
 		checker.SetNetwork(&structs.NetworkResource{Mode: "bridge"})
 
 		ok := checker.Feasible(oldClient)
-		require.False(t, ok)
+		must.False(t, ok)
 	})
 }
 
@@ -789,7 +804,6 @@ func TestDriverChecker_Compatibility(t *testing.T) {
 func Test_HealthChecks(t *testing.T) {
 	ci.Parallel(t)
 
-	require := require.New(t)
 	_, ctx := testContext(t)
 
 	nodes := []*structs.Node{
@@ -847,7 +861,7 @@ func Test_HealthChecks(t *testing.T) {
 		}
 		checker := NewDriverChecker(ctx, drivers)
 		act := checker.Feasible(c.Node)
-		require.Equal(act, c.Result)
+		must.Eq(t, act, c.Result)
 	}
 }
 
@@ -859,12 +873,14 @@ func TestConstraintChecker(t *testing.T) {
 		mock.Node(),
 		mock.Node(),
 		mock.Node(),
+		mock.Node(),
 	}
 
 	nodes[0].Attributes["kernel.name"] = "freebsd"
 	nodes[1].Datacenter = "dc2"
 	nodes[2].NodeClass = "large"
 	nodes[2].Attributes["foo"] = "bar"
+	nodes[3].NodePool = "prod"
 
 	constraints := []*structs.Constraint{
 		{
@@ -881,6 +897,11 @@ func TestConstraintChecker(t *testing.T) {
 			Operand: "!=",
 			LTarget: "${node.class}",
 			RTarget: "linux-medium-pci",
+		},
+		{
+			Operand: "!=",
+			LTarget: "${node.pool}",
+			RTarget: "prod",
 		},
 		{
 			Operand: "is_set",
@@ -903,6 +924,10 @@ func TestConstraintChecker(t *testing.T) {
 		{
 			Node:   nodes[2],
 			Result: true,
+		},
+		{
+			Node:   nodes[3],
+			Result: false,
 		},
 	}
 
@@ -1289,6 +1314,26 @@ func TestCheckSemverConstraint(t *testing.T) {
 			result: true,
 		},
 		{
+			name: "Prereleases of same version handled according to semver",
+			lVal: "1.7.0-beta", rVal: ">= 1.7.0",
+			result: false,
+		},
+		{
+			name: "Prereleases constraints allow GA version according to semver",
+			lVal: "1.7.0", rVal: ">= 1.7.0-dev",
+			result: true,
+		},
+		{
+			name: "Prereleases constraints allow beta according to semver",
+			lVal: "1.7.0-beta.1", rVal: ">= 1.7.0-a",
+			result: true,
+		},
+		{
+			name: "Prereleases constraints allow RC version according to semver",
+			lVal: "1.7.0-rc.1", rVal: ">= 1.7.0-dev",
+			result: true,
+		},
+		{
 			name: "Meta is ignored according to semver",
 			lVal: "1.3.0-beta1+ent", rVal: "= 1.3.0-beta1",
 			result: true,
@@ -1301,7 +1346,7 @@ func TestCheckSemverConstraint(t *testing.T) {
 			_, ctx := testContext(t)
 			p := newSemverConstraintParser(ctx)
 			actual := checkVersionMatch(ctx, p, tc.lVal, tc.rVal)
-			require.Equal(t, tc.result, actual)
+			must.Eq(t, tc.result, actual)
 		})
 	}
 }
@@ -1418,6 +1463,113 @@ func TestDistinctHostsIterator_JobDistinctHosts(t *testing.T) {
 
 	if out[0].ID != nodes[2].ID {
 		t.Fatalf("wrong node picked")
+	}
+}
+
+func TestDistinctHostsIterator_JobDistinctHosts_Table(t *testing.T) {
+	ci.Parallel(t)
+
+	// Create a job with a distinct_hosts constraint and a task group.
+	tg1 := &structs.TaskGroup{Name: "bar"}
+	job := &structs.Job{
+		ID:        "foo",
+		Namespace: structs.DefaultNamespace,
+		Constraints: []*structs.Constraint{{
+			Operand: structs.ConstraintDistinctHosts,
+		}},
+		TaskGroups: []*structs.TaskGroup{tg1},
+	}
+	makeJobAllocs := func(js []*structs.Job) []*structs.Allocation {
+		na := make([]*structs.Allocation, len(js))
+		for i, j := range js {
+			allocID := uuid.Generate()
+			ns := structs.DefaultNamespace
+			if j.Namespace != "" {
+				ns = j.Namespace
+			}
+			na[i] = &structs.Allocation{
+				Namespace: ns,
+				TaskGroup: j.TaskGroups[0].Name,
+				JobID:     j.ID,
+				Job:       j,
+				ID:        allocID,
+			}
+		}
+		return na
+	}
+
+	n1 := mock.Node()
+	n2 := mock.Node()
+	n3 := mock.Node()
+
+	testCases := []struct {
+		name        string
+		RTarget     string
+		expectLen   int
+		expectNodes []*structs.Node
+	}{
+		{
+			name:        "unset",
+			RTarget:     "",
+			expectLen:   1,
+			expectNodes: []*structs.Node{n3},
+		},
+		{
+			name:        "true",
+			RTarget:     "true",
+			expectLen:   1,
+			expectNodes: []*structs.Node{n3},
+		},
+		{
+			name:        "false",
+			RTarget:     "false",
+			expectLen:   3,
+			expectNodes: []*structs.Node{n1, n2, n3},
+		},
+		{
+			name:        "unparsable",
+			RTarget:     "not_a_bool",
+			expectLen:   1,
+			expectNodes: []*structs.Node{n3},
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc := tc
+			ci.Parallel(t)
+
+			_, ctx := testContext(t)
+			static := NewStaticIterator(ctx, []*structs.Node{n1, n2, n3})
+
+			j := job.Copy()
+			j.Constraints[0].RTarget = tc.RTarget
+
+			// This job has all the same identifiers as the first; however, it is
+			// placed in a different namespace to ensure that it doesn't interact
+			// with the feasibility of this placement.
+			oj := j.Copy()
+			oj.Namespace = "different"
+
+			plan := ctx.Plan()
+			// Add allocations so that some of the nodes will be ineligible
+			// to receive the job when the distinct_hosts constraint
+			// is active. This will require the job be placed on n3.
+			//
+			// Another job (oj) is placed on all of the nodes to ensure that
+			// there are no unexpected interactions between namespaces.
+
+			plan.NodeAllocation[n1.ID] = makeJobAllocs([]*structs.Job{j, oj})
+			plan.NodeAllocation[n2.ID] = makeJobAllocs([]*structs.Job{j, oj})
+			plan.NodeAllocation[n3.ID] = makeJobAllocs([]*structs.Job{oj})
+
+			proposed := NewDistinctHostsIterator(ctx, static)
+			proposed.SetTaskGroup(tg1)
+			proposed.SetJob(j)
+
+			out := collectFeasible(proposed)
+			must.Len(t, tc.expectLen, out, must.Sprintf("Bad: %v", out))
+			must.SliceContainsAll(t, tc.expectNodes, out)
+		})
 	}
 }
 
@@ -2485,11 +2637,11 @@ func TestFeasibilityWrapper_JobEligible_TgEscaped(t *testing.T) {
 func TestSetContainsAny(t *testing.T) {
 	ci.Parallel(t)
 
-	require.True(t, checkSetContainsAny("a", "a"))
-	require.True(t, checkSetContainsAny("a,b", "a"))
-	require.True(t, checkSetContainsAny("  a,b  ", "a "))
-	require.True(t, checkSetContainsAny("a", "a"))
-	require.False(t, checkSetContainsAny("b", "a"))
+	must.True(t, checkSetContainsAny("a", "a"))
+	must.True(t, checkSetContainsAny("a,b", "a"))
+	must.True(t, checkSetContainsAny("  a,b  ", "a "))
+	must.True(t, checkSetContainsAny("a", "a"))
+	must.False(t, checkSetContainsAny("b", "a"))
 }
 
 func TestDeviceChecker(t *testing.T) {
@@ -2682,6 +2834,11 @@ func TestDeviceChecker(t *testing.T) {
 							LTarget: "${device.attr.cores_clock}",
 							RTarget: "800MHz",
 						},
+						{
+							Operand: "set_contains",
+							LTarget: "${device.ids}",
+							RTarget: nvidia.Instances[0].ID,
+						},
 					},
 				},
 			},
@@ -2714,6 +2871,11 @@ func TestDeviceChecker(t *testing.T) {
 							Operand: "=",
 							LTarget: "${device.attr.cores_clock}",
 							RTarget: "800MHz",
+						},
+						{
+							Operand: "set_contains",
+							LTarget: "${device.ids}",
+							RTarget: fmt.Sprintf("%s,%s", nvidia.Instances[1].ID, nvidia.Instances[0].ID),
 						},
 					},
 				},
@@ -2813,6 +2975,24 @@ func TestDeviceChecker(t *testing.T) {
 							Operand: "=",
 							LTarget: "${device.attr.cores_clock}",
 							RTarget: "800MHz",
+						},
+					},
+				},
+			},
+		},
+		{
+			Name:        "does not meet ID constraint",
+			Result:      false,
+			NodeDevices: []*structs.NodeDeviceResource{nvidia},
+			RequestedDevices: []*structs.RequestedDevice{
+				{
+					Name:  "nvidia/gpu",
+					Count: 1,
+					Constraints: []*structs.Constraint{
+						{
+							Operand: "set_contains",
+							LTarget: "${device.ids}",
+							RTarget: "not_valid",
 						},
 					},
 				},

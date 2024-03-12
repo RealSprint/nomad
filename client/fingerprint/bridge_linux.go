@@ -1,3 +1,8 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
+//go:build linux
+
 package fingerprint
 
 import (
@@ -5,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 
 	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/nomad/nomad/structs"
@@ -35,6 +41,9 @@ func (f *BridgeFingerprint) Fingerprint(req *FingerprintRequest, resp *Fingerpri
 		}},
 	}
 
+	resp.AddAttribute("nomad.bridge.hairpin_mode",
+		strconv.FormatBool(req.Config.BridgeNetworkHairpinMode))
+
 	resp.Detected = true
 	return nil
 }
@@ -46,6 +55,14 @@ func (f *BridgeFingerprint) regexp(pattern, module string) *regexp.Regexp {
 func (f *BridgeFingerprint) detect(module string) error {
 	// accumulate errors from every place we might find the module
 	var errs error
+
+	// Check if the module is in /sys/modules
+	sysfsModulePath := fmt.Sprintf("/sys/module/%s", module)
+	if err := f.findDir(sysfsModulePath); err != nil {
+		errs = multierror.Append(errs, err)
+	} else {
+		return nil
+	}
 
 	// check if the module has been dynamically loaded
 	dynamicPath := "/proc/modules"
@@ -78,6 +95,14 @@ func (f *BridgeFingerprint) detect(module string) error {
 	}
 
 	return errs
+}
+
+func (f *BridgeFingerprint) findDir(dirname string) error {
+	if _, err := os.Stat(dirname); err != nil {
+		return fmt.Errorf("failed to find %s: %v", dirname, err)
+	} else {
+		return nil
+	}
 }
 
 func (f *BridgeFingerprint) searchFile(module, filename string, re *regexp.Regexp) error {

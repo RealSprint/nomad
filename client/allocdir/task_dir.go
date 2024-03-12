@@ -1,8 +1,10 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package allocdir
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 
@@ -39,6 +41,10 @@ type TaskDir struct {
 	// <task_dir>/secrets/
 	SecretsDir string
 
+	// PrivateDir is the path to private/ directory on the host
+	// <task_dir>/private/
+	PrivateDir string
+
 	// skip embedding these paths in chroots. Used for avoiding embedding
 	// client.alloc_dir recursively.
 	skip map[string]struct{}
@@ -66,6 +72,7 @@ func newTaskDir(logger hclog.Logger, clientAllocDir, allocDir, taskName string) 
 		SharedTaskDir:  filepath.Join(taskDir, SharedAllocName),
 		LocalDir:       filepath.Join(taskDir, TaskLocal),
 		SecretsDir:     filepath.Join(taskDir, TaskSecrets),
+		PrivateDir:     filepath.Join(taskDir, TaskPrivate),
 		skip:           skip,
 		logger:         logger,
 	}
@@ -128,6 +135,15 @@ func (t *TaskDir) Build(createChroot bool, chroot map[string]string) error {
 		return err
 	}
 
+	// Create the private directory
+	if err := createSecretDir(t.PrivateDir); err != nil {
+		return err
+	}
+
+	if err := dropDirPermissions(t.PrivateDir, os.ModePerm); err != nil {
+		return err
+	}
+
 	// Build chroot if chroot filesystem isolation is going to be used
 	if createChroot {
 		if err := t.buildChroot(chroot); err != nil {
@@ -184,12 +200,16 @@ func (t *TaskDir) embedDirs(entries map[string]string) error {
 		}
 
 		// Enumerate the files in source.
-		dirEntries, err := ioutil.ReadDir(source)
+		dirEntries, err := os.ReadDir(source)
 		if err != nil {
 			return fmt.Errorf("Couldn't read directory %v: %v", source, err)
 		}
 
-		for _, entry := range dirEntries {
+		for _, fileEntry := range dirEntries {
+			entry, err := fileEntry.Info()
+			if err != nil {
+				return fmt.Errorf("Couldn't read the file information %v: %v", entry, err)
+			}
 			hostEntry := filepath.Join(source, entry.Name())
 			taskEntry := filepath.Join(destDir, filepath.Base(hostEntry))
 			if entry.IsDir() {

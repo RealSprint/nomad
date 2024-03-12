@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package eventer
 
 import (
@@ -116,5 +119,8 @@ func TestEventer_iterateConsumers(t *testing.T) {
 	ev1, ok := <-consumer
 	require.False(ok)
 	require.Nil(ev1)
+
+	e.consumersLock.RLock()
 	require.Equal(0, len(e.consumers))
+	e.consumersLock.RUnlock()
 }

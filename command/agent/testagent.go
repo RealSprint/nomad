@@ -1,8 +1,10 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package agent
 
 import (
 	"fmt"
-	"io/ioutil"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
@@ -15,9 +17,10 @@ import (
 	metrics "github.com/armon/go-metrics"
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/nomad/api"
+	"github.com/hashicorp/nomad/ci"
 	client "github.com/hashicorp/nomad/client/config"
 	"github.com/hashicorp/nomad/client/fingerprint"
-	"github.com/hashicorp/nomad/helper/freeport"
+	"github.com/hashicorp/nomad/helper"
 	"github.com/hashicorp/nomad/helper/testlog"
 	"github.com/hashicorp/nomad/nomad"
 	"github.com/hashicorp/nomad/nomad/mock"
@@ -25,10 +28,6 @@ import (
 	sconfig "github.com/hashicorp/nomad/nomad/structs/config"
 	"github.com/hashicorp/nomad/testutil"
 )
-
-func init() {
-	rand.Seed(time.Now().UnixNano()) // seed random number generator
-}
 
 // TempDir defines the base dir for temporary directories.
 var TempDir = os.TempDir()
@@ -95,14 +94,15 @@ type TestAgent struct {
 // configuration. The caller should call Shutdown() to stop the agent and
 // remove temporary directories.
 func NewTestAgent(t testing.TB, name string, configCallback func(*Config)) *TestAgent {
+	logger := testlog.HCLogger(t)
+	logger.SetLevel(testlog.HCLoggerTestLevel())
 	a := &TestAgent{
 		T:              t,
 		Name:           name,
 		ConfigCallback: configCallback,
 		Enterprise:     EnterpriseTestAgent,
-		logger:         testlog.HCLogger(t),
+		logger:         logger,
 	}
-
 	a.Start()
 	return a
 }
@@ -123,7 +123,7 @@ func (a *TestAgent) Start() *TestAgent {
 			name = a.Name + "-agent"
 		}
 		name = strings.ReplaceAll(name, "/", "_")
-		d, err := ioutil.TempDir(TempDir, name)
+		d, err := os.MkdirTemp(TempDir, name)
 		if err != nil {
 			a.T.Fatalf("Error creating data dir %s: %s", filepath.Join(TempDir, name), err)
 		}
@@ -192,18 +192,10 @@ RETRY:
 
 	failed := false
 	if a.Config.NomadConfig.BootstrapExpect == 1 && a.Config.Server.Enabled {
-		testutil.WaitForResult(func() (bool, error) {
-			args := &structs.GenericRequest{}
-			var leader string
-			err := a.RPC("Status.Leader", args, &leader)
-			return leader != "", err
-		}, func(err error) {
-			a.T.Logf("failed to find leader: %v", err)
-			failed = true
-		})
+		testutil.WaitForKeyring(a.T, a.RPC, a.Config.Region)
 	} else {
 		testutil.WaitForResult(func() (bool, error) {
-			req, _ := http.NewRequest("GET", "/v1/agent/self", nil)
+			req, _ := http.NewRequest(http.MethodGet, "/v1/agent/self", nil)
 			resp := httptest.NewRecorder()
 			_, err := a.Server.AgentSelfRequest(resp, req)
 			return err == nil && resp.Code == 200, err
@@ -261,17 +253,15 @@ func (a *TestAgent) start() (*Agent, error) {
 
 // Shutdown stops the agent and removes the data directory if it is
 // managed by the test agent.
-func (a *TestAgent) Shutdown() error {
-	if a.shutdown {
-		return nil
+func (a *TestAgent) Shutdown() {
+	if a == nil || a.shutdown {
+		return
 	}
 	a.shutdown = true
 
-	defer freeport.Return(a.ports)
-
 	defer func() {
 		if a.DataDir != "" {
-			os.RemoveAll(a.DataDir)
+			_ = os.RemoveAll(a.DataDir)
 		}
 	}()
 
@@ -286,11 +276,17 @@ func (a *TestAgent) Shutdown() error {
 		ch <- a.Agent.Shutdown()
 	}()
 
+	// one minute grace period on shutdown
+	timer, cancel := helper.NewSafeTimer(1 * time.Minute)
+	defer cancel()
+
 	select {
 	case err := <-ch:
-		return err
-	case <-time.After(1 * time.Minute):
-		return fmt.Errorf("timed out while shutting down test agent")
+		if err != nil {
+			a.T.Fatalf("agent shutdown error: %v", err)
+		}
+	case <-timer.C:
+		a.T.Fatal("agent shutdown timeout")
 	}
 }
 
@@ -305,7 +301,7 @@ func (a *TestAgent) HTTPAddr() string {
 	return proto + a.Server.Addr
 }
 
-func (a *TestAgent) Client() *api.Client {
+func (a *TestAgent) APIClient() *api.Client {
 	conf := api.DefaultConfig()
 	conf.Address = a.HTTPAddr()
 	c, err := api.NewClient(conf)
@@ -324,7 +320,7 @@ func (a *TestAgent) Client() *api.Client {
 // Instead of relying on one set of ports to be sufficient we retry
 // starting the agent with different ports on port conflict.
 func (a *TestAgent) pickRandomPorts(c *Config) {
-	ports := freeport.MustTake(3)
+	ports := ci.PortAllocator.Grab(3)
 	a.ports = append(a.ports, ports...)
 
 	c.Ports.HTTP = ports[0]
@@ -339,6 +335,7 @@ func (a *TestAgent) pickRandomPorts(c *Config) {
 // TestConfig returns a unique default configuration for testing an agent.
 func (a *TestAgent) config() *Config {
 	conf := DevConfig(nil)
+	conf.Version.BuildDate = time.Now()
 
 	// Customize the server configuration
 	config := nomad.DefaultConfig()
@@ -357,8 +354,8 @@ func (a *TestAgent) config() *Config {
 	// Bind and set ports
 	conf.BindAddr = "127.0.0.1"
 
-	conf.Consul = sconfig.DefaultConsulConfig()
-	conf.Vault.Enabled = new(bool)
+	conf.Consuls = []*sconfig.ConsulConfig{sconfig.DefaultConsulConfig()}
+	conf.defaultVault().Enabled = new(bool)
 
 	// Tighten the Serf timing
 	config.SerfConfig.MemberlistConfig.SuspicionMult = 2

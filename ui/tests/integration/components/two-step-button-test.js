@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 import { find, click, render } from '@ember/test-helpers';
 import { module, test } from 'qunit';
 import { setupRenderingTest } from 'ember-qunit';
@@ -133,8 +138,10 @@ module('Integration | Component | two step button', function (hooks) {
       TwoStepButton.confirmIsDisabled,
       'The confirm button is disabled'
     );
-    assert.ok(
-      TwoStepButton.isRunning,
+
+    assert.equal(
+      TwoStepButton.confirmText,
+      'Loading...',
       'The confirm button is in a loading state'
     );
 

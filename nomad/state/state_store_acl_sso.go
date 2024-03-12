@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package state
 
 import (
@@ -61,9 +64,17 @@ func (s *StateStore) upsertACLAuthMethodTxn(index uint64, txn *txn, method *stru
 
 	// This validation also happens within the RPC handler, but Raft latency
 	// could mean that by the time the state call is invoked, another Raft
-	// update has already written a method with the same name. We therefore
-	// need to check we are not trying to create a method with an existing
-	// name.
+	// update has already written a method with the same name or default
+	// setting. We therefore need to check we are not trying to create a method
+	// with an existing name or a duplicate default for the same type.
+	if method.Default {
+		existingMethodsDefaultMethod, _ := s.GetDefaultACLAuthMethod(nil)
+		if existingMethodsDefaultMethod != nil && existingMethodsDefaultMethod.Name != method.Name {
+			return false, fmt.Errorf(
+				"default ACL auth method already exists: %v", existingMethodsDefaultMethod.Name,
+			)
+		}
+	}
 	existingRaw, err := txn.First(TableACLAuthMethods, indexID, method.Name)
 	if err != nil {
 		return false, fmt.Errorf("ACL auth method lookup failed: %v", err)
@@ -87,6 +98,7 @@ func (s *StateStore) upsertACLAuthMethodTxn(index uint64, txn *txn, method *stru
 		}
 
 		method.CreateIndex = existing.CreateIndex
+		method.CreateTime = existing.CreateTime
 		method.ModifyIndex = index
 	} else {
 		method.CreateIndex = index
@@ -173,5 +185,35 @@ func (s *StateStore) GetACLAuthMethodByName(ws memdb.WatchSet, authMethod string
 	if existing != nil {
 		return existing.(*structs.ACLAuthMethod), nil
 	}
+	return nil, nil
+}
+
+// GetDefaultACLAuthMethod returns a default ACL Auth Method. This function is
+// used during upserts to facilitate a check that there's only 1 default Auth Method.
+func (s *StateStore) GetDefaultACLAuthMethod(ws memdb.WatchSet) (*structs.ACLAuthMethod, error) {
+	txn := s.db.ReadTxn()
+
+	// Walk the entire table to get all ACL auth methods.
+	iter, err := txn.Get(TableACLAuthMethods, indexID)
+	if err != nil {
+		return nil, fmt.Errorf("ACL auth method lookup failed: %v", err)
+	}
+	ws.Add(iter.WatchCh())
+
+	// Filter out non-default methods
+	filter := memdb.NewFilterIterator(iter, func(raw interface{}) bool {
+		method, ok := raw.(*structs.ACLAuthMethod)
+		if !ok {
+			return true
+		}
+		// any non-default method gets filtered-out
+		return !method.Default
+	})
+
+	for raw := filter.Next(); raw != nil; raw = filter.Next() {
+		method := raw.(*structs.ACLAuthMethod)
+		return method, nil
+	}
+
 	return nil, nil
 }

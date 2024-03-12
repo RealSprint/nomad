@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package connect
 
 import (
@@ -37,6 +40,8 @@ func (tc *ConnectClientStateE2ETest) AfterEach(f *framework.F) {
 
 func (tc *ConnectClientStateE2ETest) TestClientRestart(f *framework.F) {
 	t := f.T()
+
+	t.Skip("skipping test that does nomad agent restart")
 
 	jobID := "connect" + uuid.Generate()[0:8]
 	tc.jobIDs = append(tc.jobIDs, jobID)

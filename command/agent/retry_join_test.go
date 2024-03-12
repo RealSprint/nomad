@@ -1,32 +1,54 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package agent
 
 import (
+	"context"
 	"fmt"
-	"log"
+	golog "log"
+	"net"
 	"os"
 	"testing"
 	"time"
 
+	"github.com/hashicorp/go-netaddrs"
 	"github.com/hashicorp/nomad/ci"
 	"github.com/hashicorp/nomad/helper/testlog"
 	"github.com/hashicorp/nomad/testutil"
 	"github.com/mitchellh/cli"
+	"github.com/shoenig/test/must"
 	"github.com/stretchr/testify/require"
 )
 
-type MockDiscover struct {
-	ReceivedAddrs string
-}
-
 const stubAddress = "127.0.0.1"
 
-func (m *MockDiscover) Addrs(s string, l *log.Logger) ([]string, error) {
-	m.ReceivedAddrs = s
+type MockDiscover struct {
+	ReceivedConfig string
+}
+
+func (m *MockDiscover) Addrs(s string, l *golog.Logger) ([]string, error) {
+	m.ReceivedConfig = s
 	return []string{stubAddress}, nil
 }
 func (m *MockDiscover) Help() string { return "" }
 func (m *MockDiscover) Names() []string {
 	return []string{""}
+}
+
+type MockNetaddrs struct {
+	ReceivedConfig []string
+}
+
+func (m *MockNetaddrs) IPAddrs(ctx context.Context, cfg string, l netaddrs.Logger) ([]net.IPAddr, error) {
+	m.ReceivedConfig = append(m.ReceivedConfig, cfg)
+
+	ip := net.ParseIP(stubAddress)
+	if ip == nil {
+		return nil, fmt.Errorf("unable to transform the stubAddress into a valid IP")
+	}
+
+	return []net.IPAddr{{IP: ip}}, nil
 }
 
 func TestRetryJoin_Integration(t *testing.T) {
@@ -90,7 +112,7 @@ func TestRetryJoin_Server_NonCloud(t *testing.T) {
 	}
 
 	joiner := retryJoiner{
-		discover:      &MockDiscover{},
+		autoDiscover:  autoDiscover{goDiscover: &MockDiscover{}},
 		serverJoin:    mockJoin,
 		serverEnabled: true,
 		logger:        testlog.HCLogger(t),
@@ -121,7 +143,7 @@ func TestRetryJoin_Server_Cloud(t *testing.T) {
 
 	mockDiscover := &MockDiscover{}
 	joiner := retryJoiner{
-		discover:      mockDiscover,
+		autoDiscover:  autoDiscover{goDiscover: mockDiscover},
 		serverJoin:    mockJoin,
 		serverEnabled: true,
 		logger:        testlog.HCLogger(t),
@@ -131,7 +153,7 @@ func TestRetryJoin_Server_Cloud(t *testing.T) {
 	joiner.RetryJoin(serverJoin)
 
 	require.Equal(1, len(output))
-	require.Equal("provider=aws, tag_value=foo", mockDiscover.ReceivedAddrs)
+	require.Equal("provider=aws, tag_value=foo", mockDiscover.ReceivedConfig)
 	require.Equal(stubAddress, output[0])
 }
 
@@ -153,7 +175,7 @@ func TestRetryJoin_Server_MixedProvider(t *testing.T) {
 
 	mockDiscover := &MockDiscover{}
 	joiner := retryJoiner{
-		discover:      mockDiscover,
+		autoDiscover:  autoDiscover{goDiscover: mockDiscover},
 		serverJoin:    mockJoin,
 		serverEnabled: true,
 		logger:        testlog.HCLogger(t),
@@ -163,8 +185,50 @@ func TestRetryJoin_Server_MixedProvider(t *testing.T) {
 	joiner.RetryJoin(serverJoin)
 
 	require.Equal(2, len(output))
-	require.Equal("provider=aws, tag_value=foo", mockDiscover.ReceivedAddrs)
+	require.Equal("provider=aws, tag_value=foo", mockDiscover.ReceivedConfig)
 	require.Equal(stubAddress, output[0])
+}
+
+func TestRetryJoin_AutoDiscover(t *testing.T) {
+	ci.Parallel(t)
+
+	var joinAddrs []string
+	mockJoin := func(s []string) (int, error) {
+		joinAddrs = s
+		return 0, nil
+	}
+
+	// 'exec=*'' tests autoDiscover go-netaddr support
+	// 'provider=aws, tag_value=foo' ensures that provider-prefixed configs are routed to go-discover
+	// 'localhost' ensures that bare hostnames are returned as-is
+	// 'localhost2:4648' ensures hostname:port entries are returned as-is
+	// '127.0.0.1:4648' ensures ip:port entiresare returned as-is
+	// '100.100.100.100' ensures that bare IPs are returned as-is
+	serverJoin := &ServerJoin{
+		RetryMaxAttempts: 1,
+		RetryJoin: []string{
+			"exec=echo 127.0.0.1", "provider=aws, tag_value=foo",
+			"localhost", "localhost2:4648", "127.0.0.1:4648", "100.100.100.100"},
+	}
+
+	mockDiscover := &MockDiscover{}
+	mockNetaddrs := &MockNetaddrs{}
+	joiner := retryJoiner{
+		autoDiscover:  autoDiscover{goDiscover: mockDiscover, netAddrs: mockNetaddrs},
+		serverJoin:    mockJoin,
+		serverEnabled: true,
+		logger:        testlog.HCLogger(t),
+		errCh:         make(chan struct{}),
+	}
+
+	joiner.RetryJoin(serverJoin)
+
+	must.Eq(t, []string{
+		"127.0.0.1", "127.0.0.1", "localhost", "localhost2:4648",
+		"127.0.0.1:4648", "100.100.100.100"},
+		joinAddrs)
+	must.Eq(t, []string{"exec=echo 127.0.0.1"}, mockNetaddrs.ReceivedConfig)
+	must.Eq(t, "provider=aws, tag_value=foo", mockDiscover.ReceivedConfig)
 }
 
 func TestRetryJoin_Client(t *testing.T) {
@@ -184,7 +248,7 @@ func TestRetryJoin_Client(t *testing.T) {
 	}
 
 	joiner := retryJoiner{
-		discover:      &MockDiscover{},
+		autoDiscover:  autoDiscover{goDiscover: &MockDiscover{}},
 		clientJoin:    mockJoin,
 		clientEnabled: true,
 		logger:        testlog.HCLogger(t),
@@ -222,7 +286,7 @@ func TestRetryJoin_Validate(t *testing.T) {
 				},
 			},
 			isValid: false,
-			reason:  "server_join cannot be defined if retry_join is defined on the server stanza",
+			reason:  "server_join cannot be defined if retry_join is defined on the server block",
 		},
 		{
 			config: &Config{
@@ -240,7 +304,7 @@ func TestRetryJoin_Validate(t *testing.T) {
 				},
 			},
 			isValid: false,
-			reason:  "server_join cannot be defined if start_join is defined on the server stanza",
+			reason:  "server_join cannot be defined if start_join is defined on the server block",
 		},
 		{
 			config: &Config{
@@ -258,7 +322,7 @@ func TestRetryJoin_Validate(t *testing.T) {
 				},
 			},
 			isValid: false,
-			reason:  "server_join cannot be defined if retry_max_attempts is defined on the server stanza",
+			reason:  "server_join cannot be defined if retry_max_attempts is defined on the server block",
 		},
 		{
 			config: &Config{
@@ -276,7 +340,7 @@ func TestRetryJoin_Validate(t *testing.T) {
 				},
 			},
 			isValid: false,
-			reason:  "server_join cannot be defined if retry_interval is defined on the server stanza",
+			reason:  "server_join cannot be defined if retry_interval is defined on the server block",
 		},
 		{
 			config: &Config{

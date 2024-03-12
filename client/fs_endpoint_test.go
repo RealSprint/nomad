@@ -1,12 +1,15 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package client
 
 import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -29,6 +32,7 @@ import (
 	"github.com/hashicorp/nomad/nomad/mock"
 	"github.com/hashicorp/nomad/nomad/structs"
 	"github.com/hashicorp/nomad/testutil"
+	"github.com/shoenig/test/must"
 	"github.com/stretchr/testify/require"
 )
 
@@ -388,6 +392,96 @@ OUTER:
 			} else {
 				t.Fatalf("bad error: %v", err)
 			}
+		}
+	}
+}
+
+// TestFS_Stream_GC asserts that reading files from an alloc that has been
+// GC'ed from the client returns a 404 error.
+func TestFS_Stream_GC(t *testing.T) {
+	ci.Parallel(t)
+
+	// Start a server and client.
+	s, cleanupS := nomad.TestServer(t, nil)
+	t.Cleanup(cleanupS)
+	testutil.WaitForLeader(t, s.RPC)
+
+	c, cleanupC := TestClient(t, func(c *config.Config) {
+		c.Servers = []string{s.GetConfig().RPCAddr.String()}
+	})
+	t.Cleanup(func() { cleanupC() })
+
+	job := mock.BatchJob()
+	job.TaskGroups[0].Count = 1
+	job.TaskGroups[0].Tasks[0].Config = map[string]interface{}{
+		"run_for": "10s",
+	}
+
+	// Wait for alloc to be running.
+	alloc := testutil.WaitForRunning(t, s.RPC, job)[0]
+
+	// GC alloc from the client.
+	ar, err := c.getAllocRunner(alloc.ID)
+	must.NoError(t, err)
+
+	c.garbageCollector.MarkForCollection(alloc.ID, ar)
+	must.True(t, c.CollectAllocation(alloc.ID))
+
+	// Build the request.
+	req := &cstructs.FsStreamRequest{
+		AllocID:      alloc.ID,
+		Path:         "alloc/logs/web.stdout.0",
+		PlainText:    true,
+		Follow:       true,
+		QueryOptions: structs.QueryOptions{Region: "global"},
+	}
+
+	// Get the handler.
+	handler, err := c.StreamingRpcHandler("FileSystem.Stream")
+	must.NoError(t, err)
+
+	// Create a pipe.
+	p1, p2 := net.Pipe()
+	defer p1.Close()
+	defer p2.Close()
+
+	errCh := make(chan error)
+	streamMsg := make(chan *cstructs.StreamErrWrapper)
+
+	// Start the handler.
+	go handler(p2)
+
+	// Start the decoder.
+	go func() {
+		decoder := codec.NewDecoder(p1, structs.MsgpackHandle)
+		for {
+			var msg cstructs.StreamErrWrapper
+			if err := decoder.Decode(&msg); err != nil {
+				if err == io.EOF || strings.Contains(err.Error(), "closed") {
+					return
+				}
+				errCh <- fmt.Errorf("error decoding: %v", err)
+			}
+
+			streamMsg <- &msg
+		}
+	}()
+
+	// Send the request
+	encoder := codec.NewEncoder(p1, structs.MsgpackHandle)
+	must.NoError(t, encoder.Encode(req))
+
+	for {
+		select {
+		case <-time.After(3 * time.Second):
+			t.Fatal("timeout")
+		case err := <-errCh:
+			t.Fatal(err)
+		case msg := <-streamMsg:
+			must.Error(t, msg.Error)
+			must.ErrorContains(t, msg.Error, "not found on client")
+			must.Eq(t, http.StatusNotFound, *msg.Error.Code)
+			return
 		}
 	}
 }
@@ -1013,8 +1107,99 @@ func TestFS_Logs_TaskPending(t *testing.T) {
 		case msg := <-streamMsg:
 			require.NotNil(msg.Error)
 			require.NotNil(msg.Error.Code)
-			require.EqualValues(404, *msg.Error.Code)
+			require.EqualValues(http.StatusNotFound, *msg.Error.Code)
 			require.Contains(msg.Error.Message, "not started")
+			return
+		}
+	}
+}
+
+// TestFS_Logs_GC asserts that reading logs from an alloc that has been GC'ed
+// from the client returns a 404 error.
+func TestFS_Logs_GC(t *testing.T) {
+	ci.Parallel(t)
+
+	// Start a server and client.
+	s, cleanupS := nomad.TestServer(t, nil)
+	t.Cleanup(cleanupS)
+	testutil.WaitForLeader(t, s.RPC)
+
+	c, cleanupC := TestClient(t, func(c *config.Config) {
+		c.Servers = []string{s.GetConfig().RPCAddr.String()}
+	})
+	t.Cleanup(func() { cleanupC() })
+
+	job := mock.BatchJob()
+	job.TaskGroups[0].Count = 1
+	job.TaskGroups[0].Tasks[0].Config = map[string]interface{}{
+		"run_for": "10s",
+	}
+
+	// Wait for alloc to be running.
+	alloc := testutil.WaitForRunning(t, s.RPC, job)[0]
+
+	// GC alloc from the client.
+	ar, err := c.getAllocRunner(alloc.ID)
+	must.NoError(t, err)
+
+	c.garbageCollector.MarkForCollection(alloc.ID, ar)
+	must.True(t, c.CollectAllocation(alloc.ID))
+
+	// Build the request.
+	req := &cstructs.FsLogsRequest{
+		AllocID:      alloc.ID,
+		Task:         job.TaskGroups[0].Tasks[0].Name,
+		LogType:      "stdout",
+		Origin:       "start",
+		PlainText:    true,
+		QueryOptions: structs.QueryOptions{Region: "global"},
+	}
+
+	// Get the handler.
+	handler, err := c.StreamingRpcHandler("FileSystem.Logs")
+	must.NoError(t, err)
+
+	// Create a pipe.
+	p1, p2 := net.Pipe()
+	defer p1.Close()
+	defer p2.Close()
+
+	errCh := make(chan error)
+	streamMsg := make(chan *cstructs.StreamErrWrapper)
+
+	// Start the handler.
+	go handler(p2)
+
+	// Start the decoder.
+	go func() {
+		decoder := codec.NewDecoder(p1, structs.MsgpackHandle)
+		for {
+			var msg cstructs.StreamErrWrapper
+			if err := decoder.Decode(&msg); err != nil {
+				if err == io.EOF || strings.Contains(err.Error(), "closed") {
+					return
+				}
+				errCh <- fmt.Errorf("error decoding: %v", err)
+			}
+
+			streamMsg <- &msg
+		}
+	}()
+
+	// Send the request.
+	encoder := codec.NewEncoder(p1, structs.MsgpackHandle)
+	must.NoError(t, encoder.Encode(req))
+
+	for {
+		select {
+		case <-time.After(3 * time.Second):
+			t.Fatal("timeout")
+		case err := <-errCh:
+			t.Fatalf("unexpected stream error: %v", err)
+		case msg := <-streamMsg:
+			must.Error(t, msg.Error)
+			must.ErrorContains(t, msg.Error, "not found on client")
+			must.Eq(t, http.StatusNotFound, *msg.Error.Code)
 			return
 		}
 	}
@@ -1854,7 +2039,7 @@ func TestFS_logsImpl_NoFollow(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		logFile := fmt.Sprintf("%s.%s.%d", task, logType, i)
 		logFilePath := filepath.Join(logDir, logFile)
-		err := ioutil.WriteFile(logFilePath, expected[i:i+1], 0777)
+		err := os.WriteFile(logFilePath, expected[i:i+1], 0777)
 		if err != nil {
 			t.Fatalf("Failed to create file: %v", err)
 		}
@@ -1928,7 +2113,7 @@ func TestFS_logsImpl_Follow(t *testing.T) {
 	}
 	writeToFile := func(index int, data []byte) {
 		logFilePath := filePath(index)
-		err := ioutil.WriteFile(logFilePath, data, 0777)
+		err := os.WriteFile(logFilePath, data, 0777)
 		if err != nil {
 			t.Fatalf("Failed to create file: %v", err)
 		}

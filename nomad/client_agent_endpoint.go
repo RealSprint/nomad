@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package nomad
 
 import (
@@ -35,11 +38,20 @@ func (a *Agent) register() {
 }
 
 func (a *Agent) Profile(args *structs.AgentPprofRequest, reply *structs.AgentPprofResponse) error {
+	authErr := a.srv.Authenticate(nil, args)
+	a.srv.MeasureRPCRate("agent", structs.RateMetricRead, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
+	}
+
 	// Check ACL for agent write
-	aclObj, err := a.srv.ResolveToken(args.AuthToken)
+	aclObj, err := a.srv.ResolveACL(args)
 	if err != nil {
 		return err
-	} else if aclObj != nil && !aclObj.AllowAgentWrite() {
+	} else if !aclObj.AllowAgentWrite() {
+		// we're not checking AllowAgentDebug here because the target might not
+		// be this server, and the server doesn't know if enable_debug has been
+		// set on the target
 		return structs.ErrPermissionDenied
 	}
 
@@ -74,8 +86,8 @@ func (a *Agent) Profile(args *structs.AgentPprofRequest, reply *structs.AgentPpr
 		}
 	}
 
-	// If ACLs are disabled, EnableDebug must be enabled
-	if aclObj == nil && !a.srv.config.EnableDebug {
+	// This server is the target, so now we can check for AllowAgentDebug
+	if !aclObj.AllowAgentDebug(a.srv.config.EnableDebug) {
 		return structs.ErrPermissionDenied
 	}
 
@@ -128,12 +140,18 @@ func (a *Agent) monitor(conn io.ReadWriteCloser) {
 		handleStreamResultError(err, pointer.Of(int64(500)), encoder)
 		return
 	}
+	authErr := a.srv.Authenticate(nil, &args)
+	a.srv.MeasureRPCRate("agent", structs.RateMetricRead, &args)
+	if authErr != nil {
+		handleStreamResultError(structs.ErrPermissionDenied, nil, encoder)
+		return
+	}
 
 	// Check agent read permissions
-	if aclObj, err := a.srv.ResolveToken(args.AuthToken); err != nil {
+	if aclObj, err := a.srv.ResolveACL(&args); err != nil {
 		handleStreamResultError(err, nil, encoder)
 		return
-	} else if aclObj != nil && !aclObj.AllowAgentRead() {
+	} else if !aclObj.AllowAgentRead() {
 		handleStreamResultError(structs.ErrPermissionDenied, pointer.Of(int64(403)), encoder)
 		return
 	}
@@ -183,8 +201,9 @@ func (a *Agent) monitor(conn io.ReadWriteCloser) {
 	defer cancel()
 
 	monitor := monitor.New(512, a.srv.logger, &log.LoggerOptions{
-		Level:      logLevel,
-		JSONFormat: args.LogJSON,
+		Level:           logLevel,
+		JSONFormat:      args.LogJSON,
+		IncludeLocation: args.LogIncludeLocation,
 	})
 
 	frames := make(chan *sframer.StreamFrame, 32)
@@ -398,13 +417,16 @@ func (a *Agent) forwardProfileClient(args *structs.AgentPprofRequest, reply *str
 
 // Host returns data about the agent's host system for the `debug` command.
 func (a *Agent) Host(args *structs.HostDataRequest, reply *structs.HostDataResponse) error {
-
-	aclObj, err := a.srv.ResolveToken(args.AuthToken)
+	authErr := a.srv.Authenticate(nil, args)
+	a.srv.MeasureRPCRate("agent", structs.RateMetricRead, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
+	}
+	aclObj, err := a.srv.ResolveACL(args)
 	if err != nil {
 		return err
 	}
-	if (aclObj != nil && !aclObj.AllowAgentRead()) ||
-		(aclObj == nil && !a.srv.config.EnableDebug) {
+	if !aclObj.AllowAgentDebug(a.srv.GetConfig().EnableDebug) {
 		return structs.ErrPermissionDenied
 	}
 

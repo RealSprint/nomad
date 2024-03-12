@@ -1,15 +1,16 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package main
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"strconv"
 	"time"
 
 	"github.com/hashicorp/nomad/api"
-	"github.com/hashicorp/nomad/nomad/structs"
 )
 
 func main() {
@@ -30,7 +31,7 @@ func main() {
 		return
 	}
 
-	fh, err := ioutil.TempFile("", "bench")
+	fh, err := os.CreateTemp("", "bench")
 	if err != nil {
 		fmt.Println(err.Error())
 		return
@@ -71,7 +72,7 @@ func main() {
 
 		running := 0
 		for _, alloc := range allocs {
-			if alloc.ClientStatus == structs.AllocClientStatusRunning {
+			if alloc.ClientStatus == api.AllocClientStatusRunning {
 				if !isRunning {
 					fmt.Printf("time to first running: %s\n", now.Sub(start))
 					isRunning = true

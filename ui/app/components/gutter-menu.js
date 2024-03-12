@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 import { inject as service } from '@ember/service';
 import Component from '@ember/component';
 import { computed } from '@ember/object';
@@ -41,21 +46,5 @@ export default class GutterMenu extends Component {
   // Seemingly redundant, but serves to ensure the action is passed to the keyboard service correctly
   transitionTo(destination) {
     return this.router.transitionTo(destination);
-  }
-
-  gotoJobsForNamespace(namespace) {
-    if (!namespace || !namespace.get('id')) return;
-
-    // Jobs and CSI Volumes are both namespace-sensitive. Changing namespaces is
-    // an intent to reset context, but where to reset to depends on where the namespace
-    // is being switched from. Jobs take precedence, but if the namespace is switched from
-    // a storage-related page, context should be reset to volumes.
-    const destination = this.router.currentRouteName.startsWith('csi.')
-      ? 'csi.volumes'
-      : 'jobs';
-
-    this.router.transitionTo(destination, {
-      queryParams: { namespace: namespace.get('id') },
-    });
   }
 }

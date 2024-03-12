@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package scheduler
 
 import (
@@ -149,7 +152,7 @@ func NewHostVolumeChecker(ctx Context) *HostVolumeChecker {
 }
 
 // SetVolumes takes the volumes required by a task group and updates the checker.
-func (h *HostVolumeChecker) SetVolumes(volumes map[string]*structs.VolumeRequest) {
+func (h *HostVolumeChecker) SetVolumes(allocName string, volumes map[string]*structs.VolumeRequest) {
 	lookupMap := make(map[string][]*structs.VolumeRequest)
 	// Convert the map from map[DesiredName]Request to map[Source][]Request to improve
 	// lookup performance. Also filter non-host volumes.
@@ -158,7 +161,14 @@ func (h *HostVolumeChecker) SetVolumes(volumes map[string]*structs.VolumeRequest
 			continue
 		}
 
-		lookupMap[req.Source] = append(lookupMap[req.Source], req)
+		if req.PerAlloc {
+			// provide a unique volume source per allocation
+			copied := req.Copy()
+			copied.Source = copied.Source + structs.AllocSuffix(allocName)
+			lookupMap[copied.Source] = append(lookupMap[copied.Source], copied)
+		} else {
+			lookupMap[req.Source] = append(lookupMap[req.Source], req)
+		}
 	}
 	h.volumes = lookupMap
 }
@@ -562,7 +572,14 @@ func (iter *DistinctHostsIterator) SetJob(job *structs.Job) {
 func (iter *DistinctHostsIterator) hasDistinctHostsConstraint(constraints []*structs.Constraint) bool {
 	for _, con := range constraints {
 		if con.Operand == structs.ConstraintDistinctHosts {
-			return true
+			// distinct_hosts defaults to true
+			if con.RTarget == "" {
+				return true
+			}
+			enabled, err := strconv.ParseBool(con.RTarget)
+			// If the value is unparsable as a boolean, fall back to the old behavior
+			// of enforcing the constraint when it appears.
+			return err != nil || enabled
 		}
 	}
 
@@ -608,11 +625,12 @@ func (iter *DistinctHostsIterator) satisfiesDistinctHosts(option *structs.Node) 
 
 	// Skip the node if the task group has already been allocated on it.
 	for _, alloc := range proposed {
-		// If the job has a distinct_hosts constraint we only need an alloc
-		// collision on the JobID but if the constraint is on the TaskGroup then
+		// If the job has a distinct_hosts constraint we need an alloc collision
+		// on the Namespace,JobID but if the constraint is on the TaskGroup then
 		// we need both a job and TaskGroup collision.
-		jobCollision := alloc.JobID == iter.job.ID
+		jobCollision := alloc.JobID == iter.job.ID && alloc.Namespace == iter.job.Namespace
 		taskCollision := alloc.TaskGroup == iter.tg.Name
+
 		if iter.jobDistinctHosts && jobCollision || jobCollision && taskCollision {
 			return false
 		}
@@ -791,6 +809,9 @@ func resolveTarget(target string, node *structs.Node) (string, bool) {
 
 	case "${node.class}" == target:
 		return node.NodeClass, true
+
+	case "${node.pool}" == target:
+		return node.NodePool, true
 
 	case strings.HasPrefix(target, "${attr."):
 		attr := strings.TrimSuffix(strings.TrimPrefix(target, "${attr."), "}")
@@ -1217,7 +1238,8 @@ OUTER:
 }
 
 // available checks transient feasibility checkers which depend on changing conditions,
-// e.g. the health status of a plugin or driver
+// e.g. the health status of a plugin or driver, or that are not considered in node
+// computed class, e.g. host volumes.
 func (w *FeasibilityWrapper) available(option *structs.Node) bool {
 	// If we don't have any availability checks, we're available
 	if len(w.tgAvailable) == 0 {
@@ -1373,6 +1395,13 @@ func resolveDeviceTarget(target string, d *structs.NodeDeviceResource) (*psstruc
 
 	// Handle the interpolations
 	switch {
+	case "${device.ids}" == target:
+		ids := make([]string, len(d.Instances))
+		for i, device := range d.Instances {
+			ids[i] = device.ID
+		}
+		return psstructs.NewStringAttribute(strings.Join(ids, ",")), true
+
 	case "${device.model}" == target:
 		return psstructs.NewStringAttribute(d.Name), true
 

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
@@ -5,13 +8,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/hashicorp/nomad/api"
 	"github.com/mitchellh/cli"
 	"github.com/posener/complete"
-	"golang.org/x/exp/slices"
 )
 
 // Ensure ACLAuthMethodUpdateCommand satisfies the cli.Command interface.
@@ -21,11 +24,14 @@ var _ cli.Command = &ACLAuthMethodUpdateCommand{}
 type ACLAuthMethodUpdateCommand struct {
 	Meta
 
-	methodType    string
-	tokenLocality string
-	maxTokenTTL   time.Duration
-	isDefault     bool
-	config        string
+	methodType      string
+	tokenLocality   string
+	tokenNameFormat string
+	maxTokenTTL     time.Duration
+	isDefault       bool
+	config          string
+	json            bool
+	tmpl            string
 
 	testStdin io.Reader
 }
@@ -44,8 +50,7 @@ General Options:
 ACL Auth Method Update Options:
 
   -type
-    Updates the type of the auth method. Currently the only supported type is
-    'OIDC'.
+    Updates the type of the auth method. Supported types are 'OIDC' and 'JWT'.
 
   -max-token-ttl
     Updates the duration of time all tokens created by this auth method should be
@@ -55,14 +60,24 @@ ACL Auth Method Update Options:
     Updates the kind of token that this auth method should produce. This can be
     either 'local' or 'global'.
 
+  -token-name-format
+    Sets the token format for the authenticated users. This can be lightly templated 
+    using HIL '${foo}' syntax. Defaults to '${auth_method_type}-${auth_method_name}'
+
   -default
     Specifies whether this auth method should be treated as a default one in
     case no auth method is explicitly specified for a login command.
 
   -config
-	Updates auth method configuration (in JSON format). May be prefixed with
-	'@' to indicate that the value is a file path to load the config from. '-'
-	may also be given to indicate that the config is available on stdin.
+    Updates auth method configuration (in JSON format). May be prefixed with
+    '@' to indicate that the value is a file path to load the config from. '-'
+    may also be given to indicate that the config is available on stdin.
+
+  -json
+    Output the ACL auth-method in a JSON format.
+
+  -t
+    Format and display the ACL auth-method using a Go template.
 `
 
 	return strings.TrimSpace(helpText)
@@ -71,11 +86,14 @@ ACL Auth Method Update Options:
 func (a *ACLAuthMethodUpdateCommand) AutocompleteFlags() complete.Flags {
 	return mergeAutocompleteFlags(a.Meta.AutocompleteFlags(FlagSetClient),
 		complete.Flags{
-			"-type":           complete.PredictSet("OIDC"),
-			"-max-token-ttl":  complete.PredictAnything,
-			"-token-locality": complete.PredictSet("local", "global"),
-			"-default":        complete.PredictSet("true", "false"),
-			"-config":         complete.PredictNothing,
+			"-type":              complete.PredictSet("OIDC", "JWT"),
+			"-max-token-ttl":     complete.PredictAnything,
+			"-token-locality":    complete.PredictSet("local", "global"),
+			"-token-name-format": complete.PredictNothing,
+			"-default":           complete.PredictSet("true", "false"),
+			"-config":            complete.PredictNothing,
+			"-json":              complete.PredictNothing,
+			"-t":                 complete.PredictAnything,
 		})
 }
 
@@ -96,9 +114,12 @@ func (a *ACLAuthMethodUpdateCommand) Run(args []string) int {
 	flags.Usage = func() { a.Ui.Output(a.Help()) }
 	flags.StringVar(&a.methodType, "type", "", "")
 	flags.StringVar(&a.tokenLocality, "token-locality", "", "")
+	flags.StringVar(&a.tokenNameFormat, "token-name-format", "", "")
 	flags.DurationVar(&a.maxTokenTTL, "max-token-ttl", 0, "")
 	flags.StringVar(&a.config, "config", "", "")
 	flags.BoolVar(&a.isDefault, "default", false, "")
+	flags.BoolVar(&a.json, "json", false, "")
+	flags.StringVar(&a.tmpl, "t", "", "")
 	if err := flags.Parse(args); err != nil {
 		return 1
 	}
@@ -128,7 +149,7 @@ func (a *ACLAuthMethodUpdateCommand) Run(args []string) int {
 
 	// Check if any command-specific flags were set
 	setFlags := []string{}
-	for _, f := range []string{"type", "token-locality", "max-token-ttl", "config", "default"} {
+	for _, f := range []string{"type", "token-locality", "token-name-format", "max-token-ttl", "config", "default"} {
 		if flagPassed(flags, f) {
 			setFlags = append(setFlags, f)
 		}
@@ -148,9 +169,13 @@ func (a *ACLAuthMethodUpdateCommand) Run(args []string) int {
 		updatedMethod.TokenLocality = a.tokenLocality
 	}
 
+	if slices.Contains(setFlags, "token-name-format") {
+		updatedMethod.TokenNameFormat = a.tokenNameFormat
+	}
+
 	if slices.Contains(setFlags, "type") {
-		if strings.ToLower(a.methodType) != "oidc" {
-			a.Ui.Error("ACL auth method type must be set to 'OIDC'")
+		if !slices.Contains([]string{"OIDC", "JWT"}, strings.ToUpper(a.methodType)) {
+			a.Ui.Error("ACL auth method type must be set to 'OIDC' or 'JWT'")
 			return 1
 		}
 		updatedMethod.Type = a.methodType
@@ -191,7 +216,18 @@ func (a *ACLAuthMethodUpdateCommand) Run(args []string) int {
 		return 1
 	}
 
-	a.Ui.Output(fmt.Sprintf("Updated ACL auth method:\n%s", formatAuthMethod(method)))
+	if a.json || len(a.tmpl) > 0 {
+		out, err := Format(a.json, a.tmpl, method)
+		if err != nil {
+			a.Ui.Error(err.Error())
+			return 1
+		}
+
+		a.Ui.Output(out)
+		return 0
+	}
+
+	outputAuthMethod(a.Meta, method)
 	return 0
 }
 

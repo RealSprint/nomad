@@ -1,3 +1,6 @@
+# Copyright (c) HashiCorp, Inc.
+# SPDX-License-Identifier: BUSL-1.1
+
 variable "build_sha" {
   type        = string
   description = "the revision of the packer scripts building this image"
@@ -12,7 +15,7 @@ locals {
 source "amazon-ebs" "latest_ubuntu_jammy" {
   ami_name             = "nomad-e2e-${local.version}-ubuntu-jammy-amd64-${local.timestamp}"
   iam_instance_profile = "packer_build" // defined in nomad-e2e repo
-  instance_type        = "t3a.medium"
+  instance_type        = "m7a.large"
   region               = "us-east-1"
   ssh_username         = "ubuntu"
   ssh_interface        = "public_ip"

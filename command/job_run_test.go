@@ -1,8 +1,10 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
 	"io"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,7 +15,7 @@ import (
 	"github.com/hashicorp/nomad/ci"
 	"github.com/hashicorp/nomad/testutil"
 	"github.com/mitchellh/cli"
-	"github.com/stretchr/testify/require"
+	"github.com/shoenig/test/must"
 )
 
 var _ cli.Command = (*JobRunCommand)(nil)
@@ -23,7 +25,7 @@ func TestRunCommand_Output_Json(t *testing.T) {
 	ui := cli.NewMockUi()
 	cmd := &JobRunCommand{Meta: Meta{Ui: ui}}
 
-	fh, err := ioutil.TempFile("", "nomad")
+	fh, err := os.CreateTemp("", "nomad")
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -66,9 +68,9 @@ func TestRunCommand_hcl1_hcl2_strict(t *testing.T) {
 			"-hcl1", "-hcl2-strict",
 			"-address", addr,
 			"-detach",
-			"assets/example-short.nomad",
+			"asset/example-short.nomad.hcl",
 		})
-		require.Equal(t, 0, got, ui.ErrorWriter.String())
+		must.Zero(t, got)
 	})
 }
 
@@ -101,7 +103,7 @@ func TestRunCommand_Fails(t *testing.T) {
 	ui.ErrorWriter.Reset()
 
 	// Fails on invalid HCL
-	fh1, err := ioutil.TempFile("", "nomad")
+	fh1, err := os.CreateTemp("", "nomad")
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -118,7 +120,7 @@ func TestRunCommand_Fails(t *testing.T) {
 	ui.ErrorWriter.Reset()
 
 	// Fails on invalid job spec
-	fh2, err := ioutil.TempFile("", "nomad")
+	fh2, err := os.CreateTemp("", "nomad")
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -135,7 +137,7 @@ func TestRunCommand_Fails(t *testing.T) {
 	ui.ErrorWriter.Reset()
 
 	// Fails on connection failure (requires a valid job)
-	fh3, err := ioutil.TempFile("", "nomad")
+	fh3, err := os.CreateTemp("", "nomad")
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -258,14 +260,14 @@ func TestRunCommand_JSON(t *testing.T) {
 	}()
 
 	// First convert HCL -> JSON with -output
-	stdout, stderr, code := run("-output", "assets/example-short.nomad")
-	require.Zero(t, code, stderr)
-	require.Empty(t, stderr)
-	require.NotEmpty(t, stdout)
+	stdout, stderr, code := run("-output", "asset/example-short.nomad.hcl")
+	must.Zero(t, code)
+	must.Eq(t, "", stderr)
+	must.NotEq(t, "", stdout)
 	t.Logf("run -output==> %s...", stdout[:12])
 
 	jsonFile := filepath.Join(t.TempDir(), "redis.json")
-	require.NoError(t, os.WriteFile(jsonFile, []byte(stdout), 0o640))
+	must.NoError(t, os.WriteFile(jsonFile, []byte(stdout), 0o640))
 
 	// Wait for agent to start and get its address
 	addr := ""
@@ -277,23 +279,23 @@ func TestRunCommand_JSON(t *testing.T) {
 
 	// Submit JSON
 	stdout, stderr, code = run("-detach", "-address", addr, "-json", jsonFile)
-	require.Zero(t, code, stderr)
-	require.Empty(t, stderr)
+	must.Zero(t, code)
+	must.Eq(t, "", stderr)
 
 	// Read the JSON from the API as it omits the Job envelope and
 	// therefore differs from -output
 	resp, err := http.Get(addr + "/v1/job/example")
-	require.NoError(t, err)
+	must.NoError(t, err)
 	buf, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-	require.NoError(t, resp.Body.Close())
-	require.NotEmpty(t, buf)
+	must.NoError(t, err)
+	must.NoError(t, resp.Body.Close())
+	must.SliceNotEmpty(t, buf)
 	t.Logf("/v1/job/example==> %s...", string(buf[:12]))
-	require.NoError(t, os.WriteFile(jsonFile, buf, 0o640))
+	must.NoError(t, os.WriteFile(jsonFile, buf, 0o640))
 
 	// Submit JSON
 	stdout, stderr, code = run("-detach", "-address", addr, "-json", jsonFile)
-	require.Zerof(t, code, "stderr: %s\njson: %s\n", stderr, string(buf))
-	require.Empty(t, stderr)
-	require.NotEmpty(t, stdout)
+	must.Zero(t, code)
+	must.Eq(t, "", stderr)
+	must.NotEq(t, "", stdout)
 }

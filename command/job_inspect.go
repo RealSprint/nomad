@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
@@ -20,8 +23,9 @@ Alias: nomad inspect
 
   Inspect is used to see the specification of a submitted job.
 
-  When ACLs are enabled, this command requires a token with the 'read-job' and
-  'list-jobs' capabilities for the job's namespace.
+  When ACLs are enabled, this command requires a token with the 'read-job'
+  capability for the job's namespace. The 'list-jobs' capability is required to
+  run the command with a job prefix instead of the exact job ID.
 
 General Options:
 
@@ -117,23 +121,13 @@ func (c *JobInspectCommand) Run(args []string) int {
 		c.Ui.Error(commandErrorText(c))
 		return 1
 	}
-	jobID := strings.TrimSpace(args[0])
 
 	// Check if the job exists
-	jobs, _, err := client.Jobs().PrefixList(jobID)
+	jobIDPrefix := strings.TrimSpace(args[0])
+	jobID, namespace, err := c.JobIDByPrefix(client, jobIDPrefix, nil)
 	if err != nil {
-		c.Ui.Error(fmt.Sprintf("Error inspecting job: %s", err))
+		c.Ui.Error(err.Error())
 		return 1
-	}
-	if len(jobs) == 0 {
-		c.Ui.Error(fmt.Sprintf("No job(s) with prefix or id %q found", jobID))
-		return 1
-	}
-	if len(jobs) > 1 {
-		if (jobID != jobs[0].ID) || (c.allNamespaces() && jobs[0].ID == jobs[1].ID) {
-			c.Ui.Error(fmt.Sprintf("Prefix matched multiple jobs\n\n%s", createStatusListOutput(jobs, c.allNamespaces())))
-			return 1
-		}
 	}
 
 	var version *uint64
@@ -148,7 +142,7 @@ func (c *JobInspectCommand) Run(args []string) int {
 	}
 
 	// Prefix lookup matched a single job
-	job, err := getJob(client, jobs[0].JobSummary.Namespace, jobs[0].ID, version)
+	job, err := getJob(client, namespace, jobID, version)
 	if err != nil {
 		c.Ui.Error(fmt.Sprintf("Error inspecting job: %s", err))
 		return 1

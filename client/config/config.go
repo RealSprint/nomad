@@ -1,21 +1,28 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package config
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"net"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/hashicorp/consul-template/config"
-	"github.com/hashicorp/nomad/client/lib/cgutil"
-	"github.com/hashicorp/nomad/command/agent/host"
-	"golang.org/x/exp/maps"
-	"golang.org/x/exp/slices"
-
 	log "github.com/hashicorp/go-hclog"
+	"github.com/hashicorp/nomad/client/allocrunner/interfaces"
+	"github.com/hashicorp/nomad/client/lib/numalib"
+	"github.com/hashicorp/nomad/client/lib/numalib/hw"
 	"github.com/hashicorp/nomad/client/state"
+	"github.com/hashicorp/nomad/command/agent/host"
+	"github.com/hashicorp/nomad/helper"
 	"github.com/hashicorp/nomad/helper/bufconndialer"
 	"github.com/hashicorp/nomad/helper/pluginutils/loader"
 	"github.com/hashicorp/nomad/helper/pointer"
@@ -113,6 +120,14 @@ type Config struct {
 	// determined dynamically.
 	MemoryMB int
 
+	// DiskTotalMB is the default node total disk space in megabytes if it cannot be
+	// determined dynamically.
+	DiskTotalMB int
+
+	// DiskFreeMB is the default node free disk space in megabytes if it cannot be
+	// determined dynamically.
+	DiskFreeMB int
+
 	// MaxKillTimeout allows capping the user-specifiable KillTimeout. If the
 	// task's KillTimeout is greater than the MaxKillTimeout, MaxKillTimeout is
 	// used.
@@ -155,11 +170,15 @@ type Config struct {
 	// Version is the version of the Nomad client
 	Version *version.VersionInfo
 
-	// ConsulConfig is this Agent's Consul configuration
-	ConsulConfig *structsc.ConsulConfig
+	// ConsulConfigs is a map of Consul configurations, here to support features
+	// in Nomad Enterprise. The default Consul config pointer above will be
+	// found in this map under the name "default"
+	ConsulConfigs map[string]*structsc.ConsulConfig
 
-	// VaultConfig is this Agent's Vault configuration
-	VaultConfig *structsc.VaultConfig
+	// VaultConfigs is a map of Vault configurations, here to support features
+	// in Nomad Enterprise. The default Vault config pointer above will be found
+	// in this map under the name "default"
+	VaultConfigs map[string]*structsc.VaultConfig
 
 	// StatsCollectionInterval is the interval at which the Nomad client
 	// collects resource usage stats
@@ -236,6 +255,8 @@ type Config struct {
 	// StateDBFactory is used to override stateDB implementations,
 	StateDBFactory state.NewStateDBFunc
 
+	AllocRunnerFactory AllocRunnerFactory
+
 	// CNIPath is the path used to search for CNI plugins. Multiple paths can
 	// be specified with colon delimited
 	CNIPath string
@@ -252,6 +273,10 @@ type Config struct {
 	// BridgeNetworkName is the name to use for the bridge created in bridge
 	// networking mode. This defaults to 'nomad' if not set
 	BridgeNetworkName string
+
+	// BridgeNetworkHairpinMode is whether or not to enable hairpin mode on the
+	// internal bridge network
+	BridgeNetworkHairpinMode bool
 
 	// BridgeNetworkAllocSubnet is the IP subnet to use for address allocation
 	// for allocations in bridge networking mode. Subnet must be in CIDR
@@ -279,7 +304,7 @@ type Config struct {
 	CgroupParent string
 
 	// ReservableCores if set overrides the set of reservable cores reported in fingerprinting.
-	ReservableCores []uint16
+	ReservableCores []hw.CoreID
 
 	// NomadServiceDiscovery determines whether the Nomad native service
 	// discovery client functionality is enabled.
@@ -289,8 +314,34 @@ type Config struct {
 	// used for template functions which require access to the Nomad API.
 	TemplateDialer *bufconndialer.BufConnWrapper
 
+	// APIListenerRegistrar allows the client to register listeners created at
+	// runtime (eg the Task API) with the agent's HTTP server. Since the agent
+	// creates the HTTP *after* the client starts, we have to use this shim to
+	// pass listeners back to the agent.
+	// This is the same design as the bufconndialer but for the
+	// http.Serve(listener) API instead of the net.Dial API.
+	APIListenerRegistrar APIListenerRegistrar
+
 	// Artifact configuration from the agent's config file.
 	Artifact *ArtifactConfig
+
+	// Drain configuration from the agent's config file.
+	Drain *DrainConfig
+
+	// Uesrs configuration from the agent's config file.
+	Users *UsersConfig
+
+	// ExtraAllocHooks are run with other allocation hooks, mainly for testing.
+	ExtraAllocHooks []interfaces.RunnerHook
+}
+
+type APIListenerRegistrar interface {
+	// Serve the HTTP API on the provided listener.
+	//
+	// The context is because Serve may be called before the HTTP server has been
+	// initialized. If the context is canceled before the HTTP server is
+	// initialized, the context's error will be returned.
+	Serve(context.Context, net.Listener) error
 }
 
 // ClientTemplateConfig is configuration on the client specific to template
@@ -704,20 +755,23 @@ func (c *Config) Copy() *Config {
 	nc.Servers = slices.Clone(nc.Servers)
 	nc.Options = maps.Clone(nc.Options)
 	nc.HostVolumes = structs.CopyMapStringClientHostVolumeConfig(nc.HostVolumes)
-	nc.ConsulConfig = c.ConsulConfig.Copy()
-	nc.VaultConfig = c.VaultConfig.Copy()
+	nc.ConsulConfigs = helper.DeepCopyMap(c.ConsulConfigs)
+	nc.VaultConfigs = helper.DeepCopyMap(c.VaultConfigs)
 	nc.TemplateConfig = c.TemplateConfig.Copy()
 	nc.ReservableCores = slices.Clone(c.ReservableCores)
 	nc.Artifact = c.Artifact.Copy()
+	nc.Users = c.Users.Copy()
 	return &nc
 }
 
 // DefaultConfig returns the default configuration
 func DefaultConfig() *Config {
-	return &Config{
-		Version:                 version.GetVersion(),
-		VaultConfig:             structsc.DefaultVaultConfig(),
-		ConsulConfig:            structsc.DefaultConsulConfig(),
+	cfg := &Config{
+		Version: version.GetVersion(),
+		VaultConfigs: map[string]*structsc.VaultConfig{
+			structs.VaultDefaultCluster: structsc.DefaultVaultConfig()},
+		ConsulConfigs: map[string]*structsc.ConsulConfig{
+			structs.ConsulDefaultCluster: structsc.DefaultConsulConfig()},
 		Region:                  "global",
 		StatsCollectionInterval: 1 * time.Second,
 		TLSConfig:               &structsc.TLSConfig{},
@@ -752,10 +806,16 @@ func DefaultConfig() *Config {
 		CNIConfigDir:       "/opt/cni/config",
 		CNIInterfacePrefix: "eth",
 		HostNetworks:       map[string]*structs.ClientHostNetworkConfig{},
-		CgroupParent:       cgutil.GetCgroupParent(""),
+		CgroupParent:       "nomad.slice", // SETH todo
 		MaxDynamicPort:     structs.DefaultMinDynamicPort,
 		MinDynamicPort:     structs.DefaultMaxDynamicPort,
+		Users: &UsersConfig{
+			MinDynamicUser: 80_000,
+			MaxDynamicUser: 89_999,
+		},
 	}
+
+	return cfg
 }
 
 // Read returns the specified configuration value or "".
@@ -886,11 +946,20 @@ func splitValue(val string) map[string]struct{} {
 }
 
 // NomadPluginConfig produces the NomadConfig struct which is sent to Nomad plugins
-func (c *Config) NomadPluginConfig() *base.AgentConfig {
+func (c *Config) NomadPluginConfig(topology *numalib.Topology) *base.AgentConfig {
 	return &base.AgentConfig{
 		Driver: &base.ClientDriverConfig{
 			ClientMinPort: c.ClientMinPort,
 			ClientMaxPort: c.ClientMaxPort,
+			Topology:      topology,
 		},
 	}
+}
+
+func (c *Config) GetDefaultConsul() *structsc.ConsulConfig {
+	return c.ConsulConfigs[structs.ConsulDefaultCluster]
+}
+
+func (c *Config) GetDefaultVault() *structsc.VaultConfig {
+	return c.VaultConfigs[structs.VaultDefaultCluster]
 }

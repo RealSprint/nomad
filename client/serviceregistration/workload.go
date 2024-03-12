@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package serviceregistration
 
 import (
@@ -20,13 +23,13 @@ type WorkloadServices struct {
 	ProviderNamespace string
 
 	// Restarter allows restarting the task or task group depending on the
-	// check_restart stanzas.
+	// check_restart blocks.
 	Restarter WorkloadRestarter
 
 	// Services and checks to register for the task.
 	Services []*structs.Service
 
-	// Networks from the task's resources stanza.
+	// Networks from the task's resources block.
 	// TODO: remove and use Ports
 	Networks structs.Networks
 
@@ -44,6 +47,11 @@ type WorkloadServices struct {
 
 	// DriverNetwork is the network specified by the driver and may be nil.
 	DriverNetwork *drivers.DriverNetwork
+
+	// Tokens are explicit API tokens that should be used by the caller when
+	// synchronizing services and check; currently this is only used for Consul
+	// services and only when the Workload Identity workflow is used.
+	Tokens map[string]string // .Services[].Name -> token
 }
 
 // RegistrationProvider identifies the service registration provider for the

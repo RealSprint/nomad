@@ -1,22 +1,24 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
 	"crypto/x509"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/hashicorp/nomad/testutil"
 	"github.com/mitchellh/cli"
-	"github.com/stretchr/testify/require"
+	"github.com/shoenig/test/must"
 )
 
 func TestCACreateCommand(t *testing.T) {
 	testDir := t.TempDir()
 	previousDirectory, err := os.Getwd()
-	require.NoError(t, err)
-	require.NoError(t, os.Chdir(testDir))
+	must.NoError(t, err)
+	must.NoError(t, os.Chdir(testDir))
 	defer os.Chdir(previousDirectory)
 
 	type testcase struct {
@@ -33,9 +35,20 @@ func TestCACreateCommand(t *testing.T) {
 			"nomad-agent-ca.pem",
 			"nomad-agent-ca-key.pem",
 			func(t *testing.T, cert *x509.Certificate) {
-				require.Equal(t, 1825*24*time.Hour, time.Until(cert.NotAfter).Round(24*time.Hour))
-				require.False(t, cert.PermittedDNSDomainsCritical)
-				require.Len(t, cert.PermittedDNSDomains, 0)
+				must.Eq(t, 1825*24*time.Hour, time.Until(cert.NotAfter).Round(24*time.Hour))
+				must.False(t, cert.PermittedDNSDomainsCritical)
+				must.SliceEmpty(t, cert.PermittedDNSDomains)
+			},
+		},
+		{"ca custom domain",
+			[]string{
+				"-name-constraint=true",
+				"-domain=foo.com",
+			},
+			"foo.com-agent-ca.pem",
+			"foo.com-agent-ca-key.pem",
+			func(t *testing.T, cert *x509.Certificate) {
+				must.SliceContainsAll(t, cert.PermittedDNSDomains, []string{"nomad", "foo.com", "localhost"})
 			},
 		},
 		{"ca options",
@@ -44,32 +57,32 @@ func TestCACreateCommand(t *testing.T) {
 				"-name-constraint=true",
 				"-domain=foo",
 				"-additional-domain=bar",
+				"-common-name=CustomCA",
+				"-country=ZZ",
+				"-organization=CustOrg",
+				"-organizational-unit=CustOrgUnit",
 			},
 			"foo-agent-ca.pem",
 			"foo-agent-ca-key.pem",
 			func(t *testing.T, cert *x509.Certificate) {
-				require.Equal(t, 365*24*time.Hour, time.Until(cert.NotAfter).Round(24*time.Hour))
-				require.True(t, cert.PermittedDNSDomainsCritical)
-				require.Len(t, cert.PermittedDNSDomains, 3)
-				require.ElementsMatch(t, cert.PermittedDNSDomains, []string{"foo", "localhost", "bar"})
+				must.Eq(t, 365*24*time.Hour, time.Until(cert.NotAfter).Round(24*time.Hour))
+				must.True(t, cert.PermittedDNSDomainsCritical)
+				must.Len(t, 4, cert.PermittedDNSDomains)
+				must.SliceContainsAll(t, cert.PermittedDNSDomains, []string{"nomad", "foo", "localhost", "bar"})
+				must.Eq(t, cert.Issuer.Organization, []string{"CustOrg"})
+				must.Eq(t, cert.Issuer.OrganizationalUnit, []string{"CustOrgUnit"})
+				must.Eq(t, cert.Issuer.Country, []string{"ZZ"})
+				must.StrHasPrefix(t, "CustomCA", cert.Issuer.CommonName)
 			},
 		},
-		{"with common-name",
+		{"ca custom date",
 			[]string{
-				"-common-name=foo",
+				"-days=365",
 			},
 			"nomad-agent-ca.pem",
 			"nomad-agent-ca-key.pem",
 			func(t *testing.T, cert *x509.Certificate) {
-				require.Equal(t, cert.Subject.CommonName, "foo")
-			},
-		},
-		{"without common-name",
-			[]string{},
-			"nomad-agent-ca.pem",
-			"nomad-agent-ca-key.pem",
-			func(t *testing.T, cert *x509.Certificate) {
-				require.True(t, strings.HasPrefix(cert.Subject.CommonName, "Nomad Agent CA"))
+				must.Eq(t, 365*24*time.Hour, time.Until(cert.NotAfter).Round(24*time.Hour))
 			},
 		},
 	}
@@ -78,21 +91,20 @@ func TestCACreateCommand(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ui := cli.NewMockUi()
 			cmd := &TLSCACreateCommand{Meta: Meta{Ui: ui}}
-			require.Equal(t, 0, cmd.Run(tc.args), ui.ErrorWriter.String())
-			require.Equal(t, "", ui.ErrorWriter.String())
+			must.Zero(t, cmd.Run(tc.args))
+			must.Eq(t, "", ui.ErrorWriter.String())
 			// is a valid key
 			key := testutil.IsValidSigner(t, tc.keyPath)
-			require.True(t, key)
+			must.True(t, key)
 			// is a valid ca expects the ca
 			ca := testutil.IsValidCertificate(t, tc.caPath)
-			require.True(t, ca.BasicConstraintsValid)
-			require.Equal(t, x509.KeyUsageCertSign|x509.KeyUsageCRLSign|x509.KeyUsageDigitalSignature, ca.KeyUsage)
-			require.True(t, ca.IsCA)
-			require.Equal(t, ca.AuthorityKeyId, ca.SubjectKeyId)
+			must.True(t, ca.BasicConstraintsValid)
+			must.Eq(t, x509.KeyUsageCertSign|x509.KeyUsageCRLSign|x509.KeyUsageDigitalSignature, ca.KeyUsage)
+			must.True(t, ca.IsCA)
+			must.Eq(t, ca.AuthorityKeyId, ca.SubjectKeyId)
 			tc.extraCheck(t, ca)
-			require.NoError(t, os.Remove(tc.caPath))
-			require.NoError(t, os.Remove(tc.keyPath))
+			must.NoError(t, os.Remove(tc.caPath))
+			must.NoError(t, os.Remove(tc.keyPath))
 		})
 	}
-
 }

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
@@ -20,8 +23,9 @@ func TestACLPolicyListCommand(t *testing.T) {
 	}
 
 	srv, _, url := testServer(t, true, config)
+	defer srv.Shutdown()
+
 	state := srv.Agent.Server().State()
-	defer stopTestAgent(srv)
 
 	// Bootstrap an initial ACL token
 	token := srv.RootToken

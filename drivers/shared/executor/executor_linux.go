@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 //go:build linux
 
 package executor
@@ -12,31 +15,39 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/armon/circbuf"
 	"github.com/hashicorp/consul-template/signals"
 	hclog "github.com/hashicorp/go-hclog"
+	"github.com/hashicorp/go-set/v2"
 	"github.com/hashicorp/nomad/client/allocdir"
-	"github.com/hashicorp/nomad/client/lib/cgutil"
-	"github.com/hashicorp/nomad/client/lib/resources"
-	"github.com/hashicorp/nomad/client/stats"
+	"github.com/hashicorp/nomad/client/lib/cgroupslib"
+	"github.com/hashicorp/nomad/client/lib/cpustats"
 	cstructs "github.com/hashicorp/nomad/client/structs"
 	"github.com/hashicorp/nomad/drivers/shared/capabilities"
-	shelpers "github.com/hashicorp/nomad/helper/stats"
+	"github.com/hashicorp/nomad/drivers/shared/executor/procstats"
 	"github.com/hashicorp/nomad/helper/uuid"
 	"github.com/hashicorp/nomad/nomad/structs"
 	"github.com/hashicorp/nomad/plugins/drivers"
 	"github.com/opencontainers/runc/libcontainer"
 	"github.com/opencontainers/runc/libcontainer/cgroups"
-	lconfigs "github.com/opencontainers/runc/libcontainer/configs"
+	runc "github.com/opencontainers/runc/libcontainer/configs"
 	"github.com/opencontainers/runc/libcontainer/devices"
 	ldevices "github.com/opencontainers/runc/libcontainer/devices"
 	"github.com/opencontainers/runc/libcontainer/specconv"
 	lutils "github.com/opencontainers/runc/libcontainer/utils"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"golang.org/x/sys/unix"
+)
+
+const (
+	// CPU shares limits are defined by the Linux kernel.
+	// https://github.com/torvalds/linux/blob/0dd3ee31125508cd67f7e7172247f05b7fd1753a/kernel/sched/sched.h#L409-L418
+	MinCPUShares = 2
+	MaxCPUShares = 262_144
 )
 
 var (
@@ -57,10 +68,11 @@ type LibcontainerExecutor struct {
 
 	logger hclog.Logger
 
-	totalCpuStats  *stats.CpuStats
-	userCpuStats   *stats.CpuStats
-	systemCpuStats *stats.CpuStats
-	pidCollector   *pidCollector
+	compute        cpustats.Compute
+	totalCpuStats  *cpustats.Tracker
+	userCpuStats   *cpustats.Tracker
+	systemCpuStats *cpustats.Tracker
+	processStats   procstats.ProcessStats
 
 	container      libcontainer.Container
 	userProc       *libcontainer.Process
@@ -68,19 +80,21 @@ type LibcontainerExecutor struct {
 	exitState      *ProcessState
 }
 
-func NewExecutorWithIsolation(logger hclog.Logger) Executor {
-	logger = logger.Named("isolated_executor")
-	if err := shelpers.Init(); err != nil {
-		logger.Error("unable to initialize stats", "error", err)
-	}
-	return &LibcontainerExecutor{
+func NewExecutorWithIsolation(logger hclog.Logger, compute cpustats.Compute) Executor {
+	le := &LibcontainerExecutor{
 		id:             strings.ReplaceAll(uuid.Generate(), "-", "_"),
-		logger:         logger,
-		totalCpuStats:  stats.NewCpuStats(),
-		userCpuStats:   stats.NewCpuStats(),
-		systemCpuStats: stats.NewCpuStats(),
-		pidCollector:   newPidCollector(logger),
+		logger:         logger.Named("isolated_executor"),
+		compute:        compute,
+		totalCpuStats:  cpustats.New(compute),
+		userCpuStats:   cpustats.New(compute),
+		systemCpuStats: cpustats.New(compute),
 	}
+	le.processStats = procstats.New(compute, le)
+	return le
+}
+
+func (l *LibcontainerExecutor) ListProcesses() *set.Set[int] {
+	return procstats.List(l.command)
 }
 
 // Launch creates a new container in libcontainer and starts a new process with it
@@ -108,7 +122,7 @@ func (l *LibcontainerExecutor) Launch(command *ExecCommand) (*ProcessState, erro
 	}
 
 	// A container groups processes under the same isolation enforcement
-	containerCfg, err := newLibcontainerConfig(command)
+	containerCfg, err := l.newLibcontainerConfig(command)
 	if err != nil {
 		return nil, fmt.Errorf("failed to configure container(%s): %v", l.id, err)
 	}
@@ -154,9 +168,9 @@ func (l *LibcontainerExecutor) Launch(command *ExecCommand) (*ProcessState, erro
 	}
 	l.userProc = process
 
-	l.totalCpuStats = stats.NewCpuStats()
-	l.userCpuStats = stats.NewCpuStats()
-	l.systemCpuStats = stats.NewCpuStats()
+	l.totalCpuStats = cpustats.New(l.compute)
+	l.userCpuStats = cpustats.New(l.compute)
+	l.systemCpuStats = cpustats.New(l.compute)
 
 	// Starts the task
 	if err := container.Run(process); err != nil {
@@ -173,7 +187,7 @@ func (l *LibcontainerExecutor) Launch(command *ExecCommand) (*ProcessState, erro
 	// start a goroutine to wait on the process to complete, so Wait calls can
 	// be multiplexed
 	l.userProcExited = make(chan interface{})
-	go l.pidCollector.collectPids(l.userProcExited, l.getAllPids)
+
 	go l.wait()
 
 	return &ProcessState{
@@ -181,18 +195,6 @@ func (l *LibcontainerExecutor) Launch(command *ExecCommand) (*ProcessState, erro
 		ExitCode: -1,
 		Time:     time.Now(),
 	}, nil
-}
-
-func (l *LibcontainerExecutor) getAllPids() (resources.PIDs, error) {
-	pids, err := l.container.Processes()
-	if err != nil {
-		return nil, err
-	}
-	m := make(resources.PIDs, 1)
-	for _, pid := range pids {
-		m[pid] = resources.NewPID(pid)
-	}
-	return m, nil
 }
 
 // Wait waits until a process has exited and returns it's exitcode and errors
@@ -207,6 +209,23 @@ func (l *LibcontainerExecutor) Wait(ctx context.Context) (*ProcessState, error) 
 
 func (l *LibcontainerExecutor) wait() {
 	defer close(l.userProcExited)
+
+	// Best effort detection of OOMs. It's possible for us to miss OOM notifications in
+	// the event that the wait returns before we read from the OOM notification channel
+	var oomKilled atomic.Bool
+	go func() {
+		oomCh, err := l.container.NotifyOOM()
+		if err != nil {
+			l.logger.Error("failed to get OOM notification channel for container(%s): %v", l.id, err)
+			return
+		}
+
+		for range oomCh {
+			oomKilled.Store(true)
+			// We can terminate this goroutine as soon as we've seen the first OOM
+			return
+		}
+	}()
 
 	ps, err := l.userProc.Wait()
 	if err != nil {
@@ -235,10 +254,11 @@ func (l *LibcontainerExecutor) wait() {
 	}
 
 	l.exitState = &ProcessState{
-		Pid:      ps.Pid(),
-		ExitCode: exitCode,
-		Signal:   signal,
-		Time:     time.Now(),
+		Pid:       ps.Pid(),
+		ExitCode:  exitCode,
+		Signal:    signal,
+		OOMKilled: oomKilled.Load(),
+		Time:      time.Now(),
 	}
 }
 
@@ -290,6 +310,7 @@ func (l *LibcontainerExecutor) Shutdown(signal string, grace time.Duration) erro
 	} else {
 		err := l.container.Signal(os.Kill, true)
 		if err != nil {
+			l.logger.Info("no grace fail", "error", err)
 			return err
 		}
 	}
@@ -324,9 +345,12 @@ func (l *LibcontainerExecutor) handleStats(ch chan *cstructs.TaskResourceUsage, 
 	defer close(ch)
 	timer := time.NewTimer(0)
 
-	measuredMemStats := ExecutorCgroupV1MeasuredMemStats
-	if cgroups.IsCgroup2UnifiedMode() {
-		measuredMemStats = ExecutorCgroupV2MeasuredMemStats
+	var measurableMemStats []string
+	switch cgroupslib.GetMode() {
+	case cgroupslib.CG1:
+		measurableMemStats = ExecutorCgroupV1MeasuredMemStats
+	case cgroupslib.CG2:
+		measurableMemStats = ExecutorCgroupV2MeasuredMemStats
 	}
 
 	for {
@@ -338,20 +362,19 @@ func (l *LibcontainerExecutor) handleStats(ch chan *cstructs.TaskResourceUsage, 
 			timer.Reset(interval)
 		}
 
+		// the moment we collect this round of stats
+		ts := time.Now()
+
+		// get actual stats from the container
 		lstats, err := l.container.Stats()
 		if err != nil {
 			l.logger.Warn("error collecting stats", "error", err)
 			return
 		}
-
-		pidStats, err := l.pidCollector.pidStats()
-		if err != nil {
-			l.logger.Warn("error collecting stats", "error", err)
-			return
-		}
-
-		ts := time.Now()
 		stats := lstats.CgroupStats
+
+		// get the map of process pids in this container
+		pstats := l.processStats.StatProcesses()
 
 		// Memory Related Stats
 		swap := stats.MemoryStats.SwapUsage
@@ -368,7 +391,7 @@ func (l *LibcontainerExecutor) handleStats(ch chan *cstructs.TaskResourceUsage, 
 			MaxUsage:       maxUsage,
 			KernelUsage:    stats.MemoryStats.KernelUsage.Usage,
 			KernelMaxUsage: stats.MemoryStats.KernelUsage.MaxUsage,
-			Measured:       measuredMemStats,
+			Measured:       measurableMemStats,
 		}
 
 		// CPU Related Stats
@@ -392,7 +415,7 @@ func (l *LibcontainerExecutor) handleStats(ch chan *cstructs.TaskResourceUsage, 
 				CpuStats:    cs,
 			},
 			Timestamp: ts.UTC().UnixNano(),
-			Pids:      pidStats,
+			Pids:      pstats,
 		}
 
 		select {
@@ -511,13 +534,13 @@ func (l *LibcontainerExecutor) handleExecWait(ch chan *waitResult, process *libc
 	ch <- &waitResult{ps, err}
 }
 
-func configureCapabilities(cfg *lconfigs.Config, command *ExecCommand) {
+func configureCapabilities(cfg *runc.Config, command *ExecCommand) {
 	switch command.User {
 	case "root":
 		// when running as root, use the legacy set of system capabilities, so
 		// that we do not break existing nomad clusters using this "feature"
 		legacyCaps := capabilities.LegacySupported().Slice(true)
-		cfg.Capabilities = &lconfigs.Capabilities{
+		cfg.Capabilities = &runc.Capabilities{
 			Bounding:    legacyCaps,
 			Permitted:   legacyCaps,
 			Effective:   legacyCaps,
@@ -526,19 +549,28 @@ func configureCapabilities(cfg *lconfigs.Config, command *ExecCommand) {
 		}
 	default:
 		// otherwise apply the plugin + task capability configuration
-		cfg.Capabilities = &lconfigs.Capabilities{
-			Bounding: command.Capabilities,
+		//
+		// The capabilities must be set in the Ambient set as libcontainer
+		// performs `execve`` as an unprivileged user.  Ambient also requires
+		// that capabilities are Permitted and Inheritable.  Setting Effective
+		// is unnecessary, because we only need the capabilities to become
+		// effective _after_ execve, not before.
+		cfg.Capabilities = &runc.Capabilities{
+			Bounding:    command.Capabilities,
+			Permitted:   command.Capabilities,
+			Inheritable: command.Capabilities,
+			Ambient:     command.Capabilities,
 		}
 	}
 }
 
-func configureNamespaces(pidMode, ipcMode string) lconfigs.Namespaces {
-	namespaces := lconfigs.Namespaces{{Type: lconfigs.NEWNS}}
+func configureNamespaces(pidMode, ipcMode string) runc.Namespaces {
+	namespaces := runc.Namespaces{{Type: runc.NEWNS}}
 	if pidMode == IsolationModePrivate {
-		namespaces = append(namespaces, lconfigs.Namespace{Type: lconfigs.NEWPID})
+		namespaces = append(namespaces, runc.Namespace{Type: runc.NEWPID})
 	}
 	if ipcMode == IsolationModePrivate {
-		namespaces = append(namespaces, lconfigs.Namespace{Type: lconfigs.NEWIPC})
+		namespaces = append(namespaces, runc.Namespace{Type: runc.NEWIPC})
 	}
 	return namespaces
 }
@@ -550,7 +582,7 @@ func configureNamespaces(pidMode, ipcMode string) lconfigs.Namespaces {
 // * dedicated mount points namespace, but shares the PID, User, domain, network namespaces with host
 // * small subset of devices (e.g. stdout/stderr/stdin, tty, shm, pts); default to using the same set of devices as Docker
 // * some special filesystems: `/proc`, `/sys`.  Some case is given to avoid exec escaping or setting malicious values through them.
-func configureIsolation(cfg *lconfigs.Config, command *ExecCommand) error {
+func configureIsolation(cfg *runc.Config, command *ExecCommand) error {
 	defaultMountFlags := syscall.MS_NOEXEC | syscall.MS_NOSUID | syscall.MS_NODEV
 
 	// set the new root directory for the container
@@ -563,8 +595,8 @@ func configureIsolation(cfg *lconfigs.Config, command *ExecCommand) error {
 	cfg.Namespaces = configureNamespaces(command.ModePID, command.ModeIPC)
 
 	if command.NetworkIsolation != nil {
-		cfg.Namespaces = append(cfg.Namespaces, lconfigs.Namespace{
-			Type: lconfigs.NEWNET,
+		cfg.Namespaces = append(cfg.Namespaces, runc.Namespace{
+			Type: runc.NEWNET,
 			Path: command.NetworkIsolation.Path,
 		})
 	}
@@ -589,7 +621,7 @@ func configureIsolation(cfg *lconfigs.Config, command *ExecCommand) error {
 		cfg.Devices = append(cfg.Devices, devs...)
 	}
 
-	cfg.Mounts = []*lconfigs.Mount{
+	cfg.Mounts = []*runc.Mount{
 		{
 			Source:      "tmpfs",
 			Destination: "/dev",
@@ -638,33 +670,43 @@ func configureIsolation(cfg *lconfigs.Config, command *ExecCommand) error {
 	return nil
 }
 
-func configureCgroups(cfg *lconfigs.Config, command *ExecCommand) error {
-	// If resources are not limited then manually create cgroups needed
+func (l *LibcontainerExecutor) configureCgroups(cfg *runc.Config, command *ExecCommand) error {
+	// note: an alloc TR hook pre-creates the cgroup(s) in both v1 and v2
+
 	if !command.ResourceLimits {
-		return cgutil.ConfigureBasicCgroups(cfg)
-	}
-
-	// set cgroups path
-	if cgutil.UseV2 {
-		// in v2, the cgroup must have been created by the client already,
-		// which breaks a lot of existing tests that run drivers without a client
-		if command.Resources == nil || command.Resources.LinuxResources == nil || command.Resources.LinuxResources.CpusetCgroupPath == "" {
-			return errors.New("cgroup path must be set")
-		}
-		parent, cgroup := cgutil.SplitPath(command.Resources.LinuxResources.CpusetCgroupPath)
-		cfg.Cgroups.Path = filepath.Join("/", parent, cgroup)
-	} else {
-		// in v1, the cgroup is created using /nomad, which is a bug because it
-		// does not respect the cgroup_parent client configuration
-		// (but makes testing easy)
-		id := uuid.Generate()
-		cfg.Cgroups.Path = filepath.Join("/", cgutil.DefaultCgroupV1Parent, id)
-	}
-
-	if command.Resources == nil || command.Resources.NomadResources == nil {
 		return nil
 	}
 
+	cg := command.StatsCgroup()
+	if cg == "" {
+		return errors.New("cgroup must be set")
+	}
+
+	// // set the libcontainer hook for writing the PID to cgroup.procs file
+	// TODO: this can be cg1 only, right?
+	// l.configureCgroupHook(cfg, command)
+
+	// set the libcontainer memory limits
+	l.configureCgroupMemory(cfg, command)
+
+	// set cgroup v1/v2 specific attributes (cpu, path)
+	switch cgroupslib.GetMode() {
+	case cgroupslib.CG1:
+		return l.configureCG1(cfg, command, cg)
+	default:
+		return l.configureCG2(cfg, command, cg)
+	}
+}
+
+func (*LibcontainerExecutor) configureCgroupHook(cfg *runc.Config, command *ExecCommand) {
+	cfg.Hooks = runc.Hooks{
+		runc.CreateRuntime: runc.HookList{
+			newSetCPUSetCgroupHook(command.Resources.LinuxResources.CpusetCgroupPath),
+		},
+	}
+}
+
+func (l *LibcontainerExecutor) configureCgroupMemory(cfg *runc.Config, command *ExecCommand) {
 	// Total amount of memory allowed to consume
 	res := command.Resources.NomadResources
 	memHard, memSoft := res.Memory.MemoryMaxMB, res.Memory.MemoryMB
@@ -673,39 +715,72 @@ func configureCgroups(cfg *lconfigs.Config, command *ExecCommand) error {
 		memSoft = 0
 	}
 
-	if memHard > 0 {
-		cfg.Cgroups.Resources.Memory = memHard * 1024 * 1024
-		cfg.Cgroups.Resources.MemoryReservation = memSoft * 1024 * 1024
+	cfg.Cgroups.Resources.Memory = memHard * 1024 * 1024
+	cfg.Cgroups.Resources.MemoryReservation = memSoft * 1024 * 1024
 
-		// Disable swap to avoid issues on the machine
-		var memSwappiness uint64
-		cfg.Cgroups.Resources.MemorySwappiness = &memSwappiness
-	}
+	// Disable swap if possible, to avoid issues on the machine
+	cfg.Cgroups.Resources.MemorySwappiness = cgroupslib.MaybeDisableMemorySwappiness()
+}
 
-	cpuShares := res.Cpu.CpuShares
-	if cpuShares < 2 {
-		return fmt.Errorf("resources.Cpu.CpuShares must be equal to or greater than 2: %v", cpuShares)
-	}
+func (l *LibcontainerExecutor) configureCG1(cfg *runc.Config, command *ExecCommand, cgroup string) error {
 
-	// Set the relative CPU shares for this cgroup, and convert for cgroupv2
+	cpuShares := l.clampCpuShares(command.Resources.LinuxResources.CPUShares)
+	cpusetPath := command.Resources.LinuxResources.CpusetCgroupPath
+	cpuCores := command.Resources.LinuxResources.CpusetCpus
+
+	// Set the v1 parent relative path (i.e. /nomad/<scope>) for the NON-cpuset cgroups
+	scope := filepath.Base(cgroup)
+	cfg.Cgroups.Path = filepath.Join("/", cgroupslib.NomadCgroupParent, scope)
+
+	// set cpu resources
 	cfg.Cgroups.Resources.CpuShares = uint64(cpuShares)
-	cfg.Cgroups.Resources.CpuWeight = cgroups.ConvertCPUSharesToCgroupV2Value(uint64(cpuShares))
 
-	if command.Resources.LinuxResources != nil && command.Resources.LinuxResources.CpusetCgroupPath != "" {
-		cfg.Hooks = lconfigs.Hooks{
-			lconfigs.CreateRuntime: lconfigs.HookList{
-				newSetCPUSetCgroupHook(command.Resources.LinuxResources.CpusetCgroupPath),
-			},
-		}
+	// we need to manually set the cpuset, because libcontainer will not set
+	// it for our special cpuset cgroup
+	if err := l.cpusetCG1(cpusetPath, cpuCores); err != nil {
+		return fmt.Errorf("failed to set cpuset: %w", err)
 	}
+
+	// tell libcontainer to write the pid to our special cpuset cgroup
+	l.configureCgroupHook(cfg, command)
 
 	return nil
 }
 
-func newLibcontainerConfig(command *ExecCommand) (*lconfigs.Config, error) {
-	cfg := &lconfigs.Config{
-		Cgroups: &lconfigs.Cgroup{
-			Resources: &lconfigs.Resources{
+func (l *LibcontainerExecutor) cpusetCG1(cpusetCgroupPath, cores string) error {
+	if cores == "" {
+		return nil
+	}
+	ed := cgroupslib.OpenPath(cpusetCgroupPath)
+	return ed.Write("cpuset.cpus", cores)
+}
+
+func (l *LibcontainerExecutor) configureCG2(cfg *runc.Config, command *ExecCommand, cg string) error {
+	cpuShares := l.clampCpuShares(command.Resources.LinuxResources.CPUShares)
+	cpuCores := command.Resources.LinuxResources.CpusetCpus
+
+	// Set the v2 specific unified path
+	cfg.Cgroups.Resources.CpusetCpus = cpuCores
+	partition := cgroupslib.GetPartitionFromCores(cpuCores)
+
+	// sets cpu.weight, which the kernel also translates to cpu.weight.nice
+	// despite what the libcontainer docs say, this sets priority not bandwidth
+	cpuWeight := cgroups.ConvertCPUSharesToCgroupV2Value(uint64(cpuShares))
+	cfg.Cgroups.Resources.CpuWeight = cpuWeight
+
+	// finally set the path of the cgroup in which to run the task
+	scope := filepath.Base(cg)
+	cfg.Cgroups.Path = filepath.Join("/", cgroupslib.NomadCgroupParent, partition, scope)
+
+	// todo(shoenig): we will also want to set cpu bandwidth (i.e. cpu_hard_limit)
+	// hopefully for 1.7
+	return nil
+}
+
+func (l *LibcontainerExecutor) newLibcontainerConfig(command *ExecCommand) (*runc.Config, error) {
+	cfg := &runc.Config{
+		Cgroups: &runc.Cgroup{
+			Resources: &runc.Resources{
 				MemorySwappiness: nil,
 			},
 		},
@@ -726,11 +801,29 @@ func newLibcontainerConfig(command *ExecCommand) (*lconfigs.Config, error) {
 		return nil, err
 	}
 
-	if err := configureCgroups(cfg, command); err != nil {
+	if err := l.configureCgroups(cfg, command); err != nil {
 		return nil, err
 	}
 
 	return cfg, nil
+}
+
+func (l *LibcontainerExecutor) clampCpuShares(shares int64) int64 {
+	if shares < MinCPUShares {
+		l.logger.Warn(
+			"task CPU is lower than minimum allowed, using minimum value instead",
+			"task_cpu", shares, "min", MinCPUShares,
+		)
+		return MinCPUShares
+	}
+	if shares > MaxCPUShares {
+		l.logger.Warn(
+			"task CPU is greater than maximum allowed, using maximum value instead",
+			"task_cpu", shares, "max", MaxCPUShares,
+		)
+		return MaxCPUShares
+	}
+	return shares
 }
 
 // cmdDevices converts a list of driver.DeviceConfigs into excutor.Devices.
@@ -763,12 +856,12 @@ var userMountToUnixMount = map[string]int{
 }
 
 // cmdMounts converts a list of driver.MountConfigs into excutor.Mounts.
-func cmdMounts(mounts []*drivers.MountConfig) []*lconfigs.Mount {
+func cmdMounts(mounts []*drivers.MountConfig) []*runc.Mount {
 	if len(mounts) == 0 {
 		return nil
 	}
 
-	r := make([]*lconfigs.Mount, len(mounts))
+	r := make([]*runc.Mount, len(mounts))
 
 	for i, m := range mounts {
 		flags := unix.MS_BIND
@@ -776,7 +869,7 @@ func cmdMounts(mounts []*drivers.MountConfig) []*lconfigs.Mount {
 			flags |= unix.MS_RDONLY
 		}
 
-		r[i] = &lconfigs.Mount{
+		r[i] = &runc.Mount{
 			Source:           m.HostPath,
 			Destination:      m.TaskPath,
 			Device:           "bind",
@@ -919,8 +1012,8 @@ func filepathIsRegular(path string) error {
 	return nil
 }
 
-func newSetCPUSetCgroupHook(cgroupPath string) lconfigs.Hook {
-	return lconfigs.NewFunctionHook(func(state *specs.State) error {
+func newSetCPUSetCgroupHook(cgroupPath string) runc.Hook {
+	return runc.NewFunctionHook(func(state *specs.State) error {
 		return cgroups.WriteCgroupProc(cgroupPath, state.Pid)
 	})
 }

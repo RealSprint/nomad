@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package jobspec
 
 import (
@@ -47,6 +50,7 @@ func parseGroups(result *api.Job, list *ast.ObjectList) error {
 			"task",
 			"ephemeral_disk",
 			"update",
+			"disconnect",
 			"reschedule",
 			"vault",
 			"migrate",
@@ -76,6 +80,7 @@ func parseGroups(result *api.Job, list *ast.ObjectList) error {
 		delete(m, "restart")
 		delete(m, "ephemeral_disk")
 		delete(m, "update")
+		delete(m, "disconnect")
 		delete(m, "vault")
 		delete(m, "migrate")
 		delete(m, "spread")
@@ -165,6 +170,13 @@ func parseGroups(result *api.Job, list *ast.ObjectList) error {
 			}
 		}
 
+		// If we have an disconnect strategy, then parse that
+		if o := listVal.Filter("disconnect"); len(o.Items) > 0 {
+			if err := parseDisconnect(&g.Disconnect, o); err != nil {
+				return multierror.Prefix(err, "update ->")
+			}
+		}
+
 		// If we have a migration strategy, then parse that
 		if o := listVal.Filter("migrate"); len(o.Items) > 0 {
 			if err := parseMigrate(&g.Migrate, o); err != nil {
@@ -210,8 +222,9 @@ func parseGroups(result *api.Job, list *ast.ObjectList) error {
 		// If we have a vault block, then parse that
 		if o := listVal.Filter("vault"); len(o.Items) > 0 {
 			tgVault := &api.Vault{
-				Env:        boolToPtr(true),
-				ChangeMode: stringToPtr("restart"),
+				Env:         boolToPtr(true),
+				DisableFile: boolToPtr(false),
+				ChangeMode:  stringToPtr("restart"),
 			}
 
 			if err := parseVault(tgVault, o); err != nil {
@@ -317,6 +330,7 @@ func parseRestartPolicy(final **api.RestartPolicy, list *ast.ObjectList) error {
 		"interval",
 		"delay",
 		"mode",
+		"render_templates",
 	}
 	if err := checkHCLKeys(obj.Val, valid); err != nil {
 		return err

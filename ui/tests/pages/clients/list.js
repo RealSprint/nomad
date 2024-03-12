@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 import {
   attribute,
   create,
@@ -11,8 +16,23 @@ import {
   visitable,
 } from 'ember-cli-page-object';
 
-import { multiFacet } from 'nomad-ui/tests/pages/components/facet';
 import pageSizeSelect from 'nomad-ui/tests/pages/components/page-size-select';
+
+const heliosFacet = (scope) => ({
+  scope,
+  toggle: clickable('button'),
+  options: collection(
+    '.hds-menu-primitive__content .hds-dropdown__content .hds-dropdown__list .hds-dropdown-list-item--variant-checkbox',
+    {
+      toggle: clickable('label'),
+      count: text('label .hds-dropdown-list-item__count'),
+      key: attribute(
+        'data-test-dropdown-option',
+        '[data-test-dropdown-option]'
+      ),
+    }
+  ),
+});
 
 export default create({
   pageSize: 25,
@@ -39,12 +59,14 @@ export default create({
 
       tooltip: attribute('aria-label', '.tooltip'),
 
-      isInfo: hasClass('is-info', '.status-text'),
-      isWarning: hasClass('is-warning', '.status-text'),
+      isInfo: hasClass('is-info'),
+      isSuccess: hasClass('is-success'),
+      isWarning: hasClass('is-warning'),
       isUnformatted: isHidden('.status-text'),
     },
 
     address: text('[data-test-client-address]'),
+    nodePool: text('[data-test-client-node-pool]'),
     datacenter: text('[data-test-client-datacenter]'),
     version: text('[data-test-client-version]'),
     allocations: text('[data-test-client-allocations]'),
@@ -70,10 +92,11 @@ export default create({
   },
 
   facets: {
-    class: multiFacet('[data-test-class-facet]'),
-    state: multiFacet('[data-test-state-facet]'),
-    datacenter: multiFacet('[data-test-datacenter-facet]'),
-    version: multiFacet('[data-test-version-facet]'),
-    volume: multiFacet('[data-test-volume-facet]'),
+    nodePools: heliosFacet('[data-test-node-pool-facet]'),
+    class: heliosFacet('[data-test-class-facet]'),
+    state: heliosFacet('[data-test-state-facet]'),
+    datacenter: heliosFacet('[data-test-datacenter-facet]'),
+    version: heliosFacet('[data-test-version-facet]'),
+    volume: heliosFacet('[data-test-volume-facet]'),
   },
 });

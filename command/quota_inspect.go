@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
@@ -33,8 +36,11 @@ General Options:
 
 Inspect Options:
 
+  -json
+    Output the latest quota information in a JSON format.
+
   -t
-    Format and display the namespaces using a Go template.
+    Format and display quota information using a Go template.
 `
 
 	return strings.TrimSpace(helpText)
@@ -43,7 +49,8 @@ Inspect Options:
 func (c *QuotaInspectCommand) AutocompleteFlags() complete.Flags {
 	return mergeAutocompleteFlags(c.Meta.AutocompleteFlags(FlagSetClient),
 		complete.Flags{
-			"-t": complete.PredictAnything,
+			"-t":    complete.PredictAnything,
+			"-json": complete.PredictNothing,
 		})
 }
 
@@ -58,16 +65,18 @@ func (c *QuotaInspectCommand) Synopsis() string {
 func (c *QuotaInspectCommand) Name() string { return "quota inspect" }
 
 func (c *QuotaInspectCommand) Run(args []string) int {
+	var json bool
 	var tmpl string
 	flags := c.Meta.FlagSet(c.Name(), FlagSetClient)
 	flags.Usage = func() { c.Ui.Output(c.Help()) }
+	flags.BoolVar(&json, "json", false, "")
 	flags.StringVar(&tmpl, "t", "", "")
 
 	if err := flags.Parse(args); err != nil {
 		return 1
 	}
 
-	// Check that we got one arguments
+	// Check that we got one argument
 	args = flags.Args()
 	if l := len(args); l != 1 {
 		c.Ui.Error("This command takes one argument: <quota>")
@@ -97,6 +106,17 @@ func (c *QuotaInspectCommand) Run(args []string) int {
 		return 1
 	}
 
+	if json || len(tmpl) > 0 {
+		out, err := Format(json, tmpl, spec)
+		if err != nil {
+			c.Ui.Error(err.Error())
+			return 1
+		}
+
+		c.Ui.Output(out)
+		return 0
+	}
+
 	// Get the quota usages
 	usages, failures := quotaUsages(spec, quotas)
 
@@ -111,7 +131,8 @@ func (c *QuotaInspectCommand) Run(args []string) int {
 		Failures: failuresConverted,
 	}
 
-	out, err := Format(len(tmpl) == 0, tmpl, data)
+	ftr := JSONFormat{}
+	out, err := ftr.TransformData(data)
 	if err != nil {
 		c.Ui.Error(err.Error())
 		return 1

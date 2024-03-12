@@ -1,3 +1,6 @@
+# Copyright (c) HashiCorp, Inc.
+# SPDX-License-Identifier: BUSL-1.1
+
 locals {
   ami_prefix = "nomad-e2e-v3"
 }
@@ -6,7 +9,7 @@ resource "aws_instance" "server" {
   ami                    = data.aws_ami.ubuntu_jammy_amd64.image_id
   instance_type          = var.instance_type
   key_name               = module.keys.key_name
-  vpc_security_group_ids = [aws_security_group.primary.id]
+  vpc_security_group_ids = [aws_security_group.servers.id] # see also the secondary ENI
   count                  = var.server_count
   iam_instance_profile   = data.aws_iam_instance_profile.nomad_e2e_cluster.name
   availability_zone      = var.availability_zone
@@ -23,7 +26,7 @@ resource "aws_instance" "client_ubuntu_jammy_amd64" {
   ami                    = data.aws_ami.ubuntu_jammy_amd64.image_id
   instance_type          = var.instance_type
   key_name               = module.keys.key_name
-  vpc_security_group_ids = [aws_security_group.primary.id]
+  vpc_security_group_ids = [aws_security_group.clients.id] # see also the secondary ENI
   count                  = var.client_count_ubuntu_jammy_amd64
   iam_instance_profile   = data.aws_iam_instance_profile.nomad_e2e_cluster.name
   availability_zone      = var.availability_zone
@@ -40,7 +43,7 @@ resource "aws_instance" "client_windows_2016_amd64" {
   ami                    = data.aws_ami.windows_2016_amd64.image_id
   instance_type          = var.instance_type
   key_name               = module.keys.key_name
-  vpc_security_group_ids = [aws_security_group.primary.id]
+  vpc_security_group_ids = [aws_security_group.clients.id]
   count                  = var.client_count_windows_2016_amd64
   iam_instance_profile   = data.aws_iam_instance_profile.nomad_e2e_cluster.name
   availability_zone      = var.availability_zone

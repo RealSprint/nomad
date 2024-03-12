@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package csimanager
 
 import (
@@ -39,7 +42,7 @@ func New(config *Config) Manager {
 	}
 
 	return &csiManager{
-		logger:    config.Logger,
+		logger:    config.Logger.Named("csi_manager"),
 		eventer:   config.TriggerNodeEvent,
 		registry:  config.DynamicRegistry,
 		instances: make(map[string]map[string]*instanceManager),
@@ -75,7 +78,22 @@ func (c *csiManager) PluginManager() pluginmanager.PluginManager {
 	return c
 }
 
-func (c *csiManager) MounterForPlugin(ctx context.Context, pluginID string) (VolumeMounter, error) {
+// WaitForPlugin waits for a specific plugin to be registered and available,
+// unless the context is canceled, or it takes longer than a minute.
+func (c *csiManager) WaitForPlugin(ctx context.Context, pType, pID string) error {
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	p, err := c.registry.WaitForPlugin(ctx, pType, pID)
+	if err != nil {
+		return fmt.Errorf("%s plugin '%s' did not become ready: %w", pType, pID, err)
+	}
+	c.instancesLock.Lock()
+	defer c.instancesLock.Unlock()
+	c.ensureInstance(p)
+	return nil
+}
+
+func (c *csiManager) ManagerForPlugin(ctx context.Context, pluginID string) (VolumeManager, error) {
 	c.instancesLock.RLock()
 	defer c.instancesLock.RUnlock()
 	nodePlugins, hasAnyNodePlugins := c.instances["csi-node"]
@@ -88,7 +106,7 @@ func (c *csiManager) MounterForPlugin(ctx context.Context, pluginID string) (Vol
 		return nil, fmt.Errorf("plugin %s for type csi-node not found", pluginID)
 	}
 
-	return mgr.VolumeMounter(ctx)
+	return mgr.VolumeManager(ctx)
 }
 
 // Run starts a plugin manager and should return early
@@ -149,7 +167,7 @@ func (c *csiManager) resyncPluginsFromRegistry(ptype string) {
 
 // handlePluginEvent syncs a single event against the plugin registry
 func (c *csiManager) handlePluginEvent(event *dynamicplugins.PluginUpdateEvent) {
-	if event == nil {
+	if event == nil || event.Info == nil {
 		return
 	}
 	c.logger.Trace("dynamic plugin event",

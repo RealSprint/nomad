@@ -1,7 +1,9 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
-	"io/ioutil"
 	"os"
 	"strconv"
 	"strings"
@@ -9,10 +11,10 @@ import (
 
 	"github.com/hashicorp/nomad/api"
 	"github.com/hashicorp/nomad/ci"
+	"github.com/hashicorp/nomad/helper/pointer"
 	"github.com/hashicorp/nomad/testutil"
 	"github.com/mitchellh/cli"
 	"github.com/shoenig/test/must"
-	"github.com/stretchr/testify/require"
 )
 
 func TestPlanCommand_Implements(t *testing.T) {
@@ -49,7 +51,7 @@ func TestPlanCommand_Fails(t *testing.T) {
 	ui.ErrorWriter.Reset()
 
 	// Fails on invalid HCL
-	fh1, err := ioutil.TempFile("", "nomad")
+	fh1, err := os.CreateTemp("", "nomad")
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -66,7 +68,7 @@ func TestPlanCommand_Fails(t *testing.T) {
 	ui.ErrorWriter.Reset()
 
 	// Fails on invalid job spec
-	fh2, err := ioutil.TempFile("", "nomad")
+	fh2, err := os.CreateTemp("", "nomad")
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -83,7 +85,7 @@ func TestPlanCommand_Fails(t *testing.T) {
 	ui.ErrorWriter.Reset()
 
 	// Fails on connection failure (requires a valid job)
-	fh3, err := ioutil.TempFile("", "nomad")
+	fh3, err := os.CreateTemp("", "nomad")
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -125,15 +127,17 @@ func TestPlanCommand_hcl1_hcl2_strict(t *testing.T) {
 		got := cmd.Run([]string{
 			"-hcl1", "-hcl2-strict",
 			"-address", addr,
-			"assets/example-short.nomad",
+			"asset/example-short.nomad.hcl",
 		})
 		// Exit code 1 here means that an alloc will be created, which is
 		// expected.
-		require.Equal(t, 1, got)
+		must.One(t, got)
 	})
 }
 
 func TestPlanCommand_From_STDIN(t *testing.T) {
+	_, _, addr := testServer(t, false, nil)
+
 	ci.Parallel(t)
 	stdinR, stdinW, err := os.Pipe()
 	if err != nil {
@@ -142,38 +146,36 @@ func TestPlanCommand_From_STDIN(t *testing.T) {
 
 	ui := cli.NewMockUi()
 	cmd := &JobPlanCommand{
-		Meta:      Meta{Ui: ui},
+		Meta: Meta{
+			Ui:          ui,
+			flagAddress: addr,
+		},
 		JobGetter: JobGetter{testStdin: stdinR},
 	}
 
 	go func() {
 		stdinW.WriteString(`
 job "job1" {
+	datacenters = ["dc1"]
   type = "service"
-  datacenters = [ "dc1" ]
-  group "group1" {
-                count = 1
-                task "task1" {
-                        driver = "exec"
-                        resources {
-                                cpu = 1000
-                                memory = 512
-                        }
-                }
-        }
+	group "group1" {
+    count = 1
+		task "task1" {
+      driver = "exec"
+			resources {
+        cpu    = 100
+        memory = 100
+      }
+    }
+  }
 }`)
 		stdinW.Close()
 	}()
 
-	args := []string{"-"}
-	if code := cmd.Run(args); code != 255 {
-		t.Fatalf("expected exit code 255, got %d: %q", code, ui.ErrorWriter.String())
-	}
-
-	if out := ui.ErrorWriter.String(); !strings.Contains(out, "connection refused") {
-		t.Fatalf("expected connection refused error, got: %s", out)
-	}
-	ui.ErrorWriter.Reset()
+	args := []string{"-address", addr, "-"}
+	code := cmd.Run(args)
+	must.Eq(t, 1, code, must.Sprintf("expected exit code 1, got %d: %q", code, ui.ErrorWriter.String()))
+	must.Eq(t, "", ui.ErrorWriter.String(), must.Sprintf("expected no stderr output, got:\n%s", ui.ErrorWriter.String()))
 }
 
 func TestPlanCommand_From_Files(t *testing.T) {
@@ -184,10 +186,10 @@ func TestPlanCommand_From_Files(t *testing.T) {
 
 	// Create a Nomad server
 	s := testutil.NewTestServer(t, func(c *testutil.TestServerConfig) {
-		c.Vault.Address = v.HTTPAddr
-		c.Vault.Enabled = true
-		c.Vault.AllowUnauthenticated = false
-		c.Vault.Token = v.RootToken
+		c.Vaults[0].Address = v.HTTPAddr
+		c.Vaults[0].Enabled = true
+		c.Vaults[0].AllowUnauthenticated = pointer.Of(false)
+		c.Vaults[0].Token = v.RootToken
 	})
 	defer s.Stop()
 
@@ -196,7 +198,7 @@ func TestPlanCommand_From_Files(t *testing.T) {
 		cmd := &JobPlanCommand{Meta: Meta{Ui: ui}}
 		args := []string{"-address", "http://" + s.HTTPAddr, "testdata/example-basic.nomad"}
 		code := cmd.Run(args)
-		require.Equal(t, 1, code) // no client running, fail to place
+		must.One(t, code) // no client running, fail to place
 		must.StrContains(t, ui.OutputWriter.String(), "WARNING: Failed to place all allocations.")
 	})
 
@@ -246,11 +248,10 @@ func TestPlanCommand_From_URL(t *testing.T) {
 	}
 }
 
-func TestPlanCommad_Preemptions(t *testing.T) {
+func TestPlanCommand_Preemptions(t *testing.T) {
 	ci.Parallel(t)
 	ui := cli.NewMockUi()
 	cmd := &JobPlanCommand{Meta: Meta{Ui: ui}}
-	require := require.New(t)
 
 	// Only one preempted alloc
 	resp1 := &api.JobPlanResponse{
@@ -268,8 +269,8 @@ func TestPlanCommad_Preemptions(t *testing.T) {
 	}
 	cmd.addPreemptions(resp1)
 	out := ui.OutputWriter.String()
-	require.Contains(out, "Alloc ID")
-	require.Contains(out, "alloc1")
+	must.StrContains(t, out, "Alloc ID")
+	must.StrContains(t, out, "alloc1")
 
 	// Less than 10 unique job ids
 	var preemptedAllocs []*api.AllocationListStub
@@ -293,8 +294,8 @@ func TestPlanCommad_Preemptions(t *testing.T) {
 	ui.OutputWriter.Reset()
 	cmd.addPreemptions(resp2)
 	out = ui.OutputWriter.String()
-	require.Contains(out, "Job ID")
-	require.Contains(out, "Namespace")
+	must.StrContains(t, out, "Job ID")
+	must.StrContains(t, out, "Namespace")
 
 	// More than 10 unique job IDs
 	preemptedAllocs = make([]*api.AllocationListStub, 0)
@@ -324,12 +325,12 @@ func TestPlanCommad_Preemptions(t *testing.T) {
 	ui.OutputWriter.Reset()
 	cmd.addPreemptions(resp3)
 	out = ui.OutputWriter.String()
-	require.Contains(out, "Job Type")
-	require.Contains(out, "batch")
-	require.Contains(out, "service")
+	must.StrContains(t, out, "Job Type")
+	must.StrContains(t, out, "batch")
+	must.StrContains(t, out, "service")
 }
 
-func TestPlanCommad_JSON(t *testing.T) {
+func TestPlanCommand_JSON(t *testing.T) {
 	ui := cli.NewMockUi()
 	cmd := &JobPlanCommand{
 		Meta: Meta{Ui: ui},
@@ -341,6 +342,6 @@ func TestPlanCommad_JSON(t *testing.T) {
 		"testdata/example-short.json",
 	}
 	code := cmd.Run(args)
-	require.Equal(t, 255, code)
-	require.Contains(t, ui.ErrorWriter.String(), "Error during plan: Put")
+	must.Eq(t, 255, code)
+	must.StrContains(t, ui.ErrorWriter.String(), "Error during plan: Put")
 }

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
@@ -102,6 +105,16 @@ func TestACLAuthMethodUpdateCommand_Run(t *testing.T) {
 		fmt.Sprintf("-config=@%s", configFile.Name()),
 		method.Name,
 	})
+	must.Zero(t, code)
+	s = ui.OutputWriter.String()
+	must.StrContains(t, s, method.Name)
+
+	ui.OutputWriter.Reset()
+	ui.ErrorWriter.Reset()
+
+	// Update a default auth method
+	code = cmd.Run([]string{
+		"-address=" + url, "-token=" + rootACLToken.SecretID, "-default=true", method.Name})
 	must.Zero(t, code)
 	s = ui.OutputWriter.String()
 	must.StrContains(t, s, method.Name)

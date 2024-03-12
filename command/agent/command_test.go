@@ -1,8 +1,12 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package agent
 
 import (
-	"io/ioutil"
 	"math"
+	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,6 +14,7 @@ import (
 	"github.com/hashicorp/nomad/ci"
 	"github.com/hashicorp/nomad/helper/pointer"
 	"github.com/mitchellh/cli"
+	"github.com/shoenig/test/must"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -68,6 +73,10 @@ func TestCommand_Args(t *testing.T) {
 			[]string{"-client", "-data-dir=" + tmpDir, "-meta=invalid.=inaccessible-value"},
 			"Invalid Client.Meta key: invalid.",
 		},
+		{
+			[]string{"-client", "-node-pool=not@valid"},
+			"Invalid node pool",
+		},
 	}
 	for _, tc := range tcases {
 		// Make a new command. We preemptively close the shutdownCh
@@ -109,7 +118,7 @@ func TestCommand_MetaConfigValidation(t *testing.T) {
 	}
 	for _, tc := range tcases {
 		configFile := filepath.Join(tmpDir, "conf1.hcl")
-		err := ioutil.WriteFile(configFile, []byte(`client{
+		err := os.WriteFile(configFile, []byte(`client{
 			enabled = true
 			meta = {
 				"valid" = "yes"
@@ -148,7 +157,7 @@ func TestCommand_MetaConfigValidation(t *testing.T) {
 	}
 }
 
-func TestCommand_NullCharInDatacenter(t *testing.T) {
+func TestCommand_InvalidCharInDatacenter(t *testing.T) {
 	ci.Parallel(t)
 
 	tmpDir := t.TempDir()
@@ -157,10 +166,13 @@ func TestCommand_NullCharInDatacenter(t *testing.T) {
 		"char-\\000-in-the-middle",
 		"ends-with-\\000",
 		"\\000-at-the-beginning",
+		"char-*-in-the-middle",
+		"ends-with-*",
+		"*-at-the-beginning",
 	}
 	for _, tc := range tcases {
 		configFile := filepath.Join(tmpDir, "conf1.hcl")
-		err := ioutil.WriteFile(configFile, []byte(`
+		err := os.WriteFile(configFile, []byte(`
         datacenter = "`+tc+`"
         client{
 			enabled = true
@@ -188,7 +200,7 @@ func TestCommand_NullCharInDatacenter(t *testing.T) {
 		}
 
 		out := ui.ErrorWriter.String()
-		exp := "Datacenter contains invalid characters"
+		exp := "Datacenter contains invalid characters (null or '*')"
 		if !strings.Contains(out, exp) {
 			t.Fatalf("expect to find %q\n\n%s", exp, out)
 		}
@@ -207,7 +219,7 @@ func TestCommand_NullCharInRegion(t *testing.T) {
 	}
 	for _, tc := range tcases {
 		configFile := filepath.Join(tmpDir, "conf1.hcl")
-		err := ioutil.WriteFile(configFile, []byte(`
+		err := os.WriteFile(configFile, []byte(`
         region = "`+tc+`"
         client{
 			enabled = true
@@ -298,6 +310,26 @@ func TestIsValidConfig(t *testing.T) {
 				DataDir: "foo/bar",
 			},
 			err: "must be given as an absolute",
+		},
+		{
+			name: "InvalidNodePoolChar",
+			conf: Config{
+				Client: &ClientConfig{
+					Enabled:  true,
+					NodePool: "not@valid",
+				},
+			},
+			err: "Invalid node pool",
+		},
+		{
+			name: "InvalidNodePoolName",
+			conf: Config{
+				Client: &ClientConfig{
+					Enabled:  true,
+					NodePool: structs.NodePoolAll,
+				},
+			},
+			err: "not allowed",
 		},
 		{
 			name: "NegativeMinDynamicPort",
@@ -398,7 +430,60 @@ func TestIsValidConfig(t *testing.T) {
 					},
 				},
 			},
-			err: "client.artifact stanza invalid: http_read_timeout must be > 0",
+			err: "client.artifact block invalid: http_read_timeout must be > 0",
+		},
+		{
+			name: "BadHostVolumeConfig",
+			conf: Config{
+				DataDir: "/tmp",
+				Client: &ClientConfig{
+					Enabled: true,
+					HostVolumes: []*structs.ClientHostVolumeConfig{
+						{
+							Name:     "test",
+							ReadOnly: true,
+						},
+						{
+							Name:     "test",
+							ReadOnly: true,
+							Path:     "/random/path",
+						},
+					},
+				},
+			},
+			err: "Missing path in host_volume config",
+		},
+		{
+			name: "ValidHostVolumeConfig",
+			conf: Config{
+				DataDir: "/tmp",
+				Client: &ClientConfig{
+					Enabled: true,
+					HostVolumes: []*structs.ClientHostVolumeConfig{
+						{
+							Name:     "test",
+							ReadOnly: true,
+							Path:     "/random/path1",
+						},
+						{
+							Name:     "test",
+							ReadOnly: true,
+							Path:     "/random/path2",
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "BadOIDCIssuer",
+			conf: Config{
+				DataDir: "/tmp",
+				Server: &ServerConfig{
+					Enabled:    true,
+					OIDCIssuer: ":/example.com",
+				},
+			},
+			err: "missing protocol scheme",
 		},
 	}
 
@@ -418,6 +503,125 @@ func TestIsValidConfig(t *testing.T) {
 			assert.False(t, result)
 			require.Contains(t, mui.ErrorWriter.String(), tc.err)
 			t.Logf("%s returned: %s", tc.name, mui.ErrorWriter.String())
+		})
+	}
+}
+
+func TestCommand_readConfig(t *testing.T) {
+	// Don't run in parallel since this test modifies environment variables.
+
+	configFiles := map[string]string{
+		"base.hcl": `
+data_dir = "/tmp/nomad"
+region   = "global"
+
+server {
+  enabled = true
+}
+
+client {
+  enabled = true
+}
+`,
+		"vault.hcl": `
+data_dir = "/tmp/nomad"
+region   = "global"
+
+server {
+  enabled = true
+}
+
+client {
+  enabled = true
+}
+
+vault {
+  token     = "token-from-config"
+  namespace = "ns-from-config"
+}
+`,
+	}
+
+	configDir := t.TempDir()
+	for k, v := range configFiles {
+		err := os.WriteFile(path.Join(configDir, k), []byte(v), 0644)
+		must.NoError(t, err)
+	}
+
+	testCases := []struct {
+		name    string
+		args    []string
+		env     map[string]string
+		checkFn func(*testing.T, *Config)
+	}{
+		{
+			name: "vault token and namespace from env var",
+			args: []string{
+				"-config", path.Join(configDir, "base.hcl"),
+			},
+			env: map[string]string{
+				"VAULT_TOKEN":     "token-from-env",
+				"VAULT_NAMESPACE": "ns-from-env",
+			},
+			checkFn: func(t *testing.T, c *Config) {
+				must.Eq(t, "token-from-env", c.Vaults[0].Token)
+				must.Eq(t, "ns-from-env", c.Vaults[0].Namespace)
+			},
+		},
+		{
+			name: "vault token and namespace from config takes precedence over env var",
+			args: []string{
+				"-config", path.Join(configDir, "vault.hcl"),
+			},
+			env: map[string]string{
+				"VAULT_TOKEN":     "token-from-env",
+				"VAULT_NAMESPACE": "ns-from-env",
+			},
+			checkFn: func(t *testing.T, c *Config) {
+				must.Eq(t, "token-from-config", c.Vaults[0].Token)
+				must.Eq(t, "ns-from-config", c.Vaults[0].Namespace)
+			},
+		},
+		{
+			name: "vault token and namespace from flag takes precedence over env var and config",
+			args: []string{
+				"-config", path.Join(configDir, "vault.hcl"),
+				"-vault-token", "secret-from-cli",
+				"-vault-namespace", "ns-from-cli",
+			},
+			env: map[string]string{
+				"VAULT_TOKEN":     "secret-from-env",
+				"VAULT_NAMESPACE": "ns-from-env",
+			},
+			checkFn: func(t *testing.T, c *Config) {
+				must.Eq(t, "secret-from-cli", c.Vaults[0].Token)
+				must.Eq(t, "ns-from-cli", c.Vaults[0].Namespace)
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ui := cli.NewMockUi()
+			defer func() {
+				// Print command stderr in case of a failed test case to help
+				// with debugging.
+				if t.Failed() {
+					t.Log(ui.ErrorWriter.String())
+				}
+			}()
+
+			cmd := &Command{
+				Ui:   ui,
+				args: tc.args,
+			}
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+
+			got := cmd.readConfig()
+			must.NotNil(t, got)
+			tc.checkFn(t, got)
 		})
 	}
 }

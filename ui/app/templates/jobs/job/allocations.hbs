@@ -1,3 +1,8 @@
+{{!
+  Copyright (c) HashiCorp, Inc.
+  SPDX-License-Identifier: BUSL-1.1
+~}}
+
 {{page-title "Job " this.job.name " allocations"}}
 <JobSubnav @job={{this.job}} />
 <section class="section">
@@ -33,6 +38,19 @@
             @selection={{this.selectionTaskGroup}}
             @onSelect={{action this.setFacetQueryParam "qpTaskGroup"}}
           />
+          <MultiSelectDropdown
+            data-test-allocation-version-facet
+            @label="Job Version"
+            @options={{this.optionsVersions}}
+            @selection={{this.selectionVersion}}
+            @onSelect={{action this.setFacetQueryParam "qpVersion"}}
+          />
+          <MultiSelectDropdown
+            @label="Scheduling"
+            @options={{this.optionsScheduling}}
+            @selection={{this.selectionScheduling}}
+            @onSelect={{action this.setFacetQueryParam "qpScheduling"}}
+          />
         </div>
       </div>
     </div>
@@ -48,7 +66,7 @@
           @sortDescending={{this.sortDescending}}
           @class="with-foot with-collapsed-borders" as |t|>
           <t.head>
-            <th class="is-narrow"></th>
+            <th class="is-narrow"><span class="visually-hidden">Driver Health, Scheduling, and Preemption</span></th>
             <t.sort-by @prop="shortId">ID</t.sort-by>
             <t.sort-by @prop="taskGroupName">Task Group</t.sort-by>
             <t.sort-by @prop="createIndex" @title="Create Index">Created</t.sort-by>
@@ -59,6 +77,9 @@
             <th>Volume</th>
             <th>CPU</th>
             <th>Memory</th>
+            {{#if this.job.actions.length}}
+              <th>Actions</th>
+            {{/if}}
           </t.head>
           <t.body as |row|>
             <AllocationRow
@@ -71,7 +92,7 @@
               @context="job"
               @onClick={{action "gotoAllocation" row.model}} />
               {{#each row.model.states as |task|}}
-                <TaskSubRow @active={{eq this.activeTask (concat task.allocation.id "-" task.name)}} @onSetActiveTask={{action 'setActiveTaskQueryParam'}} @namespan="9" @taskState={{task}} />
+                <TaskSubRow @active={{eq this.activeTask (concat task.allocation.id "-" task.name)}} @onSetActiveTask={{action 'setActiveTaskQueryParam'}} @namespan="9" @taskState={{task}} @jobHasActions={{this.job.actions.length}} />
               {{/each}}
 
           </t.body>

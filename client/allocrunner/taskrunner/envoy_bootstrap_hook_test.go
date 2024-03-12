@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 //go:build !windows
 // +build !windows
 
@@ -10,7 +13,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -46,7 +48,7 @@ func writeTmp(t *testing.T, s string, fm os.FileMode) string {
 	dir := t.TempDir()
 
 	fPath := filepath.Join(dir, sidsTokenFile)
-	err := ioutil.WriteFile(fPath, []byte(s), fm)
+	err := os.WriteFile(fPath, []byte(s), fm)
 	require.NoError(t, err)
 
 	return dir
@@ -105,13 +107,14 @@ var (
 	}
 
 	consulTLSConfig = consulTransportConfig{
-		HTTPAddr:  "2.2.2.2",            // arg
-		Auth:      "user:password",      // env
-		SSL:       "true",               // env
-		VerifySSL: "true",               // env
-		CAFile:    "/etc/tls/ca-file",   // arg
-		CertFile:  "/etc/tls/cert-file", // arg
-		KeyFile:   "/etc/tls/key-file",  // arg
+		HTTPAddr:   "2.2.2.2",               // arg
+		Auth:       "user:password",         // env
+		SSL:        "true",                  // env
+		VerifySSL:  "true",                  // env
+		GRPCCAFile: "/etc/tls/grpc-ca-file", // arg
+		CAFile:     "/etc/tls/ca-file",      // arg
+		CertFile:   "/etc/tls/cert-file",    // arg
+		KeyFile:    "/etc/tls/key-file",     // arg
 	}
 )
 
@@ -175,6 +178,7 @@ func TestEnvoyBootstrapHook_envoyBootstrapArgs(t *testing.T) {
 			"-address", "127.0.0.1:19100",
 			"-proxy-id", "s1-sidecar-proxy",
 			"-bootstrap",
+			"-grpc-ca-file", "/etc/tls/grpc-ca-file",
 			"-ca-file", "/etc/tls/ca-file",
 			"-client-cert", "/etc/tls/cert-file",
 			"-client-key", "/etc/tls/key-file",
@@ -356,16 +360,13 @@ func TestEnvoyBootstrapHook_with_SI_token(t *testing.T) {
 	// Insert service identity token in the secrets directory
 	token := uuid.Generate()
 	siTokenFile := filepath.Join(req.TaskDir.SecretsDir, sidsTokenFile)
-	err = ioutil.WriteFile(siTokenFile, []byte(token), 0440)
+	err = os.WriteFile(siTokenFile, []byte(token), 0440)
 	require.NoError(t, err)
 
 	resp := &interfaces.TaskPrestartResponse{}
 
 	// Run the hook
 	require.NoError(t, h.Prestart(context.Background(), req, resp))
-
-	// Assert it is Done
-	require.True(t, resp.Done)
 
 	// Ensure the default path matches
 	env := map[string]string{
@@ -459,9 +460,6 @@ func TestTaskRunner_EnvoyBootstrapHook_sidecar_ok(t *testing.T) {
 	// Run the hook
 	require.NoError(t, h.Prestart(context.Background(), req, resp))
 
-	// Assert it is Done
-	require.True(t, resp.Done)
-
 	require.NotNil(t, resp.Env)
 	require.Equal(t, "127.0.0.2:19001", resp.Env[envoyAdminBindEnvPrefix+"foo"])
 
@@ -543,7 +541,6 @@ func TestTaskRunner_EnvoyBootstrapHook_gateway_ok(t *testing.T) {
 	require.NoError(t, h.Prestart(context.Background(), req, &resp))
 
 	// Assert the hook is Done
-	require.True(t, resp.Done)
 	require.NotNil(t, resp.Env)
 
 	// Read the Envoy Config file
@@ -591,9 +588,6 @@ func TestTaskRunner_EnvoyBootstrapHook_Noop(t *testing.T) {
 
 	// Run the hook
 	require.NoError(t, h.Prestart(context.Background(), req, resp))
-
-	// Assert it is Done
-	require.True(t, resp.Done)
 
 	// Assert no file was written
 	_, err := os.Open(filepath.Join(req.TaskDir.SecretsDir, "envoy_bootstrap.json"))
@@ -670,11 +664,8 @@ func TestTaskRunner_EnvoyBootstrapHook_RecoverableError(t *testing.T) {
 
 	// Run the hook
 	err := h.Prestart(context.Background(), req, resp)
-	require.EqualError(t, err, "error creating bootstrap configuration for Connect proxy sidecar: exit status 1")
+	require.ErrorIs(t, err, errEnvoyBootstrapError)
 	require.True(t, structs.IsRecoverable(err))
-
-	// Assert it is not Done
-	require.False(t, resp.Done)
 
 	// Assert no file was written
 	_, err = os.Open(filepath.Join(req.TaskDir.SecretsDir, "envoy_bootstrap.json"))
@@ -758,7 +749,7 @@ func TestTaskRunner_EnvoyBootstrapHook_retryTimeout(t *testing.T) {
 
 	// Run the hook and get the error
 	err := h.Prestart(context.Background(), req, &resp)
-	require.EqualError(t, err, "error creating bootstrap configuration for Connect proxy sidecar: exit status 1")
+	require.ErrorIs(t, err, errEnvoyBootstrapError)
 
 	// Current time should be at least start time + total wait time
 	minimum := begin.Add(h.envoyBootstrapWaitTime)

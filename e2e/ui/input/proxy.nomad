@@ -1,6 +1,14 @@
+# Copyright (c) HashiCorp, Inc.
+# SPDX-License-Identifier: BUSL-1.1
+
 job "nomad-proxy" {
   datacenters = ["dc1", "dc2"]
   namespace   = "proxy"
+
+  constraint {
+    attribute = "${attr.kernel.name}"
+    value     = "linux"
+  }
 
   group "proxy" {
 
@@ -8,6 +16,17 @@ job "nomad-proxy" {
       port "www" {
         static = 6464
         to     = 443
+      }
+    }
+
+    service {
+      name     = "nomad-proxy"
+      port     = "www"
+      provider = "nomad"
+      check {
+        type     = "tcp"
+        interval = "1s"
+        timeout  = "2s"
       }
     }
 

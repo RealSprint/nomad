@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 import { module, test } from 'qunit';
 import { setupRenderingTest } from 'ember-qunit';
 import { click, find, render, settled, waitUntil } from '@ember/test-helpers';
@@ -20,6 +25,9 @@ let clientToken;
 const makeJob = (server, props = {}) => {
   // These tests require a job with particular task groups. This requires
   // mild Mirage surgery.
+  server.create('namespace', {
+    id: 'default',
+  });
   const job = server.create('job', {
     id: jobName,
     groupCount: 0,
@@ -53,6 +61,7 @@ module('Integration | Component | task group row', function (hooks) {
     this.store = this.owner.lookup('service:store');
     this.token = this.owner.lookup('service:token');
     this.server = startMirage();
+    this.server.create('node-pool');
     this.server.create('node');
 
     managementToken = this.server.create('token');

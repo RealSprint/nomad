@@ -1,8 +1,12 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package nomad
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -12,6 +16,7 @@ import (
 	log "github.com/hashicorp/go-hclog"
 	memdb "github.com/hashicorp/go-memdb"
 	"github.com/hashicorp/go-version"
+	"github.com/hashicorp/nomad/helper"
 	"github.com/hashicorp/nomad/helper/uuid"
 	"github.com/hashicorp/nomad/nomad/state"
 	"github.com/hashicorp/nomad/nomad/structs"
@@ -93,6 +98,9 @@ type Worker struct {
 	workloadStatus SchedulerWorkerStatus
 	statusLock     sync.RWMutex
 
+	// shutdownCh is closed when the run function has exited
+	shutdownCh chan struct{}
+
 	pauseFlag bool
 	pauseLock sync.Mutex
 	pauseCond *sync.Cond
@@ -105,8 +113,9 @@ type Worker struct {
 
 	// failures is the count of errors encountered while dequeueing evaluations
 	// and is used to calculate backoff.
-	failures  uint
-	evalToken string
+	failures       uint64
+	failureBackoff time.Duration
+	evalToken      string
 
 	// snapshotIndex is the index of the snapshot in which the scheduler was
 	// first invoked. It is used to mark the SnapshotIndex of evaluations
@@ -128,7 +137,9 @@ func newWorker(ctx context.Context, srv *Server, args SchedulerWorkerPoolArgs) *
 		srv:               srv,
 		start:             time.Now(),
 		status:            WorkerStarting,
+		shutdownCh:        make(chan struct{}),
 		enabledSchedulers: make([]string, len(args.EnabledSchedulers)),
+		failureBackoff:    time.Duration(0),
 	}
 	copy(w.enabledSchedulers, args.EnabledSchedulers)
 
@@ -148,7 +159,7 @@ func (w *Worker) ID() string {
 // to see if it paused using IsStarted()
 func (w *Worker) Start() {
 	w.setStatus(WorkerStarting)
-	go w.run()
+	go w.run(raftSyncLimit)
 }
 
 // Pause transitions a worker to the pausing state. Check
@@ -383,9 +394,10 @@ func (w *Worker) workerShuttingDown() bool {
 // ----------------------------------
 
 // run is the long-lived goroutine which is used to run the worker
-func (w *Worker) run() {
+func (w *Worker) run(raftSyncLimit time.Duration) {
 	defer func() {
 		w.markStopped()
+		close(w.shutdownCh)
 	}()
 	w.setStatuses(WorkerStarted, WorkloadRunning)
 	w.logger.Debug("running")
@@ -401,11 +413,12 @@ func (w *Worker) run() {
 			return
 		}
 
-		// since dequeue takes time, we could have shutdown the server after getting an eval that
-		// needs to be nacked before we exit. Explicitly checking the server to allow this eval
-		// to be processed on worker shutdown.
+		// since dequeue takes time, we could have shutdown the server after
+		// getting an eval that needs to be nacked before we exit. Explicitly
+		// check the server whether to allow this eval to be processed.
 		if w.srv.IsShutdown() {
-			w.logger.Error("nacking eval because the server is shutting down", "eval", log.Fmt("%#v", eval))
+			w.logger.Warn("nacking eval because the server is shutting down",
+				"eval", log.Fmt("%#v", eval))
 			w.sendNack(eval, token)
 			return
 		}
@@ -414,8 +427,34 @@ func (w *Worker) run() {
 		w.setWorkloadStatus(WorkloadWaitingForRaft)
 		snap, err := w.snapshotMinIndex(waitIndex, raftSyncLimit)
 		if err != nil {
-			w.logger.Error("error waiting for Raft index", "error", err, "index", waitIndex)
-			w.sendNack(eval, token)
+			var timeoutErr ErrMinIndexDeadlineExceeded
+			if errors.As(err, &timeoutErr) {
+				w.logger.Warn("timeout waiting for Raft index required by eval",
+					"eval", eval.ID, "index", waitIndex, "timeout", raftSyncLimit)
+				w.sendNack(eval, token)
+
+				// Timing out above means this server is woefully behind the
+				// leader's index. This can happen when a new server is added to
+				// a cluster and must initially sync the cluster state.
+				// Backoff dequeuing another eval until there's some indication
+				// this server would be up to date enough to process it.
+				slowServerSyncLimit := 10 * raftSyncLimit
+				if _, err := w.snapshotMinIndex(waitIndex, slowServerSyncLimit); err != nil {
+					w.logger.Warn("server is unable to catch up to last eval's index", "error", err)
+				}
+
+			} else if errors.Is(err, context.Canceled) {
+				// If the server has shutdown while we're waiting, we'll get the
+				// Canceled error from the worker's context. We need to nack any
+				// dequeued evals before we exit.
+				w.logger.Warn("nacking eval because the server is shutting down", "eval", eval.ID)
+				w.sendNack(eval, token)
+				return
+			} else {
+				w.logger.Error("error waiting for Raft index", "error", err, "index", waitIndex)
+				w.sendNack(eval, token)
+			}
+
 			continue
 		}
 
@@ -533,17 +572,35 @@ func (w *Worker) sendAck(eval *structs.Evaluation, token string) {
 	w.sendAcknowledgement(eval, token, true)
 }
 
+type ErrMinIndexDeadlineExceeded struct {
+	waitIndex uint64
+	timeout   time.Duration
+}
+
+// Unwrapping an ErrMinIndexDeadlineExceeded always return
+// context.DeadlineExceeded
+func (ErrMinIndexDeadlineExceeded) Unwrap() error {
+	return context.DeadlineExceeded
+}
+
+func (e ErrMinIndexDeadlineExceeded) Error() string {
+	return fmt.Sprintf("timed out after %s waiting for index=%d", e.timeout, e.waitIndex)
+}
+
 // snapshotMinIndex times calls to StateStore.SnapshotAfter which may block.
 func (w *Worker) snapshotMinIndex(waitIndex uint64, timeout time.Duration) (*state.StateSnapshot, error) {
-	start := time.Now()
+	defer metrics.MeasureSince([]string{"nomad", "worker", "wait_for_index"}, time.Now())
+
 	ctx, cancel := context.WithTimeout(w.ctx, timeout)
 	snap, err := w.srv.fsm.State().SnapshotMinIndex(ctx, waitIndex)
 	cancel()
-	metrics.MeasureSince([]string{"nomad", "worker", "wait_for_index"}, start)
 
-	// Wrap error to ensure callers don't disregard timeouts.
-	if err == context.DeadlineExceeded {
-		err = fmt.Errorf("timed out after %s waiting for index=%d", timeout, waitIndex)
+	// Wrap error to ensure callers can detect timeouts.
+	if errors.Is(err, context.DeadlineExceeded) {
+		return nil, ErrMinIndexDeadlineExceeded{
+			waitIndex: waitIndex,
+			timeout:   timeout,
+		}
 	}
 
 	return snap, err
@@ -734,7 +791,7 @@ SUBMIT:
 		}
 		return err
 	} else {
-		w.logger.Debug("created evaluation", "eval", log.Fmt("%#v", eval))
+		w.logger.Debug("created evaluation", "eval", log.Fmt("%#v", eval), "waitUntil", log.Fmt("%#v", eval.WaitUntil.String()))
 		w.backoffReset()
 	}
 	return nil
@@ -825,12 +882,10 @@ func (w *Worker) shouldResubmit(err error) bool {
 // backoff if the server or the worker is shutdown.
 func (w *Worker) backoffErr(base, limit time.Duration) bool {
 	w.setWorkloadStatus(WorkloadBackoff)
-	backoff := (1 << (2 * w.failures)) * base
-	if backoff > limit {
-		backoff = limit
-	} else {
-		w.failures++
-	}
+
+	backoff := helper.Backoff(base, limit, w.failures)
+	w.failures++
+
 	select {
 	case <-time.After(backoff):
 		return false
@@ -843,4 +898,8 @@ func (w *Worker) backoffErr(base, limit time.Duration) bool {
 // exponential backoff
 func (w *Worker) backoffReset() {
 	w.failures = 0
+}
+
+func (w *Worker) ShutdownCh() <-chan struct{} {
+	return w.shutdownCh
 }

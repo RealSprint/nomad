@@ -1,3 +1,8 @@
+{{!
+  Copyright (c) HashiCorp, Inc.
+  SPDX-License-Identifier: BUSL-1.1
+~}}
+
 {{! template-lint-disable no-duplicate-landmark-elements }}
 <nav class="navbar is-primary" title="navigation">
   <div class="navbar-brand">
@@ -12,6 +17,11 @@
     <LinkTo @route="jobs" class="navbar-item is-logo" aria-label="Home">
       <NomadLogo />
     </LinkTo>
+    {{#if this.system.agent.config.UI.Label.Text}}
+      <div class="custom-label" style={{this.labelStyles}}>
+        {{this.system.agent.config.UI.Label.Text}}
+      </div>
+    {{/if}}
   </div>
   {{#if this.system.fuzzySearchEnabled}}
     {{! template-lint-disable simple-unless }}
@@ -53,7 +63,7 @@
       </a>
     {{/if}}
     <a
-      href="https://nomadproject.io/docs"
+      href="https://developer.hashicorp.com/nomad/docs"
       target="_blank"
       rel="noopener noreferrer"
       class="navbar-item"

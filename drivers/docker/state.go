@@ -1,7 +1,12 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package docker
 
 import (
 	"sync"
+
+	"github.com/hashicorp/go-set/v2"
 )
 
 type taskStore struct {
@@ -24,6 +29,17 @@ func (ts *taskStore) Get(id string) (*taskHandle, bool) {
 	defer ts.lock.RUnlock()
 	t, ok := ts.store[id]
 	return t, ok
+}
+
+func (ts *taskStore) IDs() *set.Set[string] {
+	ts.lock.RLock()
+	defer ts.lock.RUnlock()
+
+	s := set.New[string](len(ts.store))
+	for _, handle := range ts.store {
+		s.Insert(handle.containerID)
+	}
+	return s
 }
 
 func (ts *taskStore) Delete(id string) {

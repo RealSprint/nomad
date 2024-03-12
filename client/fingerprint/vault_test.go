@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package fingerprint
 
 import (
@@ -31,7 +34,7 @@ func TestVaultFingerprint(t *testing.T) {
 	}
 
 	conf := config.DefaultConfig()
-	conf.VaultConfig = tv.Config
+	conf.VaultConfigs[structs.VaultDefaultCluster] = tv.Config
 
 	request := &FingerprintRequest{Config: conf, Node: node}
 	var response FingerprintResponse
@@ -60,6 +63,11 @@ func TestVaultFingerprint(t *testing.T) {
 
 	// Stop Vault to simulate it being unavailable
 	tv.Stop()
+
+	// Reset the nextCheck time for testing purposes, or we won't pick up the
+	// change until the next period, up to 2min from now
+	vfp := fp.(*VaultFingerprint)
+	vfp.states[structs.VaultDefaultCluster].nextCheck = time.Now()
 
 	err = fp.Fingerprint(request, &response)
 	if err != nil {

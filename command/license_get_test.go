@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
@@ -7,7 +10,7 @@ import (
 	"github.com/hashicorp/nomad/api"
 	"github.com/hashicorp/nomad/ci"
 	"github.com/mitchellh/cli"
-	"github.com/stretchr/testify/require"
+	"github.com/shoenig/test/must"
 )
 
 var _ cli.Command = &LicenseGetCommand{}
@@ -23,10 +26,10 @@ func TestCommand_LicenseGet_OSSErr(t *testing.T) {
 
 	code := cmd.Run([]string{"-address=" + url})
 	if srv.Enterprise {
-		require.Equal(t, 0, code)
+		must.Zero(t, code)
 	} else {
-		require.Equal(t, 1, code)
-		require.Contains(t, ui.ErrorWriter.String(), "Nomad Enterprise only endpoint")
+		must.One(t, code)
+		must.StrContains(t, ui.ErrorWriter.String(), "Nomad Enterprise only endpoint")
 	}
 }
 
@@ -52,9 +55,9 @@ func TestOutputLicenseReply(t *testing.T) {
 
 	ui := cli.NewMockUi()
 
-	require.Equal(t, 0, OutputLicenseReply(ui, lic))
+	must.Zero(t, OutputLicenseReply(ui, lic))
 
 	out := ui.OutputWriter.String()
-	require.Contains(t, out, "Customer ID")
-	require.Contains(t, out, "License ID")
+	must.StrContains(t, out, "Customer ID")
+	must.StrContains(t, out, "License ID")
 }

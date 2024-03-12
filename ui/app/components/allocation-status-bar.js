@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 import { computed } from '@ember/object';
 import DistributionBar from './distribution-bar';
 import { attributeBindings } from '@ember-decorators/component';
@@ -54,7 +59,7 @@ export default class AllocationStatusBar extends DistributionBar {
         value: allocs.startingAllocs,
         className: 'starting',
         layers: 2,
-        legendLink: this.generateLegendLink(this.job, 'starting'),
+        legendLink: this.generateLegendLink(this.job, 'pending'),
       },
       {
         label: 'Running',

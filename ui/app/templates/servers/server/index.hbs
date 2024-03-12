@@ -1,3 +1,8 @@
+{{!
+  Copyright (c) HashiCorp, Inc.
+  SPDX-License-Identifier: BUSL-1.1
+~}}
+
 {{page-title "Server " this.model.name}}
 <ServerSubnav @server={{this.model}} />
 <section class="section">
@@ -34,7 +39,14 @@
         <t.body as |row|>
           <tr data-test-server-tag>
             <td>{{row.model.name}}</td>
-            <td>{{row.model.value}}</td>
+            <td>
+              <CopyButton
+                @inset={{true}}
+                @compact={{true}}
+                @clipboardText={{row.model.value}}
+              />
+              {{row.model.value}}
+            </td>
           </tr>
         </t.body>
       </ListTable>

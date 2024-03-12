@@ -9,7 +9,7 @@ can be modified for the CephFS Driver, as used
 ## Deployment
 
 The Ceph CSI Node task requires that [`privileged =
-true`](https://www.nomadproject.io/docs/drivers/docker#privileged) be
+true`](https://developer.hashicorp.com/nomad/docs/drivers/docker#privileged) be
 set. This is not needed for the Controller task.
 
 ### Plugin Arguments
@@ -21,7 +21,7 @@ Refer to the official plugin
 
 * `--endpoint=${CSI_ENDPOINT}`: if you don't use the `CSI_ENDPOINT`
     environment variable, this option must match the `mount_dir`
-    specified in the `csi_plugin` stanza for the task.
+    specified in the `csi_plugin` block for the task.
 
 * `--nodeid=${node.unique.id}`: a unique ID for the node the task is running
   on.

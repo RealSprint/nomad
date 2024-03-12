@@ -1,11 +1,16 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package template
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,14 +19,19 @@ import (
 
 	ctconf "github.com/hashicorp/consul-template/config"
 	"github.com/hashicorp/consul-template/manager"
+	"github.com/hashicorp/consul-template/renderer"
 	"github.com/hashicorp/consul-template/signals"
 	envparse "github.com/hashicorp/go-envparse"
+	"github.com/hashicorp/go-hclog"
 	multierror "github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/nomad/client/allocrunner/taskrunner/interfaces"
+	trenderer "github.com/hashicorp/nomad/client/allocrunner/taskrunner/template/renderer"
 	"github.com/hashicorp/nomad/client/config"
 	"github.com/hashicorp/nomad/client/taskenv"
 	"github.com/hashicorp/nomad/helper/pointer"
+	"github.com/hashicorp/nomad/helper/subproc"
 	"github.com/hashicorp/nomad/nomad/structs"
+	structsc "github.com/hashicorp/nomad/nomad/structs/config"
 )
 
 const (
@@ -92,8 +102,20 @@ type TaskTemplateManagerConfig struct {
 	// ConsulNamespace is the Consul namespace for the task
 	ConsulNamespace string
 
+	// ConsulToken is the Consul ACL token fetched by consul_hook using
+	// workload identity
+	ConsulToken string
+
+	// ConsulConfig is the Consul configuration to use for this template. It may
+	// be nil if Nomad has no Consul cofiguration
+	ConsulConfig *structsc.ConsulConfig
+
 	// VaultToken is the Vault token for the task.
 	VaultToken string
+
+	// VaultConfig is the Vault configuration to use for this template. It may
+	// be nil if the task does not use Vault.
+	VaultConfig *structsc.VaultConfig
 
 	// VaultNamespace is the Vault namespace for the task
 	VaultNamespace string
@@ -112,6 +134,12 @@ type TaskTemplateManagerConfig struct {
 
 	// NomadToken is the Nomad token or identity claim for the task
 	NomadToken string
+
+	// TaskID is a unique identifier for this task's template manager, for use
+	// in downstream platform-specific template runner consumers
+	TaskID string
+
+	Logger hclog.Logger
 }
 
 // Validate validates the configuration.
@@ -166,6 +194,13 @@ func NewTaskTemplateManager(config *TaskTemplateManagerConfig) (*TaskTemplateMan
 		tm.signals[tmpl.ChangeSignal] = sig
 	}
 
+	// the platform sandbox needs to be created before we construct the runner
+	// so that reading the template is sandboxed
+	err := createPlatformSandbox(config)
+	if err != nil {
+		return nil, err
+	}
+
 	// Build the consul-template runner
 	runner, lookup, err := templateRunner(config)
 	if err != nil {
@@ -194,6 +229,8 @@ func (tm *TaskTemplateManager) Stop() {
 	if tm.runner != nil {
 		tm.runner.Stop()
 	}
+
+	destroyPlatformSandbox(tm.config)
 }
 
 // SetDriverHandle sets the executor
@@ -807,29 +844,37 @@ func newRunnerConfig(config *TaskTemplateManagerConfig,
 	}
 
 	// Set up the Consul config
-	if cc.ConsulConfig != nil {
-		conf.Consul.Address = &cc.ConsulConfig.Addr
-		conf.Consul.Token = &cc.ConsulConfig.Token
+	if config.ConsulConfig != nil {
+		conf.Consul.Address = &config.ConsulConfig.Addr
+
+		// if we're using WI, use the token from consul_hook
+		// NOTE: from Nomad 1.9 on, WI will be the only supported way of
+		// getting Consul tokens
+		if config.ConsulToken != "" {
+			conf.Consul.Token = &config.ConsulToken
+		} else {
+			conf.Consul.Token = &config.ConsulConfig.Token
+		}
 
 		// Get the Consul namespace from agent config. This is the lower level
 		// of precedence (beyond default).
-		if cc.ConsulConfig.Namespace != "" {
-			conf.Consul.Namespace = &cc.ConsulConfig.Namespace
+		if config.ConsulConfig.Namespace != "" {
+			conf.Consul.Namespace = &config.ConsulConfig.Namespace
 		}
 
-		if cc.ConsulConfig.EnableSSL != nil && *cc.ConsulConfig.EnableSSL {
-			verify := cc.ConsulConfig.VerifySSL != nil && *cc.ConsulConfig.VerifySSL
+		if config.ConsulConfig.EnableSSL != nil && *config.ConsulConfig.EnableSSL {
+			verify := config.ConsulConfig.VerifySSL != nil && *config.ConsulConfig.VerifySSL
 			conf.Consul.SSL = &ctconf.SSLConfig{
 				Enabled: pointer.Of(true),
 				Verify:  &verify,
-				Cert:    &cc.ConsulConfig.CertFile,
-				Key:     &cc.ConsulConfig.KeyFile,
-				CaCert:  &cc.ConsulConfig.CAFile,
+				Cert:    &config.ConsulConfig.CertFile,
+				Key:     &config.ConsulConfig.KeyFile,
+				CaCert:  &config.ConsulConfig.CAFile,
 			}
 		}
 
-		if cc.ConsulConfig.Auth != "" {
-			parts := strings.SplitN(cc.ConsulConfig.Auth, ":", 2)
+		if config.ConsulConfig.Auth != "" {
+			parts := strings.SplitN(config.ConsulConfig.Auth, ":", 2)
 			if len(parts) != 2 {
 				return nil, fmt.Errorf("Failed to parse Consul Auth config")
 			}
@@ -866,30 +911,30 @@ func newRunnerConfig(config *TaskTemplateManagerConfig,
 	emptyStr := ""
 	conf.Vault.RenewToken = pointer.Of(false)
 	conf.Vault.Token = &emptyStr
-	if cc.VaultConfig != nil && cc.VaultConfig.IsEnabled() {
-		conf.Vault.Address = &cc.VaultConfig.Addr
+	if config.VaultConfig != nil && config.VaultConfig.IsEnabled() {
+		conf.Vault.Address = &config.VaultConfig.Addr
 		conf.Vault.Token = &config.VaultToken
 
 		// Set the Vault Namespace. Passed in Task config has
 		// highest precedence.
-		if config.ClientConfig.VaultConfig.Namespace != "" {
-			conf.Vault.Namespace = &config.ClientConfig.VaultConfig.Namespace
+		if config.VaultConfig.Namespace != "" {
+			conf.Vault.Namespace = &config.VaultConfig.Namespace
 		}
 		if config.VaultNamespace != "" {
 			conf.Vault.Namespace = &config.VaultNamespace
 		}
 
-		if strings.HasPrefix(cc.VaultConfig.Addr, "https") || cc.VaultConfig.TLSCertFile != "" {
-			skipVerify := cc.VaultConfig.TLSSkipVerify != nil && *cc.VaultConfig.TLSSkipVerify
+		if strings.HasPrefix(config.VaultConfig.Addr, "https") || config.VaultConfig.TLSCertFile != "" {
+			skipVerify := config.VaultConfig.TLSSkipVerify != nil && *config.VaultConfig.TLSSkipVerify
 			verify := !skipVerify
 			conf.Vault.SSL = &ctconf.SSLConfig{
 				Enabled:    pointer.Of(true),
 				Verify:     &verify,
-				Cert:       &cc.VaultConfig.TLSCertFile,
-				Key:        &cc.VaultConfig.TLSKeyFile,
-				CaCert:     &cc.VaultConfig.TLSCaFile,
-				CaPath:     &cc.VaultConfig.TLSCaPath,
-				ServerName: &cc.VaultConfig.TLSServerName,
+				Cert:       &config.VaultConfig.TLSCertFile,
+				Key:        &config.VaultConfig.TLSKeyFile,
+				CaCert:     &config.VaultConfig.TLSCaFile,
+				CaPath:     &config.VaultConfig.TLSCaPath,
+				ServerName: &config.VaultConfig.TLSServerName,
 			}
 		} else {
 			conf.Vault.SSL = &ctconf.SSLConfig{
@@ -932,8 +977,115 @@ func newRunnerConfig(config *TaskTemplateManagerConfig,
 		}
 	}
 
+	sandboxEnabled := isSandboxEnabled(config)
+	sandboxDir := filepath.Dir(config.TaskDir) // alloc working directory
+	conf.ReaderFunc = ReaderFn(config.TaskID, sandboxDir, sandboxEnabled)
+	conf.RendererFunc = RenderFn(config.TaskID, sandboxDir, sandboxEnabled)
 	conf.Finalize()
 	return conf, nil
+}
+
+func isSandboxEnabled(cfg *TaskTemplateManagerConfig) bool {
+	if cfg.ClientConfig != nil && cfg.ClientConfig.TemplateConfig != nil && cfg.ClientConfig.TemplateConfig.DisableSandbox {
+		return false
+	}
+	return true
+}
+
+type sandboxConfig struct {
+	thisBin     string
+	sandboxPath string
+	destPath    string
+	sourcePath  string
+	perms       string
+	user        string
+	group       string
+	taskID      string
+	contents    []byte
+}
+
+func ReaderFn(taskID, taskDir string, sandboxEnabled bool) func(string) ([]byte, error) {
+	if !sandboxEnabled {
+		return nil
+	}
+	thisBin := subproc.Self()
+
+	return func(src string) ([]byte, error) {
+
+		sandboxCfg := &sandboxConfig{
+			thisBin:     thisBin,
+			sandboxPath: taskDir,
+			sourcePath:  src,
+			taskID:      taskID,
+		}
+
+		stdout, stderr, code, err := readTemplateFromSandbox(sandboxCfg)
+		if err != nil && code != 0 {
+			return nil, fmt.Errorf("%v: %s", err, string(stderr))
+		}
+
+		// this will get wrapped in CT log formatter
+		fmt.Fprintf(os.Stderr, "[DEBUG] %s", string(stderr))
+		return stdout, nil
+	}
+}
+
+func RenderFn(taskID, taskDir string, sandboxEnabled bool) func(*renderer.RenderInput) (*renderer.RenderResult, error) {
+	if !sandboxEnabled {
+		return nil
+	}
+	thisBin := subproc.Self()
+
+	return func(i *renderer.RenderInput) (*renderer.RenderResult, error) {
+		wouldRender := false
+		didRender := false
+
+		sandboxCfg := &sandboxConfig{
+			thisBin:     thisBin,
+			sandboxPath: taskDir,
+			destPath:    i.Path,
+			perms:       strconv.FormatUint(uint64(i.Perms), 8),
+			user:        i.User,
+			group:       i.Group,
+			taskID:      taskID,
+			contents:    i.Contents,
+		}
+
+		logs, code, err := renderTemplateInSandbox(sandboxCfg)
+		if err != nil {
+			if len(logs) > 0 {
+				log.Printf("[ERROR] %v: %s", err, logs)
+			} else {
+				log.Printf("[ERROR] %v", err)
+			}
+			return &renderer.RenderResult{
+				DidRender:   false,
+				WouldRender: false,
+				Contents:    []byte{},
+			}, fmt.Errorf("template render subprocess failed: %w", err)
+		}
+		if code == trenderer.ExitWouldRenderButDidnt {
+			didRender = false
+			wouldRender = true
+		} else {
+			didRender = true
+			wouldRender = true
+		}
+
+		// the subprocess emits logs matching the consul-template runner, but we
+		// CT doesn't support hclog, so we just print the whole output here to
+		// stderr the same way CT does so the results look seamless
+		if len(logs) > 0 {
+			log.Printf("[DEBUG] %s", logs)
+		}
+
+		result := &renderer.RenderResult{
+			DidRender:   didRender,
+			WouldRender: wouldRender,
+			Contents:    i.Contents,
+		}
+		return result, nil
+	}
 }
 
 // loadTemplateEnv loads task environment variables from all templates.

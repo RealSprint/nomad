@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 const { test, expect } = require('@playwright/test');
 
 test('authenticated users can see their policies', async ({ page }) => {
@@ -14,6 +19,6 @@ test('authenticated users can see their policies', async ({ page }) => {
   await expect(logo).toBeVisible();
 
 
-  const policies = page.locator('text=Policies')
+  const policies = page.getByText('Policies');
   await expect(policies).toBeVisible();
 });

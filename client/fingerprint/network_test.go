@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package fingerprint
 
 import (
@@ -219,12 +222,12 @@ func TestNetworkFingerprint_basic(t *testing.T) {
 		t.Fatalf("Bad IP match: %s", ip)
 	}
 
-	if response.Resources == nil || len(response.Resources.Networks) == 0 {
+	if len(response.NodeResources.Networks) == 0 {
 		t.Fatal("Expected to find Network Resources")
 	}
 
 	// Test at least the first Network Resource
-	net := response.Resources.Networks[0]
+	net := response.NodeResources.Networks[0]
 	if net.IP == "" {
 		t.Fatal("Expected Network Resource to not be empty")
 	}
@@ -297,12 +300,12 @@ func TestNetworkFingerPrint_default_device(t *testing.T) {
 		t.Fatalf("Bad IP match: %s", ip)
 	}
 
-	if response.Resources == nil || len(response.Resources.Networks) == 0 {
+	if len(response.NodeResources.Networks) == 0 {
 		t.Fatal("Expected to find Network Resources")
 	}
 
 	// Test at least the first Network Resource
-	net := response.Resources.Networks[0]
+	net := response.NodeResources.Networks[0]
 	if net.IP == "" {
 		t.Fatal("Expected Network Resource to not be empty")
 	}
@@ -346,12 +349,12 @@ func TestNetworkFingerPrint_LinkLocal_Allowed(t *testing.T) {
 		t.Fatalf("Bad IP match: %s", ip)
 	}
 
-	if response.Resources == nil || len(response.Resources.Networks) == 0 {
+	if len(response.NodeResources.Networks) == 0 {
 		t.Fatal("Expected to find Network Resources")
 	}
 
 	// Test at least the first Network Resource
-	net := response.Resources.Networks[0]
+	net := response.NodeResources.Networks[0]
 	if net.IP == "" {
 		t.Fatal("Expected Network Resource to not be empty")
 	}
@@ -399,12 +402,12 @@ func TestNetworkFingerPrint_LinkLocal_Allowed_MixedIntf(t *testing.T) {
 		t.Fatalf("Bad IP match: %s", ip)
 	}
 
-	if response.Resources == nil || len(response.Resources.Networks) == 0 {
+	if len(response.NodeResources.Networks) == 0 {
 		t.Fatal("Expected to find Network Resources")
 	}
 
 	// Test at least the first Network Resource
-	net := response.Resources.Networks[0]
+	net := response.NodeResources.Networks[0]
 	if net.IP == "" {
 		t.Fatal("Expected Network Resource to not be empty")
 	}
@@ -497,6 +500,9 @@ func TestNetworkFingerPrint_MultipleAliases(t *testing.T) {
 	for alias := range cfg.HostNetworks {
 		expected = append(expected, alias)
 	}
+	// eth3 matches the NetworkInterface and will then generate the 'default'
+	// alias
+	expected = append(expected, "default")
 	sort.Strings(expected)
 	sort.Strings(aliases)
 	require.Equal(t, expected, aliases, "host networks should match aliases")
@@ -534,7 +540,7 @@ func TestNetworkFingerPrint_HostNetworkReservedPorts(t *testing.T) {
 					CIDR:      "100.64.0.11/10",
 				},
 			},
-			expected: []string{"", "", ""},
+			expected: []string{"", "", "", ""},
 		},
 		{
 			name: "reserved ports in some aliases",
@@ -557,7 +563,7 @@ func TestNetworkFingerPrint_HostNetworkReservedPorts(t *testing.T) {
 					CIDR:      "100.64.0.11/10",
 				},
 			},
-			expected: []string{"22", "80,3000-4000", ""},
+			expected: []string{"22", "80,3000-4000", "", ""},
 		},
 	}
 

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
@@ -20,7 +23,7 @@ func TestACLTokenListCommand(t *testing.T) {
 	}
 
 	srv, _, url := testServer(t, true, config)
-	defer stopTestAgent(srv)
+	defer srv.Shutdown()
 
 	state := srv.Agent.Server().State()
 

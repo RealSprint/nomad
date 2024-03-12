@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package nomad
 
 import (
@@ -5,13 +8,12 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"slices"
 	"time"
 
 	log "github.com/hashicorp/go-hclog"
-	"golang.org/x/exp/slices"
-
 	"github.com/hashicorp/memberlist"
-	"github.com/hashicorp/nomad/helper/pluginutils/loader"
+	"github.com/hashicorp/nomad/helper"
 	"github.com/hashicorp/nomad/helper/pointer"
 	"github.com/hashicorp/nomad/helper/uuid"
 	"github.com/hashicorp/nomad/nomad/deploymentwatcher"
@@ -64,6 +66,11 @@ type Config struct {
 
 	// EventBufferSize is the amount of events to hold in memory.
 	EventBufferSize int64
+
+	// JobMaxSourceSize limits the maximum size of a jobs source hcl/json
+	// before being discarded automatically. A value of zero indicates no job
+	// sources will be stored.
+	JobMaxSourceSize int
 
 	// LogOutput is the location to write logs to. If this is not set,
 	// logs will go to stderr.
@@ -153,7 +160,14 @@ type Config struct {
 
 	// EvalGCThreshold is how "old" an evaluation must be to be eligible
 	// for GC. This gives users some time to debug a failed evaluation.
+	//
+	// Please note that the rules for GC of evaluations which belong to a batch
+	// job are separate and controlled by `BatchEvalGCThreshold`
 	EvalGCThreshold time.Duration
+
+	// BatchEvalGCThreshold is how "old" an evaluation must be to be eligible
+	// for GC if the eval belongs to a batch job.
+	BatchEvalGCThreshold time.Duration
 
 	// JobGCInterval is how often we dispatch a job to GC jobs that are
 	// available for garbage collection.
@@ -293,11 +307,15 @@ type Config struct {
 	// of all the heartbeats.
 	FailoverHeartbeatTTL time.Duration
 
-	// ConsulConfig is this Agent's Consul configuration
-	ConsulConfig *config.ConsulConfig
+	// ConsulConfigs is a map of Consul configurations, here to support features
+	// in Nomad Enterprise. The default Consul config pointer above will be
+	// found in this map under the name "default"
+	ConsulConfigs map[string]*config.ConsulConfig
 
-	// VaultConfig is this Agent's Vault configuration
-	VaultConfig *config.VaultConfig
+	// VaultConfigs is a map of Vault configurations, here to support features
+	// in Nomad Enterprise. The default Vault config pointer above will be found
+	// in this map under the name "default"
+	VaultConfigs map[string]*config.VaultConfig
 
 	// RPCHoldTimeout is how long an RPC can be "held" before it is errored.
 	// This is used to paper over a loss of leadership by instead holding RPCs,
@@ -342,6 +360,12 @@ type Config struct {
 	// publishing Job summary metrics
 	DisableDispatchedJobSummaryMetrics bool
 
+	// DisableRPCRateMetricsLabels drops the label for the identity of the
+	// requester when publishing metrics on RPC rate on the server. This may be
+	// useful to control metrics collection costs in environments where request
+	// rate is well-controlled but cardinality of requesters is high.
+	DisableRPCRateMetricsLabels bool
+
 	// AutopilotConfig is used to apply the initial autopilot config when
 	// bootstrapping.
 	AutopilotConfig *structs.AutopilotConfig
@@ -360,13 +384,6 @@ type Config struct {
 	// and this value is ignored.
 	DefaultSchedulerConfig structs.SchedulerConfiguration `hcl:"default_scheduler_config"`
 
-	// PluginLoader is used to load plugins.
-	PluginLoader loader.PluginCatalog
-
-	// PluginSingletonLoader is a plugin loader that will returns singleton
-	// instances of the plugins.
-	PluginSingletonLoader loader.PluginCatalog
-
 	// RPCHandshakeTimeout is the deadline by which RPC handshakes must
 	// complete. The RPC handshake includes the first byte read as well as
 	// the TLS handshake and subsequent byte read if TLS is enabled.
@@ -381,10 +398,8 @@ type Config struct {
 	// connections from a single IP address. nil/0 means no limit.
 	RPCMaxConnsPerClient int
 
-	// LicenseConfig is a tunable knob for enterprise license testing.
+	// LicenseConfig stores information about the Enterprise license loaded for the server.
 	LicenseConfig *LicenseConfig
-	LicenseEnv    string
-	LicensePath   string
 
 	// SearchConfig provides knobs for Search API.
 	SearchConfig *structs.SearchConfig
@@ -399,6 +414,22 @@ type Config struct {
 	// DeploymentQueryRateLimit is in queries per second and is used by the
 	// DeploymentWatcher to throttle the amount of simultaneously deployments
 	DeploymentQueryRateLimit float64
+
+	// JobDefaultPriority is the default Job priority if not specified.
+	JobDefaultPriority int
+
+	// JobMaxPriority is an upper bound on the Job priority.
+	JobMaxPriority int
+
+	// JobTrackedVersions is the number of historic Job versions that are kept.
+	JobTrackedVersions int
+
+	Reporting *config.ReportingConfig
+
+	// OIDCIssuer is the URL for the OIDC Issuer field in Workload Identity JWTs.
+	// If this is not configured the /.well-known/openid-configuration endpoint
+	// will not be available.
+	OIDCIssuer string
 }
 
 func (c *Config) Copy() *Config {
@@ -420,8 +451,8 @@ func (c *Config) Copy() *Config {
 	nc.RaftConfig = pointer.Copy(c.RaftConfig)
 	nc.SerfConfig = pointer.Copy(c.SerfConfig)
 	nc.EnabledSchedulers = slices.Clone(c.EnabledSchedulers)
-	nc.ConsulConfig = c.ConsulConfig.Copy()
-	nc.VaultConfig = c.VaultConfig.Copy()
+	nc.ConsulConfigs = helper.DeepCopyMap(c.ConsulConfigs)
+	nc.VaultConfigs = helper.DeepCopyMap(c.VaultConfigs)
 	nc.TLSConfig = c.TLSConfig.Copy()
 	nc.SentinelConfig = c.SentinelConfig.Copy()
 	nc.AutopilotConfig = c.AutopilotConfig.Copy()
@@ -429,6 +460,72 @@ func (c *Config) Copy() *Config {
 	nc.SearchConfig = c.SearchConfig.Copy()
 
 	return &nc
+}
+
+// ConsulServiceIdentity returns the workload identity to be used for accessing
+// the Consul API to register and manage Consul services.
+func (c *Config) ConsulServiceIdentity(cluster string) *structs.WorkloadIdentity {
+	conf := c.ConsulConfigs[cluster]
+	if conf == nil {
+		return nil
+	}
+
+	return workloadIdentityFromConfig(conf.ServiceIdentity)
+}
+
+// ConsulTaskIdentity returns the workload identity to be used for accessing the
+// Consul API from task hooks not supporting services (ex templates).
+func (c *Config) ConsulTaskIdentity(cluster string) *structs.WorkloadIdentity {
+	conf := c.ConsulConfigs[cluster]
+	if conf == nil {
+		return nil
+	}
+
+	return workloadIdentityFromConfig(conf.TaskIdentity)
+}
+
+// VaultIdentityConfig returns the workload identity to be used for accessing
+// the API of a given Vault cluster.
+func (c *Config) VaultIdentityConfig(cluster string) *structs.WorkloadIdentity {
+	conf := c.VaultConfigs[cluster]
+	if conf == nil {
+		return nil
+	}
+
+	return workloadIdentityFromConfig(conf.DefaultIdentity)
+}
+
+func (c *Config) GetDefaultConsul() *config.ConsulConfig {
+	return c.ConsulConfigs[structs.ConsulDefaultCluster]
+}
+
+func (c *Config) GetDefaultVault() *config.VaultConfig {
+	return c.VaultConfigs[structs.VaultDefaultCluster]
+}
+
+// workloadIdentityFromConfig returns a structs.WorkloadIdentity to be used in
+// a job from a config.WorkloadIdentityConfig parsed from an agent config file.
+func workloadIdentityFromConfig(widConfig *config.WorkloadIdentityConfig) *structs.WorkloadIdentity {
+	if widConfig == nil {
+		return nil
+	}
+
+	wid := &structs.WorkloadIdentity{}
+
+	if len(widConfig.Audience) > 0 {
+		wid.Audience = widConfig.Audience
+	}
+	if widConfig.Env != nil {
+		wid.Env = *widConfig.Env
+	}
+	if widConfig.File != nil {
+		wid.File = *widConfig.File
+	}
+	if widConfig.TTL != nil {
+		wid.TTL = *widConfig.TTL
+	}
+
+	return wid
 }
 
 // DefaultConfig returns the default configuration. Only used as the basis for
@@ -454,6 +551,7 @@ func DefaultConfig() *Config {
 		ReconcileInterval:                60 * time.Second,
 		EvalGCInterval:                   5 * time.Minute,
 		EvalGCThreshold:                  1 * time.Hour,
+		BatchEvalGCThreshold:             24 * time.Hour,
 		JobGCInterval:                    5 * time.Minute,
 		JobGCThreshold:                   4 * time.Hour,
 		NodeGCInterval:                   5 * time.Minute,
@@ -485,18 +583,20 @@ func DefaultConfig() *Config {
 		NodePlanRejectionEnabled:         false,
 		NodePlanRejectionThreshold:       15,
 		NodePlanRejectionWindow:          10 * time.Minute,
-		ConsulConfig:                     config.DefaultConsulConfig(),
-		VaultConfig:                      config.DefaultVaultConfig(),
-		RPCHoldTimeout:                   5 * time.Second,
-		StatsCollectionInterval:          1 * time.Minute,
-		TLSConfig:                        &config.TLSConfig{},
-		ReplicationBackoff:               30 * time.Second,
-		SentinelGCInterval:               30 * time.Second,
-		LicenseConfig:                    &LicenseConfig{},
-		EnableEventBroker:                true,
-		EventBufferSize:                  100,
-		ACLTokenMinExpirationTTL:         1 * time.Minute,
-		ACLTokenMaxExpirationTTL:         24 * time.Hour,
+		ConsulConfigs: map[string]*config.ConsulConfig{
+			structs.ConsulDefaultCluster: config.DefaultConsulConfig()},
+		VaultConfigs: map[string]*config.VaultConfig{
+			structs.VaultDefaultCluster: config.DefaultVaultConfig()},
+		RPCHoldTimeout:           5 * time.Second,
+		StatsCollectionInterval:  1 * time.Minute,
+		TLSConfig:                &config.TLSConfig{},
+		ReplicationBackoff:       30 * time.Second,
+		SentinelGCInterval:       30 * time.Second,
+		LicenseConfig:            &LicenseConfig{},
+		EnableEventBroker:        true,
+		EventBufferSize:          100,
+		ACLTokenMinExpirationTTL: 1 * time.Minute,
+		ACLTokenMaxExpirationTTL: 24 * time.Hour,
 		AutopilotConfig: &structs.AutopilotConfig{
 			CleanupDeadServers:      true,
 			LastContactThreshold:    200 * time.Millisecond,
@@ -515,6 +615,9 @@ func DefaultConfig() *Config {
 			},
 		},
 		DeploymentQueryRateLimit: deploymentwatcher.LimitStateQueriesPerSecond,
+		JobDefaultPriority:       structs.JobDefaultPriority,
+		JobMaxPriority:           structs.JobDefaultMaxPriority,
+		JobTrackedVersions:       structs.JobDefaultTrackedVersions,
 	}
 
 	// Enable all known schedulers by default

@@ -26,8 +26,9 @@ shows allocation modification time in addition to create time. When the
 `-verbose` flag is not set, allocation creation and modify times are shown in a
 shortened relative time format like `5m ago`.
 
-When ACLs are enabled, this command requires a token with the `read-job` and
-`list-jobs` capabilities for the job's namespace.
+When ACLs are enabled, this command requires a token with the `read-job`
+capability for the job's namespace. The `list-jobs` capability is required to
+run the command with a job prefix instead of the exact job ID.
 
 ## General Options
 
@@ -42,6 +43,10 @@ When ACLs are enabled, this command requires a token with the `read-job` and
 
 - `-short`: Display short output. Used only when a single node is being queried.
   Drops verbose node allocation data from the output.
+
+- `-json`: Output the job status in JSON format.
+
+- `-t`: Format and display the job status using a Go template.
 
 - `-verbose`: Show full information. Allocation create and modify times are
   shown in `yyyy/mm/dd hh:mm:ss` format.

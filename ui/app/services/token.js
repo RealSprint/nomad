@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 import Service, { inject as service } from '@ember/service';
 import { computed } from '@ember/object';
 import { alias, reads } from '@ember/object/computed';
@@ -16,7 +21,7 @@ export default class TokenService extends Service {
   @service store;
   @service system;
   @service router;
-  @service flashMessages;
+  @service notifications;
 
   aclEnabled = true;
 
@@ -66,7 +71,24 @@ export default class TokenService extends Service {
   @task(function* () {
     try {
       if (this.selfToken) {
-        return yield this.selfToken.get('policies');
+        // return yield this.selfToken.get('policies');
+        let tokenPolicies = yield this.selfToken.get('policies');
+        let rolePolicies = [];
+        const roles = yield this.selfToken.get('roles');
+        if (roles.length) {
+          yield Promise.all(
+            roles.map((role) => {
+              return role.policies;
+            })
+          );
+          rolePolicies = roles
+            .map((role) => {
+              return role.policies;
+            })
+            .map((policies) => policies.toArray())
+            .flat();
+        }
+        return [...tokenPolicies.toArray(), ...rolePolicies];
       } else {
         let policy = yield this.store.findRecord('policy', 'anonymous');
         return [policy];
@@ -135,7 +157,7 @@ export default class TokenService extends Service {
       // Let the user know at the 10 minute mark,
       // or any time they refresh with under 10 minutes left
       if (diff < 1000 * 60 * MINUTES_LEFT_AT_WARNING) {
-        const existingNotification = this.flashMessages.queue?.find(
+        const existingNotification = this.notifications.queue?.find(
           (m) => m.title === EXPIRY_NOTIFICATION_TITLE
         );
         // For the sake of updating the "time left" message, we keep running the task down to the moment of expiration
@@ -149,13 +171,12 @@ export default class TokenService extends Service {
             );
           } else {
             if (!this.expirationNotificationDismissed) {
-              this.flashMessages.add({
+              this.notifications.add({
                 title: EXPIRY_NOTIFICATION_TITLE,
                 message: `Your token access expires ${moment(
                   this.selfToken.expirationTime
                 ).fromNow()}`,
-                type: 'error',
-                destroyOnClick: false,
+                color: 'warning',
                 sticky: true,
                 customCloseAction: () => {
                   this.set('expirationNotificationDismissed', true);

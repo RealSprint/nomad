@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 //go:build darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris
 
 package exec
@@ -10,13 +13,11 @@ import (
 	"time"
 
 	"github.com/hashicorp/nomad/ci"
-	"github.com/hashicorp/nomad/client/lib/cgutil"
 	ctestutils "github.com/hashicorp/nomad/client/testutil"
 	"github.com/hashicorp/nomad/drivers/shared/capabilities"
 	"github.com/hashicorp/nomad/drivers/shared/executor"
-	"github.com/hashicorp/nomad/helper/testlog"
 	"github.com/hashicorp/nomad/helper/uuid"
-	basePlug "github.com/hashicorp/nomad/plugins/base"
+	"github.com/hashicorp/nomad/plugins/base"
 	"github.com/hashicorp/nomad/plugins/drivers"
 	dtestutil "github.com/hashicorp/nomad/plugins/drivers/testutils"
 	"github.com/hashicorp/nomad/testutil"
@@ -31,7 +32,7 @@ func TestExecDriver_StartWaitStop(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	d := NewExecDriver(ctx, testlog.HCLogger(t))
+	d := newExecDriverTest(t, ctx)
 	harness := dtestutil.NewDriverHarness(t, d)
 	allocID := uuid.Generate()
 	task := &drivers.TaskConfig{
@@ -88,24 +89,22 @@ func TestExecDriver_StartWaitStop(t *testing.T) {
 }
 
 func TestExec_ExecTaskStreaming(t *testing.T) {
+	ci.SkipTestWithoutRootAccess(t)
 	ci.Parallel(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	d := NewExecDriver(ctx, testlog.HCLogger(t))
+	d := newExecDriverTest(t, ctx)
 	harness := dtestutil.NewDriverHarness(t, d)
 	defer harness.Kill()
 
+	allocID := uuid.Generate()
+	taskName := "sleep"
 	task := &drivers.TaskConfig{
-		ID:   uuid.Generate(),
-		Name: "sleep",
-	}
-
-	if cgutil.UseV2 {
-		allocID := uuid.Generate()
-		task.AllocID = allocID
-		task.Resources = testResources(allocID, "sleep")
+		ID:        allocID,
+		Name:      taskName,
+		Resources: testResources(allocID, taskName),
 	}
 
 	cleanup := harness.MkAllocDir(task, false)
@@ -133,7 +132,7 @@ func TestExec_dnsConfig(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	d := NewExecDriver(ctx, testlog.HCLogger(t))
+	d := newExecDriverTest(t, ctx)
 	harness := dtestutil.NewDriverHarness(t, d)
 	defer harness.Kill()
 
@@ -161,15 +160,13 @@ func TestExec_dnsConfig(t *testing.T) {
 	}
 
 	for _, c := range cases {
+		allocID := uuid.Generate()
+		taskName := "sleep"
 		task := &drivers.TaskConfig{
-			ID:   uuid.Generate(),
-			Name: "sleep",
-			DNS:  c.cfg,
-		}
-
-		if cgutil.UseV2 {
-			allocID := uuid.Generate()
-			task.Resources = testResources(allocID, "sleep")
+			ID:        allocID,
+			Name:      taskName,
+			DNS:       c.cfg,
+			Resources: testResources(allocID, taskName),
 		}
 
 		cleanup := harness.MkAllocDir(task, false)
@@ -193,15 +190,12 @@ func TestExecDriver_Capabilities(t *testing.T) {
 	ci.Parallel(t)
 	ctestutils.ExecCompatible(t)
 
+	allocID := uuid.Generate()
+	taskName := "sleep"
 	task := &drivers.TaskConfig{
-		ID:   uuid.Generate(),
-		Name: "sleep",
-	}
-
-	if cgutil.UseV2 {
-		allocID := uuid.Generate()
-		task.AllocID = allocID
-		task.Resources = testResources(allocID, "sleep")
+		ID:        allocID,
+		Name:      taskName,
+		Resources: testResources(allocID, taskName),
 	}
 
 	for _, tc := range []struct {
@@ -265,7 +259,7 @@ func TestExecDriver_Capabilities(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
-			d := NewExecDriver(ctx, testlog.HCLogger(t))
+			d := newExecDriverTest(t, ctx)
 			harness := dtestutil.NewDriverHarness(t, d)
 			defer harness.Kill()
 
@@ -283,8 +277,15 @@ func TestExecDriver_Capabilities(t *testing.T) {
 			}
 
 			var data []byte
-			require.NoError(t, basePlug.MsgPackEncode(&data, config))
-			baseConfig := &basePlug.Config{PluginConfig: data}
+			require.NoError(t, base.MsgPackEncode(&data, config))
+			baseConfig := &base.Config{
+				PluginConfig: data,
+				AgentConfig: &base.AgentConfig{
+					Driver: &base.ClientDriverConfig{
+						Topology: d.(*Driver).nomadConfig.Topology,
+					},
+				},
+			}
 			require.NoError(t, harness.SetConfig(baseConfig))
 
 			cleanup := harness.MkAllocDir(task, false)

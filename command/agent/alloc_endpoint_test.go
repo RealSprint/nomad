@@ -1,10 +1,13 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package agent
 
 import (
 	"archive/tar"
+	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,16 +15,22 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/golang/snappy"
+	"github.com/gorilla/websocket"
+	"github.com/hashicorp/go-msgpack/codec"
 	"github.com/hashicorp/nomad/acl"
 	"github.com/hashicorp/nomad/ci"
 	"github.com/hashicorp/nomad/client/allocdir"
+	cstructs "github.com/hashicorp/nomad/client/structs"
 	"github.com/hashicorp/nomad/helper/pointer"
 	"github.com/hashicorp/nomad/helper/uuid"
 	"github.com/hashicorp/nomad/nomad/mock"
 	"github.com/hashicorp/nomad/nomad/structs"
 	"github.com/hashicorp/nomad/testutil"
+	"github.com/shoenig/test"
+	"github.com/shoenig/test/must"
 	"github.com/stretchr/testify/require"
 )
 
@@ -50,7 +59,7 @@ func TestHTTP_AllocsList(t *testing.T) {
 		}
 
 		// Make the HTTP request
-		req, err := http.NewRequest("GET", "/v1/allocations", nil)
+		req, err := http.NewRequest(http.MethodGet, "/v1/allocations", nil)
 		if err != nil {
 			t.Fatalf("err: %v", err)
 		}
@@ -117,7 +126,7 @@ func TestHTTP_AllocsPrefixList(t *testing.T) {
 		}
 
 		// Make the HTTP request
-		req, err := http.NewRequest("GET", "/v1/allocations?prefix=aaab", nil)
+		req, err := http.NewRequest(http.MethodGet, "/v1/allocations?prefix=aaab", nil)
 		if err != nil {
 			t.Fatalf("err: %v", err)
 		}
@@ -168,7 +177,7 @@ func TestHTTP_AllocQuery(t *testing.T) {
 		require.NoError(state.UpsertAllocs(structs.MsgTypeTestSetup, 1000, []*structs.Allocation{alloc}))
 
 		// Make the HTTP request
-		req, err := http.NewRequest("GET", "/v1/allocation/"+alloc.ID, nil)
+		req, err := http.NewRequest(http.MethodGet, "/v1/allocation/"+alloc.ID, nil)
 		require.NoError(err)
 		respW := httptest.NewRecorder()
 
@@ -219,7 +228,7 @@ func TestHTTP_AllocQuery_Payload(t *testing.T) {
 		}
 
 		// Make the HTTP request
-		req, err := http.NewRequest("GET", "/v1/allocation/"+alloc.ID, nil)
+		req, err := http.NewRequest(http.MethodGet, "/v1/allocation/"+alloc.ID, nil)
 		if err != nil {
 			t.Fatalf("err: %v", err)
 		}
@@ -265,7 +274,7 @@ func TestHTTP_AllocRestart(t *testing.T) {
 		{
 			// Make the HTTP request
 			buf := encodeReq(map[string]string{})
-			req, err := http.NewRequest("GET", fmt.Sprintf("/v1/client/allocation/%s/restart", uuid.Generate()), buf)
+			req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("/v1/client/allocation/%s/restart", uuid.Generate()), buf)
 			if err != nil {
 				t.Fatalf("err: %v", err)
 			}
@@ -283,7 +292,7 @@ func TestHTTP_AllocRestart(t *testing.T) {
 			s.server = nil
 
 			buf := encodeReq(map[string]string{})
-			req, err := http.NewRequest("GET", fmt.Sprintf("/v1/client/allocation/%s/restart", uuid.Generate()), buf)
+			req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("/v1/client/allocation/%s/restart", uuid.Generate()), buf)
 			require.Nil(err)
 
 			respW := httptest.NewRecorder()
@@ -310,7 +319,7 @@ func TestHTTP_AllocRestart(t *testing.T) {
 			})
 
 			buf := encodeReq(map[string]string{})
-			req, err := http.NewRequest("GET", fmt.Sprintf("/v1/client/allocation/%s/restart", uuid.Generate()), buf)
+			req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("/v1/client/allocation/%s/restart", uuid.Generate()), buf)
 			require.Nil(err)
 
 			respW := httptest.NewRecorder()
@@ -333,7 +342,7 @@ func TestHTTP_AllocRestart_ACL(t *testing.T) {
 		// If there's no token, we expect the request to fail.
 		{
 			buf := encodeReq(map[string]string{})
-			req, err := http.NewRequest("GET", fmt.Sprintf("/v1/client/allocation/%s/restart", uuid.Generate()), buf)
+			req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("/v1/client/allocation/%s/restart", uuid.Generate()), buf)
 			require.NoError(err)
 
 			respW := httptest.NewRecorder()
@@ -345,7 +354,7 @@ func TestHTTP_AllocRestart_ACL(t *testing.T) {
 		// Try request with an invalid token and expect it to fail
 		{
 			buf := encodeReq(map[string]string{})
-			req, err := http.NewRequest("GET", fmt.Sprintf("/v1/client/allocation/%s/restart", uuid.Generate()), buf)
+			req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("/v1/client/allocation/%s/restart", uuid.Generate()), buf)
 			require.NoError(err)
 
 			respW := httptest.NewRecorder()
@@ -360,7 +369,7 @@ func TestHTTP_AllocRestart_ACL(t *testing.T) {
 		// Still returns an error because the alloc does not exist
 		{
 			buf := encodeReq(map[string]string{})
-			req, err := http.NewRequest("GET", fmt.Sprintf("/v1/client/allocation/%s/restart", uuid.Generate()), buf)
+			req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("/v1/client/allocation/%s/restart", uuid.Generate()), buf)
 			require.NoError(err)
 
 			respW := httptest.NewRecorder()
@@ -376,7 +385,7 @@ func TestHTTP_AllocRestart_ACL(t *testing.T) {
 		// Still returns an error because the alloc does not exist
 		{
 			buf := encodeReq(map[string]string{})
-			req, err := http.NewRequest("GET", fmt.Sprintf("/v1/client/allocation/%s/restart", uuid.Generate()), buf)
+			req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("/v1/client/allocation/%s/restart", uuid.Generate()), buf)
 			require.NoError(err)
 
 			respW := httptest.NewRecorder()
@@ -402,7 +411,7 @@ func TestHTTP_AllocStop(t *testing.T) {
 		// Test that the happy path works
 		{
 			// Make the HTTP request
-			req, err := http.NewRequest("POST", "/v1/allocation/"+alloc.ID+"/stop", nil)
+			req, err := http.NewRequest(http.MethodPost, "/v1/allocation/"+alloc.ID+"/stop", nil)
 			require.NoError(err)
 			respW := httptest.NewRecorder()
 
@@ -420,7 +429,7 @@ func TestHTTP_AllocStop(t *testing.T) {
 		// Test that we 404 when the allocid is invalid
 		{
 			// Make the HTTP request
-			req, err := http.NewRequest("POST", "/v1/allocation/"+uuid.Generate()+"/stop", nil)
+			req, err := http.NewRequest(http.MethodPost, "/v1/allocation/"+uuid.Generate()+"/stop", nil)
 			require.NoError(err)
 			respW := httptest.NewRecorder()
 
@@ -555,7 +564,7 @@ func TestHTTP_AllocStats(t *testing.T) {
 		// Local node, local resp
 		{
 			// Make the HTTP request
-			req, err := http.NewRequest("GET", fmt.Sprintf("/v1/client/allocation/%s/stats", uuid.Generate()), nil)
+			req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("/v1/client/allocation/%s/stats", uuid.Generate()), nil)
 			if err != nil {
 				t.Fatalf("err: %v", err)
 			}
@@ -572,7 +581,7 @@ func TestHTTP_AllocStats(t *testing.T) {
 			srv := s.server
 			s.server = nil
 
-			req, err := http.NewRequest("GET", fmt.Sprintf("/v1/client/allocation/%s/stats", uuid.Generate()), nil)
+			req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("/v1/client/allocation/%s/stats", uuid.Generate()), nil)
 			require.Nil(err)
 
 			respW := httptest.NewRecorder()
@@ -598,7 +607,7 @@ func TestHTTP_AllocStats(t *testing.T) {
 				t.Fatalf("should have client: %v", err)
 			})
 
-			req, err := http.NewRequest("GET", fmt.Sprintf("/v1/client/allocation/%s/stats", uuid.Generate()), nil)
+			req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("/v1/client/allocation/%s/stats", uuid.Generate()), nil)
 			require.Nil(err)
 
 			respW := httptest.NewRecorder()
@@ -619,7 +628,7 @@ func TestHTTP_AllocStats_ACL(t *testing.T) {
 		state := s.Agent.server.State()
 
 		// Make the HTTP request
-		req, err := http.NewRequest("GET", fmt.Sprintf("/v1/client/allocation/%s/stats", uuid.Generate()), nil)
+		req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("/v1/client/allocation/%s/stats", uuid.Generate()), nil)
 		if err != nil {
 			t.Fatalf("err: %v", err)
 		}
@@ -670,7 +679,7 @@ func TestHTTP_AllocSnapshot(t *testing.T) {
 	ci.Parallel(t)
 	httpTest(t, nil, func(s *TestAgent) {
 		// Make the HTTP request
-		req, err := http.NewRequest("GET", "/v1/client/allocation/123/snapshot", nil)
+		req, err := http.NewRequest(http.MethodGet, "/v1/client/allocation/123/snapshot", nil)
 		if err != nil {
 			t.Fatalf("err: %v", err)
 		}
@@ -689,7 +698,7 @@ func TestHTTP_AllocSnapshot_WithMigrateToken(t *testing.T) {
 	require := require.New(t)
 	httpACLTest(t, nil, func(s *TestAgent) {
 		// Request without a token fails
-		req, err := http.NewRequest("GET", "/v1/client/allocation/123/snapshot", nil)
+		req, err := http.NewRequest(http.MethodGet, "/v1/client/allocation/123/snapshot", nil)
 		require.Nil(err)
 
 		// Make the unauthorized request
@@ -706,7 +715,7 @@ func TestHTTP_AllocSnapshot_WithMigrateToken(t *testing.T) {
 
 		// Request with a token succeeds
 		url := fmt.Sprintf("/v1/client/allocation/%s/snapshot", alloc.ID)
-		req, err = http.NewRequest("GET", url, nil)
+		req, err = http.NewRequest(http.MethodGet, url, nil)
 		require.Nil(err)
 
 		req.Header.Set("X-Nomad-Token", validMigrateToken)
@@ -766,7 +775,7 @@ func TestHTTP_AllocSnapshot_Atomic(t *testing.T) {
 		os.RemoveAll(allocDir.TaskDirs["web"].LocalDir)
 
 		// require Snapshot fails
-		if err := allocDir.Snapshot(ioutil.Discard); err != nil {
+		if err := allocDir.Snapshot(io.Discard); err != nil {
 			t.Logf("[DEBUG] agent.test: snapshot returned error: %v", err)
 		} else {
 			t.Errorf("expected Snapshot() to fail but it did not")
@@ -777,7 +786,7 @@ func TestHTTP_AllocSnapshot_Atomic(t *testing.T) {
 		// streamed over a 200 HTTP response the only way to signal an
 		// error is by writing a marker file.
 		respW := httptest.NewRecorder()
-		req, err := http.NewRequest("GET", fmt.Sprintf("/v1/client/allocation/%s/snapshot", alloc.ID), nil)
+		req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("/v1/client/allocation/%s/snapshot", alloc.ID), nil)
 		if err != nil {
 			t.Fatalf("err: %v", err)
 		}
@@ -836,7 +845,7 @@ func TestHTTP_AllocGC(t *testing.T) {
 	httpTest(t, nil, func(s *TestAgent) {
 		// Local node, local resp
 		{
-			req, err := http.NewRequest("GET", path, nil)
+			req, err := http.NewRequest(http.MethodGet, path, nil)
 			if err != nil {
 				t.Fatalf("err: %v", err)
 			}
@@ -853,7 +862,7 @@ func TestHTTP_AllocGC(t *testing.T) {
 			srv := s.server
 			s.server = nil
 
-			req, err := http.NewRequest("GET", path, nil)
+			req, err := http.NewRequest(http.MethodGet, path, nil)
 			if err != nil {
 				t.Fatalf("err: %v", err)
 			}
@@ -882,7 +891,7 @@ func TestHTTP_AllocGC(t *testing.T) {
 				t.Fatalf("should have client: %v", err)
 			})
 
-			req, err := http.NewRequest("GET", path, nil)
+			req, err := http.NewRequest(http.MethodGet, path, nil)
 			if err != nil {
 				t.Fatalf("err: %v", err)
 			}
@@ -908,7 +917,7 @@ func TestHTTP_AllocGC_ACL(t *testing.T) {
 		state := s.Agent.server.State()
 
 		// Make the HTTP request
-		req, err := http.NewRequest("GET", path, nil)
+		req, err := http.NewRequest(http.MethodGet, path, nil)
 		if err != nil {
 			t.Fatalf("err: %v", err)
 		}
@@ -961,7 +970,7 @@ func TestHTTP_AllocAllGC(t *testing.T) {
 	httpTest(t, nil, func(s *TestAgent) {
 		// Local node, local resp
 		{
-			req, err := http.NewRequest("GET", "/v1/client/gc", nil)
+			req, err := http.NewRequest(http.MethodGet, "/v1/client/gc", nil)
 			if err != nil {
 				t.Fatalf("err: %v", err)
 			}
@@ -978,7 +987,7 @@ func TestHTTP_AllocAllGC(t *testing.T) {
 			srv := s.server
 			s.server = nil
 
-			req, err := http.NewRequest("GET", fmt.Sprintf("/v1/client/gc?node_id=%s", uuid.Generate()), nil)
+			req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("/v1/client/gc?node_id=%s", uuid.Generate()), nil)
 			require.Nil(err)
 
 			respW := httptest.NewRecorder()
@@ -1004,7 +1013,7 @@ func TestHTTP_AllocAllGC(t *testing.T) {
 				t.Fatalf("should have client: %v", err)
 			})
 
-			req, err := http.NewRequest("GET", fmt.Sprintf("/v1/client/gc?node_id=%s", c.NodeID()), nil)
+			req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("/v1/client/gc?node_id=%s", c.NodeID()), nil)
 			require.Nil(err)
 
 			respW := httptest.NewRecorder()
@@ -1024,7 +1033,7 @@ func TestHTTP_AllocAllGC_ACL(t *testing.T) {
 		state := s.Agent.server.State()
 
 		// Make the HTTP request
-		req, err := http.NewRequest("GET", "/v1/client/gc", nil)
+		req, err := http.NewRequest(http.MethodGet, "/v1/client/gc", nil)
 		require.Nil(err)
 
 		// Try request without a token and expect failure
@@ -1032,7 +1041,7 @@ func TestHTTP_AllocAllGC_ACL(t *testing.T) {
 			respW := httptest.NewRecorder()
 			_, err := s.Server.ClientGCRequest(respW, req)
 			require.NotNil(err)
-			require.Equal(err.Error(), structs.ErrPermissionDenied.Error())
+			require.ErrorContains(err, structs.ErrPermissionDenied.Error())
 		}
 
 		// Try request with an invalid token and expect failure
@@ -1107,7 +1116,7 @@ func TestHTTP_ReadWsHandshake(t *testing.T) {
 				return nil
 			}
 
-			req := httptest.NewRequest("PUT", "/target", nil)
+			req := httptest.NewRequest(http.MethodPut, "/target", nil)
 			if c.handshake {
 				req.URL.RawQuery = "ws_handshake=true"
 			}
@@ -1119,5 +1128,110 @@ func TestHTTP_ReadWsHandshake(t *testing.T) {
 			require.Equal(t, c.token, q.AuthToken)
 			require.Equal(t, c.handshake, called)
 		})
+	}
+}
+
+// TestHTTP_AllocsExecStream_SafeClose verifies that we are safely closing the
+// AllocExec stream when we're done without making concurrent writes to the
+// websocket that can cause a panic
+func TestHTTP_AllocsExecStream_SafeClose(t *testing.T) {
+	httpTest(t,
+		func(c *Config) { c.Server.NumSchedulers = pointer.Of(0) },
+		func(s *TestAgent) {
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			t.Cleanup(cancel)
+
+			rpcHandler := mockStreamingRpcHandler(t, [][]byte{
+				[]byte("one"), []byte("two"), []byte("done!")})
+
+			// This replaces the top-level HTTP handler, which is not under test
+			// here. It will call execStreamImpl using the mock streaming RPC
+			// handler defined above.
+			wsHandler := func(w http.ResponseWriter, r *http.Request) {
+				var upgrader = websocket.Upgrader{}
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					must.NoError(t, err, must.Sprint("during ws upgrade"))
+					return
+				}
+				defer conn.Close()
+
+				args := cstructs.AllocExecRequest{
+					AllocID: uuid.Generate(),
+					Task:    "foo",
+					Cmd:     []string{"bar"},
+				}
+
+				_, err = s.Server.execStreamImpl(conn, &args, rpcHandler)
+				must.NoError(t, err)
+			}
+
+			// Spin up a HTTP server that only handles our websocket
+			srv := httptest.NewServer(http.HandlerFunc(wsHandler))
+			t.Cleanup(srv.Close)
+			u := strings.Replace(srv.URL, "http://", "ws://", 1)
+			conn, _, err := websocket.DefaultDialer.Dial(u, nil)
+			must.NoError(t, err, must.Sprint("failed to dial"))
+			defer conn.Close()
+
+			drainResp := func() []string {
+				resp := []string{}
+				for {
+					select {
+					case <-ctx.Done():
+						return resp
+					default:
+						_, message, err := conn.ReadMessage()
+						if err != nil {
+							if !isClosedError(err) {
+								resp = append(resp, err.Error())
+								return resp
+							}
+							return resp
+						}
+						resp = append(resp, string(message))
+					}
+				}
+			}
+
+			must.Eq(t, []string{"one", "two", "done!"}, drainResp())
+		})
+}
+
+// mockStreamingRpcHandler returns a function that can stand in for any
+// structs.StreamingRpcHandler and streams the slice of payloads before
+// closing. It marks a test failure if we get a non-close error.
+func mockStreamingRpcHandler(t *testing.T, payloads [][]byte) func(io.ReadWriteCloser) {
+
+	return func(conn io.ReadWriteCloser) {
+
+		decoder := codec.NewDecoder(conn, structs.MsgpackHandle)
+		encoder := codec.NewEncoder(conn, structs.MsgpackHandle)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// drain any incoming requests
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+				var res cstructs.StreamErrWrapper
+				err := decoder.Decode(&res)
+				if !isClosedError(err) {
+					test.NoError(t, err, test.Sprint("unexpected non-close error"))
+				}
+			}
+		}()
+
+		for _, payload := range payloads {
+			err := encoder.Encode(cstructs.StreamErrWrapper{Payload: payload})
+			test.NoError(t, err, test.Sprint("could not send RPC payload"))
+		}
+		test.NoError(t, conn.Close())
 	}
 }

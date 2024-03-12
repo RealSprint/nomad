@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package mock
 
 import (
@@ -31,12 +34,6 @@ func Node() *structs.Node {
 			"consul.version":     "1.11.4",
 		},
 
-		// TODO Remove once clientv2 gets merged
-		Resources: &structs.Resources{
-			CPU:      4000,
-			MemoryMB: 8192,
-			DiskMB:   100 * 1024,
-		},
 		Reserved: &structs.Resources{
 			CPU:      100,
 			MemoryMB: 256,
@@ -52,8 +49,8 @@ func Node() *structs.Node {
 		},
 
 		NodeResources: &structs.NodeResources{
-			Cpu: structs.NodeCpuResources{
-				CpuShares: 4000,
+			Processors: structs.NodeProcessorResources{
+				Topology: structs.MockBasicTopology(),
 			},
 			Memory: structs.NodeMemoryResources{
 				MemoryMB: 8192,
@@ -107,10 +104,17 @@ func Node() *structs.Node {
 			"version":  "5.6",
 		},
 		NodeClass:             "linux-medium-pci",
+		NodePool:              structs.NodePoolDefault,
 		Status:                structs.NodeStatusReady,
 		SchedulingEligibility: structs.NodeSchedulingEligible,
 	}
+
+	// compute and assign node class
 	_ = node.ComputeClass()
+
+	// generate legacy things
+	node.NodeResources.Compatibility()
+
 	return node
 }
 

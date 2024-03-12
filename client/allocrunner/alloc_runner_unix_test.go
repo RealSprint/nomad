@@ -1,5 +1,7 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 //go:build !windows
-// +build !windows
 
 package allocrunner
 
@@ -17,6 +19,7 @@ import (
 	"github.com/hashicorp/nomad/nomad/mock"
 	"github.com/hashicorp/nomad/nomad/structs"
 	"github.com/hashicorp/nomad/testutil"
+	"github.com/shoenig/test/must"
 	"github.com/stretchr/testify/require"
 )
 
@@ -56,7 +59,7 @@ func TestAllocRunner_Restore_RunningTerminal(t *testing.T) {
 
 	// Start and wait for task to be running
 	ar, err := NewAllocRunner(conf)
-	require.NoError(t, err)
+	must.NoError(t, err)
 	go ar.Run()
 	defer destroy(ar)
 
@@ -106,8 +109,9 @@ func TestAllocRunner_Restore_RunningTerminal(t *testing.T) {
 	conf2.StateDB = conf.StateDB
 
 	// Restore, start, and wait for task to be killed
-	ar2, err := NewAllocRunner(conf2)
-	require.NoError(t, err)
+	ar2Iface, err := NewAllocRunner(conf2)
+	must.NoError(t, err)
+	ar2 := ar2Iface.(*allocRunner)
 
 	require.NoError(t, ar2.Restore())
 
@@ -127,7 +131,7 @@ func TestAllocRunner_Restore_RunningTerminal(t *testing.T) {
 	//    - removal during exited is de-duped due to prekill
 	//    - removal during stop is de-duped due to prekill
 	//   1 removal group during stop
-	consulOps := conf2.Consul.(*regMock.ServiceRegistrationHandler).GetOps()
+	consulOps := conf2.ConsulServices.(*regMock.ServiceRegistrationHandler).GetOps()
 	require.Len(t, consulOps, 2)
 	for _, op := range consulOps {
 		require.Equal(t, "remove", op.Op)
@@ -166,8 +170,9 @@ func TestAllocRunner_Restore_CompletedBatch(t *testing.T) {
 	conf.StateDB = state.NewMemDB(conf.Logger)
 
 	// Start and wait for task to be running
-	ar, err := NewAllocRunner(conf)
-	require.NoError(t, err)
+	arIface, err := NewAllocRunner(conf)
+	must.NoError(t, err)
+	ar := arIface.(*allocRunner)
 	go ar.Run()
 	defer destroy(ar)
 
@@ -199,10 +204,10 @@ func TestAllocRunner_Restore_CompletedBatch(t *testing.T) {
 	conf2.StateDB = conf.StateDB
 
 	// Restore, start, and wait for task to be killed
-	ar2, err := NewAllocRunner(conf2)
-	require.NoError(t, err)
-
-	require.NoError(t, ar2.Restore())
+	ar2Iface, err := NewAllocRunner(conf2)
+	must.NoError(t, err)
+	ar2 := ar2Iface.(*allocRunner)
+	must.NoError(t, ar2.Restore())
 
 	go ar2.Run()
 	defer destroy(ar2)
@@ -250,9 +255,9 @@ func TestAllocRunner_PreStartFailuresLeadToFailed(t *testing.T) {
 	conf.StateDB = state.NewMemDB(conf.Logger)
 
 	// Start and wait for task to be running
-	ar, err := NewAllocRunner(conf)
-	require.NoError(t, err)
-
+	arIface, err := NewAllocRunner(conf)
+	must.NoError(t, err)
+	ar := arIface.(*allocRunner)
 	ar.runnerHooks = append(ar.runnerHooks, &allocFailingPrestartHook{})
 
 	go ar.Run()

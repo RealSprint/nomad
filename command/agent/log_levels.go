@@ -1,7 +1,10 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package agent
 
 import (
-	"io/ioutil"
+	"io"
 
 	"github.com/hashicorp/logutils"
 )
@@ -12,7 +15,7 @@ func LevelFilter() *logutils.LevelFilter {
 	return &logutils.LevelFilter{
 		Levels:   []logutils.LogLevel{"TRACE", "DEBUG", "INFO", "WARN", "ERROR", "OFF"},
 		MinLevel: "INFO",
-		Writer:   ioutil.Discard,
+		Writer:   io.Discard,
 	}
 }
 

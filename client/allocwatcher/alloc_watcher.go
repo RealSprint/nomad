@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package allocwatcher
 
 import (
@@ -17,6 +20,7 @@ import (
 	"github.com/hashicorp/nomad/client/config"
 	cstructs "github.com/hashicorp/nomad/client/structs"
 	"github.com/hashicorp/nomad/helper"
+	"github.com/hashicorp/nomad/helper/escapingfs"
 	"github.com/hashicorp/nomad/nomad/structs"
 )
 
@@ -41,32 +45,9 @@ type terminated interface {
 // AllocRunnerMeta provides metadata about an AllocRunner such as its alloc and
 // alloc dir.
 type AllocRunnerMeta interface {
-	GetAllocDir() *allocdir.AllocDir
+	GetAllocDir() allocdir.Interface
 	Listener() *cstructs.AllocListener
 	Alloc() *structs.Allocation
-}
-
-// PrevAllocWatcher allows AllocRunners to wait for a previous allocation to
-// terminate whether or not the previous allocation is local or remote.
-// See `PrevAllocMigrator` for migrating workloads.
-type PrevAllocWatcher interface {
-	// Wait for previous alloc to terminate
-	Wait(context.Context) error
-
-	// IsWaiting returns true if a concurrent caller is blocked in Wait
-	IsWaiting() bool
-}
-
-// PrevAllocMigrator allows AllocRunners to migrate a previous allocation
-// whether or not the previous allocation is local or remote.
-type PrevAllocMigrator interface {
-	PrevAllocWatcher
-
-	// IsMigrating returns true if a concurrent caller is in Migrate
-	IsMigrating() bool
-
-	// Migrate data from previous alloc
-	Migrate(ctx context.Context, dest *allocdir.AllocDir) error
 }
 
 type Config struct {
@@ -94,12 +75,12 @@ type Config struct {
 	Logger hclog.Logger
 }
 
-func newMigratorForAlloc(c Config, tg *structs.TaskGroup, watchedAllocID string, m AllocRunnerMeta) PrevAllocMigrator {
+func newMigratorForAlloc(c Config, tg *structs.TaskGroup, watchedAllocID string, m AllocRunnerMeta) config.PrevAllocMigrator {
 	logger := c.Logger.Named("alloc_migrator").With("alloc_id", c.Alloc.ID).With("previous_alloc", watchedAllocID)
 
 	tasks := tg.Tasks
-	sticky := tg.EphemeralDisk != nil && tg.EphemeralDisk.Sticky
 	migrate := tg.EphemeralDisk != nil && tg.EphemeralDisk.Migrate
+	sticky := tg.EphemeralDisk != nil && (tg.EphemeralDisk.Sticky || migrate)
 
 	if m != nil {
 		// Local Allocation because there's an alloc runner
@@ -133,7 +114,7 @@ func newMigratorForAlloc(c Config, tg *structs.TaskGroup, watchedAllocID string,
 // Note that c.Alloc.PreviousAllocation must NOT be used in this func as it
 // used for preemption which has a distinct field. The caller is responsible
 // for passing the allocation to be watched as watchedAllocID.
-func newWatcherForAlloc(c Config, watchedAllocID string, m AllocRunnerMeta) PrevAllocWatcher {
+func newWatcherForAlloc(c Config, watchedAllocID string, m AllocRunnerMeta) config.PrevAllocWatcher {
 	logger := c.Logger.Named("alloc_watcher").With("alloc_id", c.Alloc.ID).With("previous_alloc", watchedAllocID)
 
 	if m != nil {
@@ -164,13 +145,13 @@ func newWatcherForAlloc(c Config, watchedAllocID string, m AllocRunnerMeta) Prev
 // For allocs which are either running on another node or have already
 // terminated their alloc runners, use a remote backend which watches the alloc
 // status via rpc.
-func NewAllocWatcher(c Config) (PrevAllocWatcher, PrevAllocMigrator) {
+func NewAllocWatcher(c Config) (config.PrevAllocWatcher, config.PrevAllocMigrator) {
 	if c.Alloc.PreviousAllocation == "" && c.PreemptedRunners == nil {
 		return NoopPrevAlloc{}, NoopPrevAlloc{}
 	}
 
-	var prevAllocWatchers []PrevAllocWatcher
-	var prevAllocMigrator PrevAllocMigrator = NoopPrevAlloc{}
+	var prevAllocWatchers []config.PrevAllocWatcher
+	var prevAllocMigrator config.PrevAllocMigrator = NoopPrevAlloc{}
 
 	// We have a previous allocation, add its listener to the watchers, and
 	// use a migrator.
@@ -212,7 +193,7 @@ type localPrevAlloc struct {
 	sticky bool
 
 	// prevAllocDir is the alloc dir for the previous alloc
-	prevAllocDir *allocdir.AllocDir
+	prevAllocDir allocdir.Interface
 
 	// prevListener allows blocking for updates to the previous alloc
 	prevListener *cstructs.AllocListener
@@ -282,7 +263,7 @@ func (p *localPrevAlloc) Wait(ctx context.Context) error {
 }
 
 // Migrate from previous local alloc dir to destination alloc dir.
-func (p *localPrevAlloc) Migrate(ctx context.Context, dest *allocdir.AllocDir) error {
+func (p *localPrevAlloc) Migrate(ctx context.Context, dest allocdir.Interface) error {
 	if !p.sticky {
 		// Not a sticky volume, nothing to migrate
 		return nil
@@ -299,15 +280,7 @@ func (p *localPrevAlloc) Migrate(ctx context.Context, dest *allocdir.AllocDir) e
 
 	p.logger.Debug("copying previous alloc")
 
-	moveErr := dest.Move(p.prevAllocDir, p.tasks)
-
-	// Always cleanup previous alloc
-	if err := p.prevAllocDir.Destroy(); err != nil {
-		p.logger.Error("error destroying alloc dir",
-			"error", err, "previous_alloc_dir", p.prevAllocDir.AllocDir)
-	}
-
-	return moveErr
+	return dest.Move(p.prevAllocDir, p.tasks)
 }
 
 // remotePrevAlloc is a prevAllocWatcher for previous allocations on remote
@@ -381,9 +354,11 @@ func (p *remotePrevAlloc) Wait(ctx context.Context) error {
 	req := structs.AllocSpecificRequest{
 		AllocID: p.prevAllocID,
 		QueryOptions: structs.QueryOptions{
-			Region:     p.config.Region,
-			AllowStale: true,
-			AuthToken:  p.config.Node.SecretID,
+			Region:    p.config.Region,
+			AuthToken: p.config.Node.SecretID,
+
+			// Initially get response from leader, then switch to stale
+			AllowStale: false,
 		},
 	}
 
@@ -400,15 +375,36 @@ func (p *remotePrevAlloc) Wait(ctx context.Context) error {
 		resp := structs.SingleAllocResponse{}
 		err := p.rpc.RPC("Alloc.GetAlloc", &req, &resp)
 		if err != nil {
-			p.logger.Error("error querying previous alloc", "error", err)
 			retry := getRemoteRetryIntv + helper.RandomStagger(getRemoteRetryIntv)
+			timer, stop := helper.NewSafeTimer(retry)
+			p.logger.Error("error querying previous alloc", "error", err, "wait", retry)
 			select {
-			case <-time.After(retry):
+			case <-timer.C:
 				continue
 			case <-ctx.Done():
+				stop()
 				return ctx.Err()
 			}
 		}
+
+		// Ensure that we didn't receive a stale response
+		if req.AllowStale && resp.Index < req.MinQueryIndex {
+			retry := getRemoteRetryIntv + helper.RandomStagger(getRemoteRetryIntv)
+			timer, stop := helper.NewSafeTimer(retry)
+			p.logger.Warn("received stale alloc; retrying",
+				"req_index", req.MinQueryIndex,
+				"resp_index", resp.Index,
+				"wait", retry,
+			)
+			select {
+			case <-timer.C:
+				continue
+			case <-ctx.Done():
+				stop()
+				return ctx.Err()
+			}
+		}
+
 		if resp.Alloc == nil {
 			p.logger.Debug("blocking alloc was GC'd")
 			return nil
@@ -420,6 +416,7 @@ func (p *remotePrevAlloc) Wait(ctx context.Context) error {
 
 		// Update the query index and requery.
 		if resp.Index > req.MinQueryIndex {
+			req.AllowStale = true
 			req.MinQueryIndex = resp.Index
 		}
 	}
@@ -429,7 +426,7 @@ func (p *remotePrevAlloc) Wait(ctx context.Context) error {
 
 // Migrate alloc data from a remote node if the new alloc has migration enabled
 // and the old alloc hasn't been GC'd.
-func (p *remotePrevAlloc) Migrate(ctx context.Context, dest *allocdir.AllocDir) error {
+func (p *remotePrevAlloc) Migrate(ctx context.Context, dest allocdir.Interface) error {
 	if !p.migrate {
 		// Volume wasn't configured to be migrated, return early
 		return nil
@@ -519,7 +516,7 @@ func (p *remotePrevAlloc) migrateAllocDir(ctx context.Context, nodeAddr string) 
 	// Create the previous alloc dir
 	prevAllocDir := allocdir.NewAllocDir(p.logger, p.config.AllocDir, p.prevAllocID)
 	if err := prevAllocDir.Build(); err != nil {
-		return nil, fmt.Errorf("error building alloc dir for previous alloc %q: %v", p.prevAllocID, err)
+		return nil, fmt.Errorf("error building alloc dir for previous alloc %q: %w", p.prevAllocID, err)
 	}
 
 	// Create an API client
@@ -541,7 +538,7 @@ func (p *remotePrevAlloc) migrateAllocDir(ctx context.Context, nodeAddr string) 
 	resp, err := apiClient.Raw().Response(url, qo)
 	if err != nil {
 		prevAllocDir.Destroy()
-		return nil, fmt.Errorf("error getting snapshot from previous alloc %q: %v", p.prevAllocID, err)
+		return nil, fmt.Errorf("error getting snapshot from previous alloc %q: %w", p.prevAllocID, err)
 	}
 
 	if err := p.streamAllocDir(ctx, resp, prevAllocDir.AllocDir); err != nil {
@@ -586,7 +583,7 @@ func (p *remotePrevAlloc) streamAllocDir(ctx context.Context, resp io.ReadCloser
 		}
 
 		if err != nil {
-			return fmt.Errorf("error streaming previous alloc %q for new alloc %q: %v",
+			return fmt.Errorf("error streaming previous alloc %q for new alloc %q: %w",
 				p.prevAllocID, p.allocID, err)
 		}
 
@@ -595,7 +592,7 @@ func (p *remotePrevAlloc) streamAllocDir(ctx context.Context, resp io.ReadCloser
 			// the message out of the file and return it.
 			errBuf := make([]byte, int(hdr.Size))
 			if _, err := tr.Read(errBuf); err != nil && err != io.EOF {
-				return fmt.Errorf("error streaming previous alloc %q for new alloc %q; failed reading error message: %v",
+				return fmt.Errorf("error streaming previous alloc %q for new alloc %q; failed reading error message: %w",
 					p.prevAllocID, p.allocID, err)
 			}
 			return fmt.Errorf("error streaming previous alloc %q for new alloc %q: %s",
@@ -610,7 +607,7 @@ func (p *remotePrevAlloc) streamAllocDir(ctx context.Context, resp io.ReadCloser
 			// Can't change owner if not root or on Windows.
 			if euid == 0 {
 				if err := os.Chown(name, hdr.Uid, hdr.Gid); err != nil {
-					return fmt.Errorf("error chowning directory %v", err)
+					return fmt.Errorf("error chowning directory %w", err)
 				}
 			}
 			continue
@@ -618,28 +615,37 @@ func (p *remotePrevAlloc) streamAllocDir(ctx context.Context, resp io.ReadCloser
 		// If the header is for a symlink we create the symlink
 		if hdr.Typeflag == tar.TypeSymlink {
 			if err = os.Symlink(hdr.Linkname, filepath.Join(dest, hdr.Name)); err != nil {
-				return fmt.Errorf("error creating symlink: %v", err)
+				return fmt.Errorf("error creating symlink: %w", err)
 			}
+
+			escapes, err := escapingfs.PathEscapesAllocDir(dest, "", hdr.Name)
+			if err != nil {
+				return fmt.Errorf("error evaluating symlink: %w", err)
+			}
+			if escapes {
+				return fmt.Errorf("archive contains symlink that escapes alloc dir")
+			}
+
 			continue
 		}
 		// If the header is a file, we write to a file
 		if hdr.Typeflag == tar.TypeReg {
 			f, err := os.Create(filepath.Join(dest, hdr.Name))
 			if err != nil {
-				return fmt.Errorf("error creating file: %v", err)
+				return fmt.Errorf("error creating file: %w", err)
 			}
 
 			// Setting the permissions of the file as the origin.
 			if err := f.Chmod(os.FileMode(hdr.Mode)); err != nil {
 				f.Close()
-				return fmt.Errorf("error chmoding file %v", err)
+				return fmt.Errorf("error chmoding file %w", err)
 			}
 
 			// Can't change owner if not root or on Windows.
 			if euid == 0 {
 				if err := f.Chown(hdr.Uid, hdr.Gid); err != nil {
 					f.Close()
-					return fmt.Errorf("error chowning file %v", err)
+					return fmt.Errorf("error chowning file %w", err)
 				}
 			}
 
@@ -650,14 +656,14 @@ func (p *remotePrevAlloc) streamAllocDir(ctx context.Context, resp io.ReadCloser
 				if n > 0 && (err == nil || err == io.EOF) {
 					if _, err := f.Write(buf[:n]); err != nil {
 						f.Close()
-						return fmt.Errorf("error writing to file %q: %v", f.Name(), err)
+						return fmt.Errorf("error writing to file %q: %w", f.Name(), err)
 					}
 				}
 
 				if err != nil {
 					f.Close()
 					if err != io.EOF {
-						return fmt.Errorf("error reading snapshot: %v", err)
+						return fmt.Errorf("error reading snapshot: %w", err)
 					}
 					break
 				}
@@ -681,7 +687,7 @@ type NoopPrevAlloc struct{}
 func (NoopPrevAlloc) Wait(context.Context) error { return nil }
 
 // Migrate returns nil immediately.
-func (NoopPrevAlloc) Migrate(context.Context, *allocdir.AllocDir) error { return nil }
+func (NoopPrevAlloc) Migrate(context.Context, allocdir.Interface) error { return nil }
 
 func (NoopPrevAlloc) IsWaiting() bool   { return false }
 func (NoopPrevAlloc) IsMigrating() bool { return false }

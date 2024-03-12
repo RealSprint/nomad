@@ -1,26 +1,33 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package nomad
 
 import (
+	"errors"
 	"fmt"
-	"math/rand"
+	"sort"
 	"strings"
 	"time"
 
 	metrics "github.com/armon/go-metrics"
 	log "github.com/hashicorp/go-hclog"
 	memdb "github.com/hashicorp/go-memdb"
+
 	cstructs "github.com/hashicorp/nomad/client/structs"
+	"github.com/hashicorp/nomad/nomad/structs"
 )
 
 // ClientCSI is used to forward RPC requests to the targed Nomad client's
 // CSIController endpoint.
 type ClientCSI struct {
 	srv    *Server
+	ctx    *RPCContext
 	logger log.Logger
 }
 
-func NewClientCSIEndpoint(srv *Server) *ClientCSI {
-	return &ClientCSI{srv: srv, logger: srv.logger.Named("client_csi")}
+func NewClientCSIEndpoint(srv *Server, ctx *RPCContext) *ClientCSI {
+	return &ClientCSI{srv: srv, ctx: ctx, logger: srv.logger.Named("client_csi")}
 }
 
 func (a *ClientCSI) ControllerAttachVolume(args *cstructs.ClientCSIControllerAttachVolumeRequest, reply *cstructs.ClientCSIControllerAttachVolumeResponse) error {
@@ -29,6 +36,7 @@ func (a *ClientCSI) ControllerAttachVolume(args *cstructs.ClientCSIControllerAtt
 	err := a.sendCSIControllerRPC(args.PluginID,
 		"CSI.ControllerAttachVolume",
 		"ClientCSI.ControllerAttachVolume",
+		structs.RateMetricWrite,
 		args, reply)
 	if err != nil {
 		return fmt.Errorf("controller attach volume: %v", err)
@@ -42,6 +50,7 @@ func (a *ClientCSI) ControllerValidateVolume(args *cstructs.ClientCSIControllerV
 	err := a.sendCSIControllerRPC(args.PluginID,
 		"CSI.ControllerValidateVolume",
 		"ClientCSI.ControllerValidateVolume",
+		structs.RateMetricWrite,
 		args, reply)
 	if err != nil {
 		return fmt.Errorf("controller validate volume: %v", err)
@@ -55,6 +64,7 @@ func (a *ClientCSI) ControllerDetachVolume(args *cstructs.ClientCSIControllerDet
 	err := a.sendCSIControllerRPC(args.PluginID,
 		"CSI.ControllerDetachVolume",
 		"ClientCSI.ControllerDetachVolume",
+		structs.RateMetricWrite,
 		args, reply)
 	if err != nil {
 		return fmt.Errorf("controller detach volume: %v", err)
@@ -68,9 +78,24 @@ func (a *ClientCSI) ControllerCreateVolume(args *cstructs.ClientCSIControllerCre
 	err := a.sendCSIControllerRPC(args.PluginID,
 		"CSI.ControllerCreateVolume",
 		"ClientCSI.ControllerCreateVolume",
+		structs.RateMetricWrite,
 		args, reply)
 	if err != nil {
 		return fmt.Errorf("controller create volume: %v", err)
+	}
+	return nil
+}
+
+func (a *ClientCSI) ControllerExpandVolume(args *cstructs.ClientCSIControllerExpandVolumeRequest, reply *cstructs.ClientCSIControllerExpandVolumeResponse) error {
+	defer metrics.MeasureSince([]string{"nomad", "client_csi_controller", "expand_volume"}, time.Now())
+
+	err := a.sendCSIControllerRPC(args.PluginID,
+		"CSI.ControllerExpandVolume",
+		"ClientCSI.ControllerExpandVolume",
+		structs.RateMetricWrite,
+		args, reply)
+	if err != nil {
+		return fmt.Errorf("controller expand volume: %v", err)
 	}
 	return nil
 }
@@ -81,6 +106,7 @@ func (a *ClientCSI) ControllerDeleteVolume(args *cstructs.ClientCSIControllerDel
 	err := a.sendCSIControllerRPC(args.PluginID,
 		"CSI.ControllerDeleteVolume",
 		"ClientCSI.ControllerDeleteVolume",
+		structs.RateMetricWrite,
 		args, reply)
 	if err != nil {
 		return fmt.Errorf("controller delete volume: %v", err)
@@ -94,6 +120,7 @@ func (a *ClientCSI) ControllerListVolumes(args *cstructs.ClientCSIControllerList
 	err := a.sendCSIControllerRPC(args.PluginID,
 		"CSI.ControllerListVolumes",
 		"ClientCSI.ControllerListVolumes",
+		structs.RateMetricList,
 		args, reply)
 	if err != nil {
 		return fmt.Errorf("controller list volumes: %v", err)
@@ -107,6 +134,7 @@ func (a *ClientCSI) ControllerCreateSnapshot(args *cstructs.ClientCSIControllerC
 	err := a.sendCSIControllerRPC(args.PluginID,
 		"CSI.ControllerCreateSnapshot",
 		"ClientCSI.ControllerCreateSnapshot",
+		structs.RateMetricWrite,
 		args, reply)
 	if err != nil {
 		return fmt.Errorf("controller create snapshot: %v", err)
@@ -120,6 +148,7 @@ func (a *ClientCSI) ControllerDeleteSnapshot(args *cstructs.ClientCSIControllerD
 	err := a.sendCSIControllerRPC(args.PluginID,
 		"CSI.ControllerDeleteSnapshot",
 		"ClientCSI.ControllerDeleteSnapshot",
+		structs.RateMetricWrite,
 		args, reply)
 	if err != nil {
 		return fmt.Errorf("controller delete snapshot: %v", err)
@@ -133,6 +162,7 @@ func (a *ClientCSI) ControllerListSnapshots(args *cstructs.ClientCSIControllerLi
 	err := a.sendCSIControllerRPC(args.PluginID,
 		"CSI.ControllerListSnapshots",
 		"ClientCSI.ControllerListSnapshots",
+		structs.RateMetricList,
 		args, reply)
 	if err != nil {
 		return fmt.Errorf("controller list snapshots: %v", err)
@@ -140,7 +170,18 @@ func (a *ClientCSI) ControllerListSnapshots(args *cstructs.ClientCSIControllerLi
 	return nil
 }
 
-func (a *ClientCSI) sendCSIControllerRPC(pluginID, method, fwdMethod string, args cstructs.CSIControllerRequest, reply interface{}) error {
+func (a *ClientCSI) sendCSIControllerRPC(pluginID, method, fwdMethod, op string, args cstructs.CSIControllerRequest, reply interface{}) error {
+
+	// client requests aren't RequestWithIdentity, so we use a placeholder here
+	// to populate the identity data for metrics
+	identityReq := &structs.GenericRequest{}
+
+	aclObj, err := a.srv.AuthenticateServerOnly(a.ctx, identityReq)
+	a.srv.MeasureRPCRate("client_csi", op, identityReq)
+
+	if err != nil || !aclObj.AllowServerOp() {
+		return structs.ErrPermissionDenied
+	}
 
 	clientIDs, err := a.clientIDsForController(pluginID)
 	if err != nil {
@@ -182,6 +223,38 @@ func (a *ClientCSI) isRetryable(err error) bool {
 
 func (a *ClientCSI) NodeDetachVolume(args *cstructs.ClientCSINodeDetachVolumeRequest, reply *cstructs.ClientCSINodeDetachVolumeResponse) error {
 	defer metrics.MeasureSince([]string{"nomad", "client_csi_node", "detach_volume"}, time.Now())
+	return a.sendCSINodeRPC(
+		args.NodeID,
+		"CSI.NodeDetachVolume",
+		"ClientCSI.NodeDetachVolume",
+		structs.RateMetricWrite,
+		args,
+		reply,
+	)
+}
+
+func (a *ClientCSI) NodeExpandVolume(args *cstructs.ClientCSINodeExpandVolumeRequest, reply *cstructs.ClientCSINodeExpandVolumeResponse) error {
+	defer metrics.MeasureSince([]string{"nomad", "client_csi_node", "expand_volume"}, time.Now())
+	return a.sendCSINodeRPC(
+		args.Claim.NodeID,
+		"CSI.NodeExpandVolume",
+		"ClientCSI.NodeExpandVolume",
+		structs.RateMetricWrite,
+		args,
+		reply,
+	)
+}
+
+func (a *ClientCSI) sendCSINodeRPC(nodeID, method, fwdMethod, op string, args any, reply any) error {
+	// client requests aren't RequestWithIdentity, so we use a placeholder here
+	// to populate the identity data for metrics
+	identityReq := &structs.GenericRequest{}
+	aclObj, err := a.srv.AuthenticateServerOnly(a.ctx, identityReq)
+	a.srv.MeasureRPCRate("client_csi", op, identityReq)
+
+	if err != nil || !aclObj.AllowServerOp() {
+		return structs.ErrPermissionDenied
+	}
 
 	// Make sure Node is valid and new enough to support RPC
 	snap, err := a.srv.State().Snapshot()
@@ -189,24 +262,22 @@ func (a *ClientCSI) NodeDetachVolume(args *cstructs.ClientCSINodeDetachVolumeReq
 		return err
 	}
 
-	_, err = getNodeForRpc(snap, args.NodeID)
+	_, err = getNodeForRpc(snap, nodeID)
 	if err != nil {
 		return err
 	}
 
 	// Get the connection to the client
-	state, ok := a.srv.getNodeConn(args.NodeID)
+	state, ok := a.srv.getNodeConn(nodeID)
 	if !ok {
-		return findNodeConnAndForward(a.srv, args.NodeID, "ClientCSI.NodeDetachVolume", args, reply)
+		return findNodeConnAndForward(a.srv, nodeID, fwdMethod, args, reply)
 	}
 
 	// Make the RPC
-	err = NodeRpc(state.Session, "CSI.NodeDetachVolume", args, reply)
-	if err != nil {
-		return fmt.Errorf("node detach volume: %v", err)
+	if err := NodeRpc(state.Session, method, args, reply); err != nil {
+		return fmt.Errorf("%s error: %w", method, err)
 	}
 	return nil
-
 }
 
 // clientIDsForController returns a shuffled list of client IDs where the
@@ -224,9 +295,9 @@ func (a *ClientCSI) clientIDsForController(pluginID string) ([]string, error) {
 
 	ws := memdb.NewWatchSet()
 
-	// note: plugin IDs are not scoped to region/DC but volumes are.
-	// so any node we get for a controller is already in the same
-	// region/DC for the volume.
+	// note: plugin IDs are not scoped to region but volumes are. so any Nomad
+	// client we get for a controller is already in the same region for the
+	// volume.
 	plugin, err := snap.CSIPluginByID(ws, pluginID)
 	if err != nil {
 		return nil, fmt.Errorf("error getting plugin: %s, %v", pluginID, err)
@@ -235,31 +306,55 @@ func (a *ClientCSI) clientIDsForController(pluginID string) ([]string, error) {
 		return nil, fmt.Errorf("plugin missing: %s", pluginID)
 	}
 
-	// iterating maps is "random" but unspecified and isn't particularly
-	// random with small maps, so not well-suited for load balancing.
-	// so we shuffle the keys and iterate over them.
 	clientIDs := []string{}
 
-	for clientID, controller := range plugin.Controllers {
-		if !controller.IsController() {
-			// we don't have separate types for CSIInfo depending on
-			// whether it's a controller or node. this error shouldn't
-			// make it to production but is to aid developers during
-			// development
-			continue
-		}
-		node, err := getNodeForRpc(snap, clientID)
-		if err == nil && node != nil && node.Ready() {
-			clientIDs = append(clientIDs, clientID)
-		}
-	}
-	if len(clientIDs) == 0 {
-		return nil, fmt.Errorf("failed to find clients running controller plugin %q", pluginID)
+	if len(plugin.Controllers) == 0 {
+		return nil, fmt.Errorf("failed to find instances of controller plugin %q", pluginID)
 	}
 
-	rand.Shuffle(len(clientIDs), func(i, j int) {
-		clientIDs[i], clientIDs[j] = clientIDs[j], clientIDs[i]
-	})
+	var merr error
+	for clientID, controller := range plugin.Controllers {
+		if !controller.IsController() {
+			// we don't have separate types for CSIInfo depending on whether
+			// it's a controller or node. this error should never make it to
+			// production
+			merr = errors.Join(merr, fmt.Errorf(
+				"plugin instance %q is not a controller but was registered as one - this is always a bug", controller.AllocID))
+			continue
+		}
+
+		if !controller.Healthy {
+			merr = errors.Join(merr, fmt.Errorf(
+				"plugin instance %q is not healthy", controller.AllocID))
+			continue
+		}
+
+		node, err := getNodeForRpc(snap, clientID)
+		if err != nil || node == nil {
+			merr = errors.Join(merr, fmt.Errorf(
+				"cannot find node %q for plugin instance %q", clientID, controller.AllocID))
+			continue
+		}
+
+		if node.Status != structs.NodeStatusReady {
+			merr = errors.Join(merr, fmt.Errorf(
+				"node %q for plugin instance %q is not ready", clientID, controller.AllocID))
+			continue
+		}
+
+		clientIDs = append(clientIDs, clientID)
+	}
+
+	if len(clientIDs) == 0 {
+		return nil, fmt.Errorf("failed to find clients running controller plugin %q: %v",
+			pluginID, merr)
+	}
+
+	// Many plugins don't handle concurrent requests as described in the spec,
+	// and have undocumented expectations of using k8s-specific sidecars to
+	// leader elect. Sort the client IDs so that we prefer sending requests to
+	// the same controller to hack around this.
+	clientIDs = sort.StringSlice(clientIDs)
 
 	return clientIDs, nil
 }

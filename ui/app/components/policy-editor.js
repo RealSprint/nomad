@@ -1,11 +1,16 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 import Component from '@glimmer/component';
 import { action } from '@ember/object';
 import { inject as service } from '@ember/service';
 import { alias } from '@ember/object/computed';
-import messageForError from 'nomad-ui/utils/message-from-adapter-error';
+import messageFromAdapterError from 'nomad-ui/utils/message-from-adapter-error';
 
 export default class PolicyEditorComponent extends Component {
-  @service flashMessages;
+  @service notifications;
   @service router;
   @service store;
 
@@ -13,6 +18,10 @@ export default class PolicyEditorComponent extends Component {
 
   @action updatePolicyRules(value) {
     this.policy.set('rules', value);
+  }
+
+  @action updatePolicyName({ target: { value } }) {
+    this.policy.set('name', value);
   }
 
   @action async save(e) {
@@ -23,38 +32,47 @@ export default class PolicyEditorComponent extends Component {
       const nameRegex = '^[a-zA-Z0-9-]{1,128}$';
       if (!this.policy.name?.match(nameRegex)) {
         throw new Error(
-          'Policy name must be 1-128 characters long and can only contain letters, numbers, and dashes.'
+          `Policy name must be 1-128 characters long and can only contain letters, numbers, and dashes.`
         );
       }
-
+      const shouldRedirectAfterSave = this.policy.isNew;
+      // Because we set the ID for adapter/serialization reasons just before save here,
+      // that becomes a barrier to our Unique Name validation. So we explicltly exclude
+      // the current policy when checking for uniqueness.
       if (
         this.policy.isNew &&
-        this.store.peekRecord('policy', this.policy.name)
+        this.store
+          .peekAll('policy')
+          .filter((policy) => policy !== this.policy)
+          .findBy('name', this.policy.name)
       ) {
         throw new Error(
           `A policy with name ${this.policy.name} already exists.`
         );
       }
-
-      this.policy.id = this.policy.name;
-
+      this.policy.set('id', this.policy.name);
       await this.policy.save();
 
-      this.flashMessages.add({
+      this.notifications.add({
         title: 'Policy Saved',
-        type: 'success',
-        destroyOnClick: false,
-        timeout: 5000,
+        color: 'success',
       });
 
-      this.router.transitionTo('policies');
-    } catch (error) {
-      console.log('error and its', error);
-      this.flashMessages.add({
+      if (shouldRedirectAfterSave) {
+        this.router.transitionTo(
+          'access-control.policies.policy',
+          this.policy.id
+        );
+      }
+    } catch (err) {
+      let message = err.errors?.length
+        ? messageFromAdapterError(err)
+        : err.message || 'Unknown Error';
+
+      this.notifications.add({
         title: `Error creating Policy ${this.policy.name}`,
-        message: messageForError(error),
-        type: 'error',
-        destroyOnClick: false,
+        message,
+        color: 'critical',
         sticky: true,
       });
     }

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package executor
 
 import (
@@ -9,6 +12,7 @@ import (
 	"github.com/golang/protobuf/ptypes"
 	hclog "github.com/hashicorp/go-hclog"
 	plugin "github.com/hashicorp/go-plugin"
+	"github.com/hashicorp/nomad/client/lib/cpustats"
 	"github.com/hashicorp/nomad/drivers/shared/executor/proto"
 	"github.com/hashicorp/nomad/plugins/base"
 )
@@ -25,8 +29,11 @@ const (
 
 // CreateExecutor launches an executor plugin and returns an instance of the
 // Executor interface
-func CreateExecutor(logger hclog.Logger, driverConfig *base.ClientDriverConfig,
-	executorConfig *ExecutorConfig) (Executor, *plugin.Client, error) {
+func CreateExecutor(
+	logger hclog.Logger,
+	driverConfig *base.ClientDriverConfig,
+	executorConfig *ExecutorConfig,
+) (Executor, *plugin.Client, error) {
 
 	c, err := json.Marshal(executorConfig)
 	if err != nil {
@@ -40,6 +47,7 @@ func CreateExecutor(logger hclog.Logger, driverConfig *base.ClientDriverConfig,
 	p := &ExecutorPlugin{
 		logger:      logger,
 		fsIsolation: executorConfig.FSIsolation,
+		compute:     driverConfig.Topology.Compute(),
 	}
 
 	config := &plugin.ClientConfig{
@@ -68,15 +76,14 @@ func CreateExecutor(logger hclog.Logger, driverConfig *base.ClientDriverConfig,
 }
 
 // ReattachToExecutor launches a plugin with a given plugin config
-func ReattachToExecutor(reattachConfig *plugin.ReattachConfig, logger hclog.Logger) (Executor, *plugin.Client, error) {
+func ReattachToExecutor(reattachConfig *plugin.ReattachConfig, logger hclog.Logger, compute cpustats.Compute) (Executor, *plugin.Client, error) {
 	config := &plugin.ClientConfig{
 		HandshakeConfig:  base.Handshake,
 		Reattach:         reattachConfig,
-		Plugins:          GetPluginMap(logger, false),
+		Plugins:          GetPluginMap(logger, false, compute),
 		AllowedProtocols: []plugin.Protocol{plugin.ProtocolGRPC},
 		Logger:           logger.Named("executor"),
 	}
-
 	return newExecutorClient(config, logger)
 }
 
@@ -104,10 +111,11 @@ func processStateToProto(ps *ProcessState) (*proto.ProcessState, error) {
 		return nil, err
 	}
 	pb := &proto.ProcessState{
-		Pid:      int32(ps.Pid),
-		ExitCode: int32(ps.ExitCode),
-		Signal:   int32(ps.Signal),
-		Time:     timestamp,
+		Pid:       int32(ps.Pid),
+		ExitCode:  int32(ps.ExitCode),
+		Signal:    int32(ps.Signal),
+		OomKilled: ps.OOMKilled,
+		Time:      timestamp,
 	}
 
 	return pb, nil
@@ -120,10 +128,11 @@ func processStateFromProto(pb *proto.ProcessState) (*ProcessState, error) {
 	}
 
 	return &ProcessState{
-		Pid:      int(pb.Pid),
-		ExitCode: int(pb.ExitCode),
-		Signal:   int(pb.Signal),
-		Time:     timestamp,
+		Pid:       int(pb.Pid),
+		ExitCode:  int(pb.ExitCode),
+		Signal:    int(pb.Signal),
+		OOMKilled: pb.OomKilled,
+		Time:      timestamp,
 	}, nil
 }
 

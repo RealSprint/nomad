@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package allocdir
 
 import (
@@ -5,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -58,6 +60,10 @@ var (
 	// directory
 	TaskSecrets = "secrets"
 
+	// TaskPrivate is the name of the private directory inside each task
+	// directory
+	TaskPrivate = "private"
+
 	// TaskDirs is the set of directories created in each tasks directory.
 	TaskDirs = map[string]os.FileMode{TmpDirName: os.ModeSticky | 0777}
 
@@ -69,6 +75,22 @@ var (
 	// socket connected to Consul's HTTP endpoint.
 	AllocHTTPSocket = filepath.Join(SharedAllocName, TmpDirName, "consul_http.sock")
 )
+
+// Interface is implemented by AllocDir.
+//
+// TODO(shoenig) soon to be implemented by AllocDir2 in support of the exec2
+// driver and perhaps other drivers with landlock or unveil capabilities.
+type Interface interface {
+	AllocDirFS
+
+	NewTaskDir(string) *TaskDir
+	AllocDirPath() string
+	ShareDirPath() string
+	GetTaskDir(string) *TaskDir
+	Build() error
+	Destroy() error
+	Move(Interface, []*structs.Task) error
+}
 
 // AllocDir allows creating, destroying, and accessing an allocation's
 // directory. All methods are safe for concurrent use.
@@ -96,6 +118,20 @@ type AllocDir struct {
 	logger hclog.Logger
 }
 
+func (a *AllocDir) AllocDirPath() string {
+	return a.AllocDir
+}
+
+func (a *AllocDir) ShareDirPath() string {
+	return a.SharedDir
+}
+
+func (a *AllocDir) GetTaskDir(task string) *TaskDir {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.TaskDirs[task]
+}
+
 // AllocDirFS exposes file operations on the alloc dir
 type AllocDirFS interface {
 	List(path string) ([]*cstructs.AllocFileInfo, error)
@@ -111,10 +147,12 @@ type AllocDirFS interface {
 func NewAllocDir(logger hclog.Logger, clientAllocDir, allocID string) *AllocDir {
 	logger = logger.Named("alloc_dir")
 	allocDir := filepath.Join(clientAllocDir, allocID)
+	shareDir := filepath.Join(allocDir, SharedAllocName)
+
 	return &AllocDir{
 		clientAllocDir: clientAllocDir,
 		AllocDir:       allocDir,
-		SharedDir:      filepath.Join(allocDir, SharedAllocName),
+		SharedDir:      shareDir,
 		TaskDirs:       make(map[string]*TaskDir),
 		logger:         logger,
 	}
@@ -216,7 +254,7 @@ func (d *AllocDir) Snapshot(w io.Writer) error {
 }
 
 // Move other alloc directory's shared path and local dir to this alloc dir.
-func (d *AllocDir) Move(other *AllocDir, tasks []*structs.Task) error {
+func (d *AllocDir) Move(other Interface, tasks []*structs.Task) error {
 	d.mu.RLock()
 	if !d.built {
 		// Enforce the invariant that Build is called before Move
@@ -228,7 +266,7 @@ func (d *AllocDir) Move(other *AllocDir, tasks []*structs.Task) error {
 	d.mu.RUnlock()
 
 	// Move the data directory
-	otherDataDir := filepath.Join(other.SharedDir, SharedDataDir)
+	otherDataDir := filepath.Join(other.ShareDirPath(), SharedDataDir)
 	dataDir := filepath.Join(d.SharedDir, SharedDataDir)
 	if fileInfo, err := os.Stat(otherDataDir); fileInfo != nil && err == nil {
 		os.Remove(dataDir) // remove an empty data dir if it exists
@@ -239,7 +277,7 @@ func (d *AllocDir) Move(other *AllocDir, tasks []*structs.Task) error {
 
 	// Move the task directories
 	for _, task := range tasks {
-		otherTaskDir := filepath.Join(other.AllocDir, task.Name)
+		otherTaskDir := filepath.Join(other.AllocDirPath(), task.Name)
 		otherTaskLocal := filepath.Join(otherTaskDir, TaskLocal)
 
 		fileInfo, err := os.Stat(otherTaskLocal)
@@ -304,6 +342,13 @@ func (d *AllocDir) UnmountAll() error {
 			}
 		}
 
+		if pathExists(dir.PrivateDir) {
+			if err := removeSecretDir(dir.PrivateDir); err != nil {
+				mErr.Errors = append(mErr.Errors,
+					fmt.Errorf("failed to remove the private dir %q: %v", dir.PrivateDir, err))
+			}
+		}
+
 		// Unmount dev/ and proc/ have been mounted.
 		if err := dir.unmountSpecialDirs(); err != nil {
 			mErr.Errors = append(mErr.Errors, err)
@@ -357,12 +402,16 @@ func (d *AllocDir) List(path string) ([]*cstructs.AllocFileInfo, error) {
 	}
 
 	p := filepath.Join(d.AllocDir, path)
-	finfos, err := ioutil.ReadDir(p)
+	finfos, err := os.ReadDir(p)
 	if err != nil {
 		return []*cstructs.AllocFileInfo{}, err
 	}
 	files := make([]*cstructs.AllocFileInfo, len(finfos))
-	for idx, info := range finfos {
+	for idx, file := range finfos {
+		info, err := file.Info()
+		if err != nil {
+			return []*cstructs.AllocFileInfo{}, err
+		}
 		files[idx] = &cstructs.AllocFileInfo{
 			Name:     info.Name(),
 			IsDir:    info.IsDir(),
@@ -440,6 +489,10 @@ func (d *AllocDir) ReadAt(path string, offset int64) (io.ReadCloser, error) {
 		if filepath.HasPrefix(p, dir.SecretsDir) {
 			d.mu.RUnlock()
 			return nil, fmt.Errorf("Reading secret file prohibited: %s", path)
+		}
+		if filepath.HasPrefix(p, dir.PrivateDir) {
+			d.mu.RUnlock()
+			return nil, fmt.Errorf("Reading private file prohibited: %s", path)
 		}
 	}
 	d.mu.RUnlock()

@@ -8,10 +8,494 @@ description: |-
 
 # Upgrade Guides
 
-The [upgrading page](/docs/upgrade) covers the details of doing a standard
+The [upgrading page](/nomad/docs/upgrade) covers the details of doing a standard
 upgrade. However, specific versions of Nomad may have more details provided for
 their upgrades as a result of new features or changed behavior. This page is
 used to document those details separately from the standard upgrade flow.
+
+## Nomad 1.8.0
+
+#### Removal of `raw_exec` option `no_cgroups`
+
+In Nomad 1.7.0 the `raw_exec` plugin option for `no_cgroups` became ineffective.
+Starting in Nomad 1.8.0 attempting to set the `no_cgroups` in `raw_exec` plugin
+configuration will result in an error when starting the agent.
+
+## Nomad 1.7.2
+
+Nomad 1.7.2 fixes a critical bug in CPU fingerprinting in Nomad 1.7.0 and
+1.7.1. You should not install Nomad 1.7.0 or 1.7.1 and instead install the
+latest Nomad 1.7.x version.
+
+## Nomad 1.7.0
+
+<Warning>
+
+Nomad 1.7.0 contains a critical bug in keyring replication. You should not
+install Nomad 1.7.0 and instead install the latest Nomad 1.7.x version.
+
+</Warning>
+
+#### Keyring Replication Failure After Leader Election
+
+Nomad 1.7.0 introduced new RSA keys to the keyring for use in signing workload
+identities. These keys were not correctly replicated from leader to
+followers. This results in all workload identity verification failing after a
+leader election.
+
+This bug was fixed in Nomad 1.7.1.
+
+#### Vault Integration Changes
+
+Starting in Nomad 1.7, Nomad clients will use a task's [Workload Identity][] to
+authenticate to Vault and obtain a Vault token specific to the task.
+
+The existing workflow using a Vault token provided in either the agent
+configuration or at the time of job submission is deprecated and will be removed
+in Nomad 1.9. The [`vault.policies`][] field is also deprecated and will work
+only with the existing workflow. Instead, you should configure a suitable Vault
+role and use that.
+
+The following agent configuration fields are deprecated:
+- [`vault.allow_unauthenticated`][] will be removed in Nomad 1.9. Tasks will use
+  the workload identity without the user supplying a Vault token.
+- [`vault.task_token_ttl`][] will be removed in Nomad 1.9. With workload
+  identity, tasks will receive their TTL configuration from the Vault role.
+- [`vault.token`][] will be removed in Nomad 1.9. Nomad agents will no longer
+  make requests to authenticated endpoints except with a task's workload
+  identity.
+
+Before upgrading to Nomad 1.9 you will need to have configured authentication
+with Vault to work with workload identity. See [Migrating to Using Workload
+Identity with Vault][] for more details.
+
+#### Consul Integration Changes
+
+Starting in Nomad 1.7, Nomad clients will use a service's or task's [Workload
+Identity][] to authenticate to Consul and obtain a Consul token specific to the
+workload.
+
+The existing workflow using a Consul token provided in either the agent
+configuration or at the time of job submission is deprecated and will be removed
+in Nomad 1.9. The [`consul.allow_unauthenticated`][] agent configuration field
+will be removed in Nomad 1.9. Tasks will use the workload identity without the
+user supplying a Consul token.
+
+Before upgrading to Nomad 1.9 you will need to have configured authentication
+with Consul to work with workload identity. See [Migrating to Using Workload
+Identity with Consul][] for more details.
+
+#### RS256 JWT Signing Algorithm Support
+
+Prior to Nomad 1.7, workload identity JWTs were signed with the `EdDSA`
+algorithm. While `EdDSA` has numerous advantages as a signing algorithm, most
+third parties that accept JWTs expect the `RS256` signing algorithm to be used.
+
+Therefore starting in Nomad 1.7 *new* signing keys will generate an RSA key and
+sign workload identities with the `RS256` signing algorithm.
+
+Before setting up third party authentication methods to use workload
+identities, it is recommended to run [`nomad operator root keyring
+rotate`](/nomad/docs/commands/operator/root/keyring-rotate) to ensure you
+generate a new RSA key.
+
+To verify an RSA key is present you may check the [`/.well-known/jwks.json`
+endpoint](/nomad/api-docs/operator/keyring#list-active-public-keys) on any
+Nomad agent. If you see `"kty": "RSA"`, then an RSA key exists and you do not
+need to rotate keys.
+
+New Nomad clusters will use RSA by default and are not affected.
+
+#### CPU Fingerprinting Changes
+
+Starting in Nomad 1.7, Nomad clients improve the accuracy of detected CPU
+performance metrics. The fingerprinter now takes into account heterogeneous core
+types on applicable processors. In addition, Nomad will attempt to detect and
+use the base frequency of the processor rather than the turbo frequency when
+calculating the total available CPU bandwidth. The net result of these behaviors
+is that the calculated total CPU bandwidth available on a node may change when
+upgrading to Nomad 1.7. Operators are encouraged to ensure planned capacity
+meets expectations before upgrading. The [cpu concepts][cpu] documentation
+contains guidance in understanding how Nomad detects CPU metrics.
+
+#### CPU EC2 Detection Changes
+
+Prior to Nomad 1.7, Nomad clients embedded a large lookup table of CPU
+performance data for every EC2 instance type. In 1.7 and later Nomad instead
+gathers this data by executing the `dmidecode` command. The `dmidecode` package
+must be installed manually on some Linux distributions before the Nomad agent
+is started.
+
+#### CPU Core Isolation
+
+Starting in Nomad 1.7, Nomad tasks that specify CPU resources using the `cores`
+attribute will be restricted to using only the CPU cores assigned to them. In
+previous versions of Nomad these tasks could also make use of other non-reserved
+CPU cores. However this feature would cause severe performance problems for
+the Linux kernel as the number of tasks increased. Operators are encouraged
+to ensure tasks making use of the `cores` attribute are given sufficient CPU
+resources before upgrading.
+
+#### The `distinct_hosts` Constraint Now Honors Namespaces
+
+Nomad 1.7.0 changes the behavior of the [`distinct_hosts`][] constraint such that
+namespaces are taken into account when choosing feasible clients for allocation
+placement. The previous, less-expected behavior would cause **any** job with the
+same name running on a client to cause that node to be considered infeasible.
+
+This change allows workloads that formerly did not colocate to be scheduled
+onto the same client when they are in different namespaces. To prevent this,
+consider using [node pools] and constrain the jobs with a [`distinct_property`][]
+constraint over [`${node.pool}`][node_attributes].
+
+#### Loading Binaries from `plugin_dir` Without Configuration
+
+Starting with Nomad 1.7.0, loading plugins that are not referenced in the agent
+configuration file is deprecated. Future versions of Nomad will only load
+plugins that have a corresponding [`plugin`](/nomad/docs/configuration/plugin)
+block in the agent configuration file.
+
+#### Changes to `raw_exec`
+
+The `raw_exec` task driver now enforces memory limits via cgroups on Linux
+platforms similar to the `exec` and `docker` task drivers. The driver does
+support memory [oversubscription][oversub], which can be configured in such a
+way to nearly replicate the previously unlimited behavior.
+
+The `no_cgroups` configuration option no longer has any effect. Previously,
+setting `no_cgroups` would disable the mechanism where Nomad used the freezer
+cgroup to halt the process group of a Task before issuing a kill signal to each
+process. Starting in Nomad 1.7.0 this behavior is always enabled (and a similar
+mechanism has always been enabled on cgroups v2 systems).
+
+## Nomad 1.6.0
+
+#### Enterprise License Validation with BuildDate
+
+Nomad Enterprise 1.6.0 now compares license `ExpirationTime` with the Nomad binary's `BuildDate`,
+rather than comparing the sometimes more lenient license `TerminationTime` with `time.Now()`.
+See the [licensing FAQ](/nomad/docs/v1.6.x/enterprise/license/faq) for more info,
+but most relevant here is that you should run the new
+[`nomad license inspect`](/nomad/docs/commands/license/inspect) command
+before trying to upgrade your Enterprise servers to v1.6.0 or higher.
+
+#### Job Evaluate API Endpoint Requires `submit-job` Instead of `read-job`
+
+Nomad 1.6.0 updated the ACL capability requirement for the job evaluate
+endpoint from `read-job` to `submit-job` to better reflect that this operation
+writes state to Nomad. This endpoint is used by the `nomad job eval` CLI
+command and so the ACL requirements changed for the command as well. Users that
+called this endpoint or used this command using tokens with just the `read-job`
+capability or the `read` policy must update their tokens to use the
+`submit-job` capability or the `write` policy.
+
+#### Exec Driver Requires New Capability for mlock
+
+Nomad 1.6.0 updated the `exec` task driver to maintain the max memory locked
+limit set by the host system. In earlier versions of Nomad this limit was
+*unset* unintentionally.
+
+In practice this means that `exec` tasks such as Vault which use the `mlock`
+system call will now need to explicitly add the `ipc_lock` capability.
+
+First [allow the `ipc_lock` capability in the Client
+configuration][allow_caps_exec]:
+
+```hcl
+plugin "exec" {
+  config {
+    allow_caps = ["audit_write", "chown", "dac_override", "fowner", "fsetid",
+      "kill", "mknod", "net_bind_service", "setfcap", "setgid", "setpcap",
+      "setuid", "sys_chroot", "ipc_lock"]
+  }
+}
+```
+
+Then [add the `ipc_lock` capability to the exec task][cap_add_exec] that uses
+`mlock`:
+
+```hcl
+task "vault" {
+  driver = "exec"
+
+  config {
+    cap_add = ["ipc_lock"]
+
+    # ... other task configuration
+  }
+
+# ... rest of jobspec
+```
+
+These additions are backward compatible with Nomad v1.5, so Clients and Jobs
+should be updated prior to upgrading to Nomad v1.6.
+
+See [#17780](https://github.com/hashicorp/nomad/issues/17780) for details.
+
+#### Namespace ACL policies require a label
+
+Nomad 1.6.0 does not allow ACL policies for namespaces without a label. Prior
+to this version, ACL policies for namespaces were allowed to be defined
+without a label, and the documented behavior in this case was that the policy
+would be applied to the `default` namespace.
+
+A bug in this logic caused the policy to be incorrectly applied to a different
+namespace. For example, the policy below would be applied to a namespace called
+`policy` instead of `default`.
+
+```hcl
+namespace {
+  policy = "read"
+}
+```
+
+To avoid further confusion and potential security incidents, this functionality
+was removed and now all namespace policies are required to have a label.
+
+Tokens currently attached to an invalid policy will stop working after the
+upgrade, so you should fix invalid policies to have an explicit namespace label
+before upgrading Nomad.
+
+After the policies are fixed, the existing tokens with those policies will
+continue to work and do not need to be regenerated.
+
+#### Command `nomad tls cert create` flag `-cluster-region` deprecated
+
+Nomad 1.6.0 will deprecate the command `nomad tls cert create` flag `-cluster-region`
+in favour of using the standard flag `-region`. The `-cluster-region` flag
+will be removed in Nomad 1.7.0
+
+#### 32-bit Intel Builds Deprecated
+
+Starting with Nomad 1.6.0, HashiCorp will no longer release 32-bit Intel builds
+of Nomad and Nomad Enterprise (the builds named `windows_386` and
+`linux_386`). Bug fixes will continue to be backported to the 1.5.x and 1.4.x
+versions so long as those major versions are still supported.
+
+The 32-bit ARM build (`linux_arm` for the armhf architecture) is deprecated and
+may be removed in a future major version of Nomad. The 32-bit ARM build is not
+tested and may include bugs around platform-specific integer sizes. Using 64-bit
+builds for small form-factor hosts such as the RaspberryPi is strongly
+recommended.
+
+## Nomad 1.5.7, 1.4.11
+
+#### Namespace ACL policies require a label
+
+Nomad 1.5.7 and 1.4.11 do not allow ACL policies for namespaces without a
+label. Prior to these versions, ACL policies for namespaces were allowed to be
+defined without a label, and the documented behavior in this case was that the
+policy would be applied to the `default` namespace.
+
+A bug in this logic caused the policy to be incorrectly applied to a different
+namespace. For example, the policy below would be applied to a namespace called
+`policy` instead of `default`.
+
+```hcl
+namespace {
+  policy = "read"
+}
+```
+
+To avoid further confusion and potential security incidents, this functionality
+was removed and now all namespace policies are required to have a label.
+
+Tokens currently attached to an invalid policy will stop working after the
+upgrade, so you should fix invalid policies to have an explicit namespace label
+before upgrading Nomad.
+
+After the policies are fixed, the existing tokens with those policies will
+continue to work and do not need to be regenerated.
+
+## Nomad 1.5.5
+
+Nomad 1.5.5 fixed a bug where allocations that are rescheduled for jobs
+registered before the upgrade would no longer collect allocation logs. The
+`logs.enabled` field introduced in 1.5.4 is now deprecated and has been replaced
+by a `logs.disabled` field that defaults to false. The `logs.enabled` field value
+will be ignored in 1.5.5 and will be removed in Nomad 1.6.0.
+
+## Nomad 1.5.4
+
+Nomad 1.5.4 included a bug where allocations that are rescheduled for jobs
+registered before the upgrade would no longer collect allocation logs. The
+client will emit debug-level logs like the following:
+
+```
+client.alloc_runner.task_runner.task_hook: log collection is disabled by task
+```
+
+You should avoid this version of Nomad and instead install the latest version of
+Nomad 1.5. If you have already upgraded to Nomad 1.5.4, upgrading to Nomad 1.5.5
+will restore logging collection when clients are restarted as part of the
+upgrade process.
+
+## Nomad 1.5.1
+
+#### Artifact Download Regression Fix
+
+Nomad 1.5.1 reverts a behavior of 1.5.0 where artifact downloads were executed
+as the `nobody` user on compatible Linux systems. This was done optimistically
+as defense against compromised artifact endpoints attempting to exploit the
+Nomad Client or tools it uses to perform downloads such as git or mercurial.
+Unfortunately running the child process as any user other than root is not
+compatible with the advice given in Nomad's [security hardening guide][hard_guide]
+which calls for a specific directory tree structure making such operation impossible.
+
+Other changes to artifact downloading remain - they are executed as a child
+process of the Nomad agent, and on modern Linux systems make use of the Kernel
+landlock feature to restrict filesystem access from that process.
+
+## Nomad 1.5.0
+
+#### Pause Container Reconciliation Regression
+
+Nomad 1.5.0 introduced a regression to the way the Docker driver reconciles
+dangling containers. This meant pause containers would be erroneously removed,
+even though the allocation was still running. This would not affect the running
+allocation, but does cause it to fail if it needs to restart. An immediate
+workaround is to disable
+[dangling container reconciliation][dangling_container_reconciliation].
+
+#### Artifact Download Sandboxing
+
+Nomad 1.5.0 changes the way [artifacts] are downloaded when specifying an `artifact`
+in a task configuration. Previously the Nomad Client would download artifacts
+in-process. External commands used to facilitate the download (e.g. `git`, `hg`)
+would be run as `root`, and the resulting payload would be owned as `root` in the
+allocation's task directory.
+
+In an effort to improve the resilience and security model of the Nomad Client,
+in 1.5.0 artifact downloads occur in a sub-process. Where possible, that
+sub-process is run as the `nobody` user, and on modern Linux systems will
+be isolated from the filesystem via the kernel's [landlock] capability.
+
+Operators are encouraged to ensure jobs making use of artifacts continue to work
+as expected. In particular, git-ssh users will need to make sure the system-wide
+`/etc/ssh/ssh_known_hosts` file is populated with any necessary remote hosts.
+Previously, Nomad's documentation suggested configuring
+`/root/.ssh/known_hosts` which would apply only to the `root` user.
+
+The artifact downloader no longer inherits all environment variables available
+to the Nomad Client. The downloader sub-process environment is set as follows on
+Linux / macOS:
+
+```
+PATH=/usr/local/bin:/usr/bin:/bin
+TMPDIR=<path to task dir>/tmp
+```
+
+and as follows on Windows:
+
+```
+TMP=<path to task dir>\tmp
+TEMP=<path to task dir>\tmp
+PATH=<inherit $PATH>
+HOMEPATH=<inherit $HOMEPATH>
+HOMEDRIVE=<inherit $HOMEDRIVE>
+USERPROFILE=<inherit $USERPROFILE>
+```
+
+Configuration of the artifact downloader should happen through the [`options`][artifact_params]
+and [`headers`][artifact_params] fields of the `artifact` block. For backwards
+compatibility, the sandbox can be configured to inherit specified environment variables
+from the Nomad client by setting [`set_environment_variables`][artifact_env].
+
+The use of filesystem isolation can be disabled in Client configuration by
+setting [`disable_filesystem_isolation`][artifact_fs_isolation].
+
+#### Artifact Decompression Limits
+
+Nomad 1.5.0 now sets default limits around artifact decompression. A single artifact
+payload is now limited to 100GB and 4096 files when decompressed. An artifact that
+exceeds these limits during decompression will cause the artifact downloader to
+fail. These limits can be adjusted or disabled in the client artifact configuration
+by setting [`decompression_size_limit`][decompression_size_limit] and
+[`decompression_file_count_limit`][decompression_file_count_limit].
+
+#### Datacenter Wildcards
+
+In Nomad 1.5.0, the
+[`datacenters`](/nomad/docs/job-specification/job#datacenters) field for a job
+accepts wildcards for multi-character matching. For example, `datacenters =
+["dc*"]` will match all datacenters that start with `"dc"`. The default value
+for `datacenters` is now `["*"]`, so the field can be omitted.
+
+The `*` character is no longer a legal character in the
+[`datacenter`](/nomad/docs/configuration#datacenter) field for an agent
+configuration. Before upgrading to Nomad 1.5.0, you should first ensure that
+you've updated any jobs that currently have a `*` in their datacenter name and
+then ensure that no agents have this character in their `datacenter` field name.
+
+#### Server `rejoin_after_leave` (default: `false`) now enforced
+
+All Nomad versions prior to v1.5.0 have incorrectly ignored the Server
+[`rejoin_after_leave`] configuration option. This bug has been fixed in Nomad
+version v1.5.0.
+
+Previous to v1.5.0 the behavior of Nomad `rejoin_after_leave` was always `true`,
+regardless of Nomad server configuration, while the documentation incorrectly
+indicated a default of `false`.
+
+Cluster operators should be aware that explicit `leave` events (such as `nomad
+server force-leave`) will now result in behavior which matches this
+configuration, and should review whether they were inadvertently relying on the
+buggy behavior.
+
+#### Changes to eval broker metrics
+
+The metric `nomad.nomad.broker.total_blocked` has been changed to
+`nomad.nomad.broker.total_pending`. This state refers to internal state of the
+leader's broker, and this is easily confused with the unrelated evaluation
+status `"blocked"` in the Nomad API.
+
+#### Deprecated gossip keyring commands removed
+
+The commands `nomad operator keyring`, `nomad keyring`, `nomad operator keygen`,
+and `nomad keygen` used to manage the gossip keyring were marked as deprecated
+in Nomad 1.4.0. In Nomad 1.5.0, these commands have been removed. Use the `nomad
+operator gossip keyring` commands to manage the gossip keyring.
+
+#### Garbage collection of evaluations and allocations for batch job
+
+Versions prior to 1.5.0 only delete evaluations and allocations of batch jobs
+that are explicitly stopped which can lead to unbounded memory growth of Nomad
+when the batch job is executed multiple times.
+
+Nomad 1.5.0 introduces a new server configuration
+[`batch_eval_gc_threshold`](/nomad/docs/configuration/server#batch_eval_gc_threshold)
+to control how allocations and evaluations for batch jobs are collected.
+
+The default threshold is `24h`. If you need to access completed allocations for
+batch jobs that are older than 24h you must increase this value when upgrading
+Nomad.
+
+## Nomad 1.4.5, 1.3.10
+
+#### Pause Container Reconciliation Regression
+
+Nomad 1.4.5 and 1.3.10 introduced a regression to the way the Docker driver
+reconciles dangling containers. This meant pause containers would be erroneously
+removed, even though the allocation was still running. This would not affect the
+running allocation, but does cause it to fail if it needs to restart. An immediate
+workaround is to disable
+[dangling container reconciliation][dangling_container_reconciliation].
+
+## Nomad 1.4.4, 1.3.9
+
+#### Garbage collection of evaluations and allocations for batch job
+
+Versions prior to 1.4.4 and 1.3.9 only delete evaluations and allocations of
+batch jobs that are explicitly stopped which can lead to unbounded memory
+growth of Nomad when the batch job is executed multiple times.
+
+Nomad 1.4.4 and 1.3.9 introduces a new server configuration
+[`batch_eval_gc_threshold`](/nomad/docs/configuration/server#batch_eval_gc_threshold)
+to control how allocations and evaluations for batch jobs are collected.
+
+The default threshold is `24h`. If you need to access completed allocations for
+batch jobs that are older than 24h you must increase this value when upgrading
+Nomad.
 
 ## Nomad 1.4.0
 
@@ -21,14 +505,15 @@ Nomad 1.4.0 initializes a keyring on the leader if one has not been previously
 created, which writes a new raft entry. Users have reported that the keyring
 initialization can cause a panic on older servers during upgrades. Following the
 documented [upgrade process][] closely will reduce the risk of this panic. But
-if a server with version 1.4.0 or higher becomes leader while servers with
-versions before 1.4.0 are still in the cluster, the older servers will panic.
+if a server with version 1.4.0 becomes leader while servers with versions before
+1.4.0 are still in the cluster, the older servers will panic.
 
 The most likely scenario for this is if the leader is still on a version before
 1.4.0 and is netsplit from the rest of the cluster or the server is restarted
 without upgrading, and one of the 1.4.0 servers becomes the leader.
 
-You can recover from the panic by immediately upgrading the old servers.
+You can recover from the panic by immediately upgrading the old servers. This
+bug was fixed in Nomad 1.4.1.
 
 #### Raft Protocol Version 2 Unsupported
 
@@ -207,7 +692,7 @@ consul-template v0.28 added a new function
 which can write to arbitrary files on the host.
 
 Nomad 1.3.0 disables this function by default in its
-[`function_denylist`](/docs/configuration/client#function_denylist).
+[`function_denylist`](/nomad/docs/configuration/client#function_denylist).
 
 However *if you have overridden the default `template.function_denylist` in
 your client configuration, you must add `writeToFile` to your denylist.*
@@ -217,7 +702,7 @@ Failing to do so allows templates to write to arbitrary paths on the host.
 
 When using Envoy as a sidecar proxy for Connect enabled services, Nomad will now
 automatically inject the unique allocation ID into Envoy's stats tags configuration.
-Users who wish to set the tag values themselves may do so using the [`proxy.config`](/docs/job-specification/proxy#config)
+Users who wish to set the tag values themselves may do so using the [`proxy.config`](/nomad/docs/job-specification/proxy#config)
 block.
 
 ```hcl
@@ -256,7 +741,7 @@ Starting with Nomad 1.3.0, services and checks that utilise Consul will have an
 automatic constraint placed upon the task group. This ensures they are placed
 on a client with a Consul agent running that meets a minimum version
 requirement. The minimum version of Consul supported by Nomad's service and
-check stanzas is now Consul v1.7.0.
+check blocks is now Consul v1.7.0.
 
 #### Linux Control Groups Version 2
 
@@ -423,7 +908,7 @@ Click [here](https://www.hashicorp.com/products/nomad/trial) to get a trial lice
 #### Agent Metrics API
 
 The Nomad agent metrics API now respects the
-[`prometheus_metrics`](https://www.nomadproject.io/docs/configuration/telemetry#prometheus_metrics)
+[`prometheus_metrics`](/nomad/docs/configuration/telemetry#prometheus_metrics)
 configuration value. If this value is set to `false`, which is the default value,
 calling `/v1/metrics?format=prometheus` will now result in a response error.
 
@@ -589,7 +1074,7 @@ property can be set in client configuration to override the default value.
 
 Nomad v1.0.0 adopts HCL2 for parsing the job spec. HCL2 extends HCL with more
 expression and reuse support, but adds some stricter schema for HCL blocks
-(a.k.a. stanzas). Check [HCL](/docs/job-specification/hcl2) for more details.
+(a.k.a. blocks). Check [HCL](/nomad/docs/job-specification/hcl2) for more details.
 
 ### Signal used when stopping Docker tasks
 
@@ -667,7 +1152,7 @@ restarting. Nomad 1.0 with Consul 1.9 do not have this limitation.
 
 Nomad v1.0.0 changes the behavior around the selection of Envoy version used for
 Connect sidecar proxies. Previously, Nomad always defaulted to Envoy v1.11.2 if
-neither the `meta.connect.sidecar_image` parameter or `sidecar_task` stanza were
+neither the `meta.connect.sidecar_image` parameter or `sidecar_task` block were
 explicitly configured. Likewise the same version of Envoy would be used for
 Connect ingress gateways if `meta.connect.gateway_image` was unset. Starting
 with Nomad v1.0.0, each Nomad Client will query Consul for a list of supported
@@ -675,7 +1160,7 @@ Envoy versions. Nomad will make use of the latest version of Envoy supported by
 the Consul agent when launching Envoy as a Connect sidecar proxy. If the version
 of the Consul agent is older than v1.7.8, v1.8.4, or v1.9.0, Nomad will fallback
 to the v1.11.2 version of Envoy. As before, if the `meta.connect.sidecar_image`,
-`meta.connect.gateway_image`, or `sidecar_task` stanza are set, those settings
+`meta.connect.gateway_image`, or `sidecar_task` block are set, those settings
 take precedence.
 
 When upgrading Nomad Clients from a previous version to v1.0.0 and above, it is
@@ -739,7 +1224,7 @@ mounts = [
 ### Artifact and Template Paths
 
 Nomad 0.12.6 includes security fixes for privilege escalation vulnerabilities
-in handling of job `template` and `artifact` stanzas:
+in handling of job `template` and `artifact` blocks:
 
 - The `template.source` and `template.destination` fields are now protected by
   the file sandbox introduced in 0.9.6. These paths are now restricted to fall
@@ -783,7 +1268,7 @@ lieu of the `ports` field.
 Enterprise binaries for Nomad are now publicly available via
 [releases.hashicorp.com](https://releases.hashicorp.com/nomad/). By default all
 enterprise features are enabled for 6 hours. During that time enterprise users
-should apply their license with the [`nomad license put ...`](https://developer.hashicorp.com/nomad/docs/v1.0.x/commands/license/put) command.
+should apply their license with the [`nomad license put ...`](/nomad/docs/v1.0.x/commands/license/put) command.
 
 Once the 6 hour demonstration period expires, Nomad will shutdown. If restarted
 Nomad will shutdown in a very short amount of time unless a valid license is
@@ -802,11 +1287,11 @@ Prior to Nomad 0.12, Docker tasks may mount and then manipulate any host file
 and may pose a security risk.
 
 Operators now must explicitly allow tasks to access host filesystem. [Host
-Volumes](/docs/configuration/client#host_volume-stanza) provide a fine tune
+Volumes](/nomad/docs/configuration/client#host_volume-block) provide a fine tune
 access to individual paths.
 
 To restore pre-0.12.0 behavior, you can enable [Docker
-`volume`](/docs/drivers/docker#enabled-1) to allow binding host paths, by adding
+`volume`](/nomad/docs/drivers/docker#enabled-1) to allow binding host paths, by adding
 the following to the nomad client config file:
 
 ```hcl
@@ -877,13 +1362,13 @@ mounts = [
 ### Artifact and Template Paths
 
 Nomad 0.11.5 includes backported security fixes for privilege escalation
-vulnerabilities in handling of job `template` and `artifact` stanzas:
+vulnerabilities in handling of job `template` and `artifact` blocks:
 
 - The `template.source` and `template.destination` fields are now protected by
   the file sandbox introduced in 0.9.6. These paths are now restricted to fall
   inside the task directory by default. An operator can opt-out of this
   protection with the
-  [`template.disable_file_sandbox`](/docs/configuration/client#template-parameters)
+  [`template.disable_file_sandbox`](/nomad/docs/configuration/client#template-parameters)
   field in the client configuration.
 - The paths for `template.source`, `template.destination`, and
   `artifact.destination` are validated on job submission to ensure the paths
@@ -991,13 +1476,13 @@ mounts = [
 ### Artifact and Template Paths
 
 Nomad 0.10.6 includes backported security fixes for privilege escalation
-vulnerabilities in handling of job `template` and `artifact` stanzas:
+vulnerabilities in handling of job `template` and `artifact` blocks:
 
 - The `template.source` and `template.destination` fields are now protected by
   the file sandbox introduced in 0.9.6. These paths are now restricted to fall
   inside the task directory by default. An operator can opt-out of this
   protection with the
-  [`template.disable_file_sandbox`](/docs/configuration/client#template-parameters)
+  [`template.disable_file_sandbox`](/nomad/docs/configuration/client#template-parameters)
   field in the client configuration.
 
 - The paths for `template.source`, `template.destination`, and
@@ -1032,7 +1517,7 @@ allocation with `nomad alloc status -verbose`.
 Nomad will by default prevent certain environment variables set in the client
 process from being passed along into launched tasks. The `CONSUL_HTTP_TOKEN`
 environment variable has been added to the default list. More information can
-be found in the `env.blacklist` [configuration](/docs/configuration/client#env-blacklist) .
+be found in the `env.blacklist` [configuration](/nomad/docs/configuration/client#env-blacklist) .
 
 ## Nomad 0.10.3
 
@@ -1059,7 +1544,7 @@ or SAN of all Nomad server node certs is `server.<region>.nomad`.
 
 Nomad 0.10.3 introduces the [limits][] agent configuration parameters for
 mitigating denial of service attacks from users who are not authenticated via
-mTLS. The default limits stanza is:
+mTLS. The default limits block is:
 
 ```hcl
 limits {
@@ -1101,32 +1586,32 @@ For more information, see [Docker Dangling containers][dangling-containers].
 ### Deployments
 
 Nomad 0.10 enables rolling deployments for service jobs by default and adds a
-default update stanza when a service job is created or updated. This does not
-affect jobs with an update stanza.
+default update block when a service job is created or updated. This does not
+affect jobs with an update block.
 
-In pre-0.10 releases, when updating a service job without an update stanza, all
+In pre-0.10 releases, when updating a service job without an update block, all
 existing allocations are stopped while new allocations start up, and this may
 cause a service degradation or an outage. You can regain this behavior and
 disable deployments by setting `max_parallel` to 0.
 
-For more information, see [`update` stanza][update].
+For more information, see [`update` block][update].
 
 ## Nomad 0.9.5
 
 ### Template Rendering
 
 Nomad 0.9.5 includes security fixes for privilege escalation vulnerabilities in
-handling of job `template` stanzas:
+handling of job `template` blocks:
 
 - The client host's environment variables are now cleaned before rendering the
   template. If a template includes the `env` function, the job should include an
-  [`env`](/docs/job-specification/env) stanza to allow access to the variable in
+  [`env`](/nomad/docs/job-specification/env) block to allow access to the variable in
   the template.
 
 - The `plugin` function is no longer permitted by default and will raise an
   error if used in a template. Operator can opt-in to permitting this function
   with the new
-  [`template.function_blacklist`](/docs/configuration/client#template-parameters)
+  [`template.function_blacklist`](/nomad/docs/configuration/client#template-parameters)
   field in the client configuration.
 
 - The `file` function has been changed to restrict paths to fall inside the task
@@ -1134,7 +1619,7 @@ handling of job `template` stanzas:
   variable to prefix file paths should work unchanged. Relative paths or
   symlinks that point outside the task directory will raise an error. An
   operator can opt-out of this protection with the new
-  [`template.disable_file_sandbox`](/docs/configuration/client#template-parameters)
+  [`template.disable_file_sandbox`](/nomad/docs/configuration/client#template-parameters)
   field in the client configuration.
 
 ## Nomad 0.9.0
@@ -1154,13 +1639,13 @@ user visible differences between 0.8 and 0.9 drivers:
 
 - [LXC][lxc] is now community supported and distributed independently.
 
-- Task driver [`config`][task-config] stanzas are no longer validated by
+- Task driver [`config`][task-config] blocks are no longer validated by
   the [`nomad job validate`][validate] command. This is a regression that will
   be fixed in a future release.
 
 There is a new method for client driver configuration options, but existing
 `client.options` settings are supported in 0.9. See [plugin
-configuration][plugin-stanza] for details.
+configuration][plugin-block] for details.
 
 #### LXC
 
@@ -1206,7 +1691,7 @@ env {
   image.version = "3.2"
 }
 
-# v0.8 task config stanza:
+# v0.8 task config block:
 task {
   driver = "docker"
   config {
@@ -1214,7 +1699,7 @@ task {
   }
 }
 
-# v0.9 task config stanza:
+# v0.9 task config block:
 task {
   driver = "docker"
   config {
@@ -1224,7 +1709,7 @@ task {
 ```
 
 This only affects users who interpolate unusual variables with multiple
-consecutive dots in their task `config` stanza. All other interpolation is
+consecutive dots in their task `config` block. All other interpolation is
 unchanged.
 
 Since HCL2 uses dotted object notation for interpolation users should transition
@@ -1238,18 +1723,18 @@ downgrade safely, users should erase the Nomad client's data directory.
 
 ### `port_map` Environment Variable Changes
 
-Before Nomad 0.9.0 ports mapped via a task driver's `port_map` stanza could be
+Before Nomad 0.9.0 ports mapped via a task driver's `port_map` block could be
 interpolated via the `NOMAD_PORT_<label>` environment variables.
 
-However, in Nomad 0.9.0 no parameters in a driver's `config` stanza, including
-its `port_map`, are available for interpolation. This means `{{ env NOMAD_PORT_<label> }}` in a `template` stanza or `HTTP_PORT = "${NOMAD_PORT_http}"` in an `env` stanza will now interpolate the _host_ ports,
+However, in Nomad 0.9.0 no parameters in a driver's `config` block, including
+its `port_map`, are available for interpolation. This means `{{ env NOMAD_PORT_<label> }}` in a `template` block or `HTTP_PORT = "${NOMAD_PORT_http}"` in an `env` block will now interpolate the _host_ ports,
 not the container's.
 
 Nomad 0.10 introduced Task Group Networking which natively supports port mapping
 without relying on task driver specific `port_map` fields. The
-[`to`](/docs/job-specification/network#to) field on group network port stanzas
+[`to`](/nomad/docs/job-specification/network#to) field on group network port blocks
 will be interpolated properly. Please see the
-[`network`](/docs/job-specification/network/) stanza documentation for details.
+[`network`](/nomad/docs/job-specification/network/) block documentation for details.
 
 ## Nomad 0.8.0
 
@@ -1257,7 +1742,7 @@ will be interpolated properly. Please see the
 
 When upgrading to Nomad 0.8.0 from a version lower than 0.7.0, users will need
 to set the [`raft_protocol`] option in
-their `server` stanza to 1 in order to maintain backwards compatibility with the
+their `server` block to 1 in order to maintain backwards compatibility with the
 old servers during the upgrade. After the servers have been migrated to version
 0.8.0, `raft_protocol` can be moved up to 2 and the servers restarted to match
 the default.
@@ -1290,7 +1775,7 @@ table of the Raft Protocol versions supported by each Nomad version:
 </table>
 
 In order to enable all
-[Autopilot](https://learn.hashicorp.com/tutorials/nomad/autopilot) features, all
+[Autopilot](/nomad/tutorials/manage-clusters/autopilot) features, all
 servers in a Nomad cluster must be running with Raft protocol version 3 or
 later.
 
@@ -1299,15 +1784,15 @@ later.
 Node draining via the [`node drain`][drain-cli] command or the [drain
 API][drain-api] has been substantially changed in Nomad 0.8. In Nomad 0.7.1 and
 earlier draining a node would immediately stop all allocations on the node
-being drained. Nomad 0.8 now supports a [`migrate`][migrate] stanza in job
+being drained. Nomad 0.8 now supports a [`migrate`][migrate] block in job
 specifications to control how many allocations may be migrated at once and the
 default will be used for existing jobs.
 
 The `drain` command now blocks until the drain completes. To get the Nomad 0.7.1
 and earlier drain behavior use the command: `nomad node drain -enable -force -detach <node-id>`
 
-See the [`migrate` stanza documentation][migrate] and [Decommissioning Nodes
-guide](https://learn.hashicorp.com/tutorials/nomad/node-drain) for details.
+See the [`migrate` block documentation][migrate] and [Decommissioning Nodes
+guide](/nomad/tutorials/manage-clusters/node-drain) for details.
 
 ### Periods in Environment Variable Names No Longer Escaped
 
@@ -1315,13 +1800,13 @@ _Applications which expect periods in environment variable names to be replaced
 with underscores must be updated._
 
 In Nomad 0.7 periods (`.`) in environment variables names were replaced with an
-underscore in both the [`env`](/docs/job-specification/env) and
-[`template`](/docs/job-specification/template) stanzas.
+underscore in both the [`env`](/nomad/docs/job-specification/env) and
+[`template`](/nomad/docs/job-specification/template) blocks.
 
 In Nomad 0.8 periods are _not_ replaced and will be included in environment
 variables verbatim.
 
-For example the following stanza:
+For example the following block:
 
 ```text
 env {
@@ -1336,7 +1821,7 @@ as specified: `registry.consul.addr=127.0.0.1:8500`.
 ### Client APIs Unavailable on Older Nodes
 
 Because Nomad 0.8 uses a new RPC mechanism to route node-specific APIs like
-[`nomad alloc fs`](/docs/commands/alloc/fs) through servers to the node,
+[`nomad alloc fs`](/nomad/docs/commands/alloc/fs) through servers to the node,
 0.8 CLIs are incompatible using these commands on clients older than 0.8.
 
 To access these commands on older clients either continue to use a pre-0.8
@@ -1352,7 +1837,7 @@ as the old style will be deprecated in future versions of Nomad.
 
 ### RPC Advertise Address
 
-The behavior of the [advertised RPC address](/docs/configuration#rpc-1) has
+The behavior of the [advertised RPC address](/nomad/docs/configuration#rpc-1) has
 changed to be only used to advertise the RPC address of servers to client nodes.
 Server to server communication is done using the advertised Serf address.
 Existing cluster's should not be effected but the advertised RPC address may
@@ -1376,7 +1861,7 @@ If you manually configure `advertise` addresses no changes are necessary.
 The change to the default, advertised IP also effect clients that do not specify
 which network_interface to use. If you have several routable IPs, it is advised
 to configure the client's [network
-interface](/docs/configuration/client#network_interface) such that tasks bind to
+interface](/nomad/docs/configuration/client#network_interface) such that tasks bind to
 the correct address.
 
 ## Nomad 0.5.5
@@ -1465,68 +1950,91 @@ draining the node so no tasks are running on it. This can be verified by running
 state. Once that is done the client can be killed, the `data_dir` should be
 deleted and then Nomad 0.3.0 can be launched.
 
-[api_jobs_parse]: /api-docs/jobs#parse-job
+[`allow_caps`]: /nomad/docs/drivers/docker#allow_caps
+[`cap_net_raw`]: https://security.stackexchange.com/a/128988
+[`consul.allow_unauthenticated`]: /nomad/docs/configuration/consul#allow_unauthenticated
+[`distinct_hosts`]: /nomad/docs/job-specification/constraint#distinct_hosts
+[`distinct_property`]: /nomad/docs/job-specification/constraint#distinct_property
+[`extra_hosts`]: /nomad/docs/drivers/docker#extra_hosts
+[`linux capabilities`]: https://docs.docker.com/engine/reference/run/#runtime-privilege-and-linux-capabilities
+[`Local`]: /consul/docs/security/acl/acl-tokens#token-attributes
+[`log_file`]: /nomad/docs/configuration#log_file
+[`raft protocol`]: /nomad/docs/configuration/server#raft_protocol
+[`rejoin_after_leave`]: /nomad/docs/configuration/server#rejoin_after_leave
+[`sidecar_task.config`]: /nomad/docs/job-specification/sidecar_task#config
+[`template.disable_file_sandbox`]: /nomad/docs/configuration/client#template-parameters
+[`vault.allow_unauthenticated`]: /nomad/docs/configuration/vault#allow_unauthenticated
+[`vault.policies`]: /nomad/docs/job-specification/vault#policies
+[`vault.task_token_ttl`]: /nomad/docs/configuration/vault#task_token_ttl
+[`vault.token`]: /nomad/docs/configuration/vault#token
+[`volume create`]: /nomad/docs/commands/volume/create
+[`volume register`]: /nomad/docs/commands/volume/register
+[`volume`]: /nomad/docs/job-specification/volume
+[alloc_overlap]: https://github.com/hashicorp/nomad/issues/10440
+[allow_caps_exec]: /nomad/docs/drivers/exec#allow_caps
+[allow_caps_java]: /nomad/docs/drivers/java#allow_caps
+[anon_token]: /consul/docs/security/acl/acl-tokens#special-purpose-tokens
+[api_jobs_parse]: /nomad/api-docs/jobs#parse-job
+[artifact_env]: /nomad/docs/configuration/client#set_environment_variables
+[artifact_fs_isolation]: /nomad/docs/configuration/client#disable_filesystem_isolation
+[artifact_params]: /nomad/docs/job-specification/artifact#artifact-parameters
+[artifacts]: /nomad/docs/job-specification/artifact
+[cap_add_exec]: /nomad/docs/drivers/exec#cap_add
+[cap_drop_exec]: /nomad/docs/drivers/exec#cap_drop
+[cgroup_parent]: /nomad/docs/configuration/client#cgroup_parent
 [cgroups2]: https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html
-[cgroup_parent]: /docs/configuration/client#cgroup_parent
-[client_artifact]: /docs/configuration/client#artifact-parameters
-[cores]: /docs/job-specification/resources#cores
-[dangling-containers]: /docs/drivers/docker#dangling-containers
-[drain-api]: /api-docs/nodes#drain-node
-[drain-cli]: /docs/commands/node/drain
-[dst]: /docs/job-specification/periodic#daylight-saving-time
+[client_artifact]: /nomad/docs/configuration/client#artifact-parameters
+[consul_acl]: https://github.com/hashicorp/consul/issues/7414
+[cores]: /nomad/docs/job-specification/resources#cores
+[cpu]: /nomad/docs/concepts/cpu
+[dangling_container_reconciliation]: /nomad/docs/drivers/docker#enabled
+[dangling-containers]: /nomad/docs/drivers/docker#dangling-containers
+[decompression_file_count_limit]: /nomad/docs/configuration/client#decompression_file_count_limit
+[decompression_size_limit]: /nomad/docs/configuration/client#decompression_size_limit
+[drain-api]: /nomad/api-docs/nodes#drain-node
+[drain-cli]: /nomad/docs/commands/node/drain
+[dst]: /nomad/docs/job-specification/periodic#daylight-saving-time
+[enterprise licensing]: /nomad/docs/enterprise/license
 [envoy_concurrency]: https://www.envoyproxy.io/docs/envoy/latest/operations/cli#cmdoption-concurrency
+[gh_10446]: https://github.com/hashicorp/nomad/pull/10446#issuecomment-1224833906
+[gh_issue]: https://github.com/hashicorp/nomad/issues/new/choose
+[gh-10875]: https://github.com/hashicorp/nomad/pull/10875
+[gh-11563]: https://github.com/hashicorp/nomad/issues/11563
 [gh-6787]: https://github.com/hashicorp/nomad/issues/6787
 [gh-8457]: https://github.com/hashicorp/nomad/issues/8457
 [gh-9148]: https://github.com/hashicorp/nomad/issues/9148
-[gh-10875]: https://github.com/hashicorp/nomad/pull/10875
-[gh-11563]: https://github.com/hashicorp/nomad/issues/11563
 [go-client]: https://pkg.go.dev/github.com/hashicorp/nomad/api#Client
+[hard_guide]: /nomad/docs/install/production/requirements#hardening-nomad
 [hcl2]: https://github.com/hashicorp/hcl2
-[limits]: /docs/configuration#limits
-[lxc]: /plugins/drivers/community/lxc
-[migrate]: /docs/job-specification/migrate
-[nvidia]: /plugins/devices/nvidia
-[plugin-stanza]: /docs/configuration/plugin
-[plugins]: /plugins/drivers/community
-[preemption-api]: /api-docs/operator#update-scheduler-configuration
-[preemption]: /docs/concepts/scheduling/preemption
-[proxy_concurrency]: /docs/job-specification/sidecar_task#proxy_concurrency
-[`sidecar_task.config`]: /docs/job-specification/sidecar_task#config
-[`raft_protocol`]: /docs/configuration/server#raft_protocol
-[`raft protocol`]: /docs/configuration/server#raft_protocol
-[reserved]: /docs/configuration/client#reserved-parameters
-[task-config]: /docs/job-specification/task#config
-[tls-guide]: https://learn.hashicorp.com/tutorials/nomad/security-enable-tls
-[tls-vault-guide]: https://learn.hashicorp.com/tutorials/nomad/vault-pki-nomad
-[update]: /docs/job-specification/update
-[validate]: /docs/commands/job/validate
-[vault_grace]: /docs/job-specification/template
-[node drain]: https://www.nomadproject.io/docs/upgrade#5-upgrade-clients
-[`template.disable_file_sandbox`]: /docs/configuration/client#template-parameters
-[template_gid]: /docs/job-specification/template#gid
-[template_uid]: /docs/job-specification/template#uid
-[pki]: https://www.vaultproject.io/docs/secrets/pki
-[`volume create`]: /docs/commands/volume/create
-[`volume register`]: /docs/commands/volume/register
-[`volume`]: /docs/job-specification/volume
-[enterprise licensing]: /docs/enterprise/license
-[`cap_net_raw`]: https://security.stackexchange.com/a/128988
-[`linux capabilities`]: https://docs.docker.com/engine/reference/run/#runtime-privilege-and-linux-capabilities
-[`allow_caps`]: /docs/drivers/docker#allow_caps
-[`extra_hosts`]: /docs/drivers/docker#extra_hosts
-[no_net_raw]: /docs/upgrade/upgrade-specific#nomad-1-1-0-rc1-1-0-5-0-12-12
-[allow_caps_exec]: /docs/drivers/exec#allow_caps
-[allow_caps_java]: /docs/drivers/java#allow_caps
-[cap_add_exec]: /docs/drivers/exec#cap_add
-[cap_drop_exec]: /docs/drivers/exec#cap_drop
-[`log_file`]: /docs/configuration#log_file
-[Upgrading to Raft Protocol 3]: /docs/upgrade#upgrading-to-raft-protocol-3
-[`Local`]: https://developer.hashicorp.com/consul/docs/security/acl/acl-tokens#token-attributes
-[anon_token]: https://developer.hashicorp.com/consul/docs/security/acl/acl-tokens#special-purpose-tokens
-[consul_acl]: https://github.com/hashicorp/consul/issues/7414
-[kill_timeout]: /docs/job-specification/task#kill_timeout
-[max_kill_timeout]: /docs/configuration/client#max_kill_timeout
-[alloc_overlap]: https://github.com/hashicorp/nomad/issues/10440
-[gh_10446]: https://github.com/hashicorp/nomad/pull/10446#issuecomment-1224833906
-[gh_issue]: https://github.com/hashicorp/nomad/issues/new/choose
-[upgrade process]: /docs/upgrade#upgrade-process
+[kill_timeout]: /nomad/docs/job-specification/task#kill_timeout
+[landlock]: https://docs.kernel.org/userspace-api/landlock.html
+[limits]: /nomad/docs/configuration#limits
+[lxc]: /nomad/plugins/drivers/community/lxc
+[max_kill_timeout]: /nomad/docs/configuration/client#max_kill_timeout
+[migrate]: /nomad/docs/job-specification/migrate
+[Migrating to Using Workload Identity with Consul]: /nomad/docs/integrations/consul/acl#migrating-to-using-workload-identity-with-consul
+[Migrating to Using Workload Identity with Vault]: /nomad/docs/integrations/vault/acl#migrating-to-using-workload-identity-with-vault
+[no_net_raw]: /nomad/docs/upgrade/upgrade-specific#nomad-1-1-0-rc1-1-0-5-0-12-12
+[node drain]: /nomad/docs/upgrade#5-upgrade-clients
+[node pools]: /nomad/docs/concepts/node-pools
+[node_attributes]: /nomad/docs/runtime/interpolation#node-attributes
+[nvidia]: /nomad/plugins/devices/nvidia
+[oversub]: /nomad/docs/job-specification/resources#memory-oversubscription
+[pki]: /vault/docs/secrets/pki
+[plugin-block]: /nomad/docs/configuration/plugin
+[plugins]: /nomad/plugins/drivers/community
+[preemption-api]: /nomad/api-docs/operator#update-scheduler-configuration
+[preemption]: /nomad/docs/concepts/scheduling/preemption
+[proxy_concurrency]: /nomad/docs/job-specification/sidecar_task#proxy_concurrency
+[reserved]: /nomad/docs/configuration/client#reserved-parameters
+[task-config]: /nomad/docs/job-specification/task#config
+[template_gid]: /nomad/docs/job-specification/template#gid
+[template_uid]: /nomad/docs/job-specification/template#uid
+[tls-guide]: /nomad/tutorials/transport-security/security-enable-tls
+[tls-vault-guide]: /nomad/tutorials/integrate-vault/vault-pki-nomad
+[update]: /nomad/docs/job-specification/update
+[upgrade process]: /nomad/docs/upgrade#upgrade-process
+[Upgrading to Raft Protocol 3]: /nomad/docs/upgrade#upgrading-to-raft-protocol-3
+[validate]: /nomad/docs/commands/job/validate
+[vault_grace]: /nomad/docs/job-specification/template
+[Workload Identity]: /nomad/docs/concepts/workload-identity

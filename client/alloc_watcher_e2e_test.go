@@ -1,9 +1,12 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package client_test
 
 import (
 	"bytes"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -21,11 +24,11 @@ import (
 // work when TLS is enabled.
 func TestPrevAlloc_StreamAllocDir_TLS(t *testing.T) {
 	const (
-		caFn         = "../helper/tlsutil/testdata/global-ca.pem"
-		serverCertFn = "../helper/tlsutil/testdata/global-server.pem"
-		serverKeyFn  = "../helper/tlsutil/testdata/global-server-key.pem"
-		clientCertFn = "../helper/tlsutil/testdata/global-client.pem"
-		clientKeyFn  = "../helper/tlsutil/testdata/global-client-key.pem"
+		caFn         = "../helper/tlsutil/testdata/nomad-agent-ca.pem"
+		serverCertFn = "../helper/tlsutil/testdata/global-server-nomad.pem"
+		serverKeyFn  = "../helper/tlsutil/testdata/global-server-nomad-key.pem"
+		clientCertFn = "../helper/tlsutil/testdata/global-client-nomad.pem"
+		clientKeyFn  = "../helper/tlsutil/testdata/global-client-nomad-key.pem"
 	)
 	ci.Parallel(t)
 	require := require.New(t)
@@ -56,6 +59,7 @@ func TestPrevAlloc_StreamAllocDir_TLS(t *testing.T) {
 			KeyFile:              clientKeyFn,
 		}
 		c.Client.Enabled = true
+		c.Server.Enabled = false
 		c.Client.Servers = []string{server.GetConfig().RPCAddr.String()}
 	}
 	client1 := agent.NewTestAgent(t, "client1", agentConfFunc)
@@ -102,7 +106,7 @@ func TestPrevAlloc_StreamAllocDir_TLS(t *testing.T) {
 	// Save a file into alloc dir
 	contents := []byte("123\n456")
 	allocFn := filepath.Join(client1.DataDir, "alloc", origAlloc, "alloc", "data", "bar")
-	require.NoError(ioutil.WriteFile(allocFn, contents, 0666))
+	require.NoError(os.WriteFile(allocFn, contents, 0666))
 	t.Logf("[TEST] Wrote initial file: %s", allocFn)
 
 	// Migrate alloc to other node
@@ -141,7 +145,7 @@ func TestPrevAlloc_StreamAllocDir_TLS(t *testing.T) {
 	allocFn2 := filepath.Join(client2.DataDir, "alloc", newAlloc.ID, "alloc", "data", "bar")
 	t.Logf("[TEST] Comparing against file: %s", allocFn2)
 	testutil.WaitForResult(func() (bool, error) {
-		found, err := ioutil.ReadFile(allocFn2)
+		found, err := os.ReadFile(allocFn2)
 		if err != nil {
 			return false, err
 		}

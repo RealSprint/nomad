@@ -1,3 +1,6 @@
+# Copyright (c) HashiCorp, Inc.
+# SPDX-License-Identifier: BUSL-1.1
+
 resource "local_sensitive_file" "nomad_systemd_unit_file" {
   content         = templatefile("etc/nomad.d/nomad-${var.role}.service", {})
   filename        = "${local.upload_dir}/nomad.d/nomad.service"
@@ -58,6 +61,10 @@ resource "null_resource" "install_consul_configs_linux" {
   }
 }
 
+locals {
+  data_owner = var.role == "client" ? "root" : "nomad"
+}
+
 resource "null_resource" "install_nomad_configs_linux" {
   count = var.platform == "linux" ? 1 : 0
 
@@ -78,6 +85,8 @@ resource "null_resource" "install_nomad_configs_linux" {
     inline = [
       "mkdir -p /etc/nomad.d",
       "mkdir -p /opt/nomad/data",
+      "sudo chmod 0700 /opt/nomad/data",
+      "sudo chown ${local.data_owner}:${local.data_owner} /opt/nomad/data",
       "sudo rm -rf /etc/nomad.d/*",
       "sudo mv /tmp/consul.hcl /etc/nomad.d/consul.hcl",
       "sudo mv /tmp/vault.hcl /etc/nomad.d/vault.hcl",

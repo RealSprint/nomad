@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package testutil
 
 import (
@@ -50,7 +53,7 @@ func (r *ResponseRecorder) Header() http.Header {
 func (r *ResponseRecorder) HeaderMap() http.Header {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.rr.Result().Header
+	return r.rr.Result().Header //nolint:bodyclose
 }
 
 // Write to the underlying response buffer. Safe to call concurrent with Read.

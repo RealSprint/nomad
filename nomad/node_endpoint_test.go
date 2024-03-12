@@ -1,9 +1,14 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package nomad
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
+	"net/rpc"
 	"reflect"
 	"strings"
 	"testing"
@@ -23,6 +28,8 @@ import (
 	"github.com/hashicorp/nomad/testutil"
 	vapi "github.com/hashicorp/vault/api"
 	"github.com/kr/pretty"
+	"github.com/shoenig/test/must"
+	"github.com/shoenig/test/wait"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -210,6 +217,290 @@ func TestClientEndpoint_Register_SecretMismatch(t *testing.T) {
 	}
 }
 
+func TestClientEndpoint_Register_NodePool(t *testing.T) {
+	ci.Parallel(t)
+
+	s, cleanupS := TestServer(t, nil)
+	defer cleanupS()
+	codec := rpcClient(t, s)
+	testutil.WaitForLeader(t, s.RPC)
+
+	testCases := []struct {
+		name        string
+		pool        string
+		expectedErr string
+		validateFn  func(*testing.T, *structs.Node)
+	}{
+		{
+			name:        "invalid node pool name",
+			pool:        "not@valid",
+			expectedErr: "invalid node pool: invalid name",
+		},
+		{
+			name:        "built-in pool all not allowed",
+			pool:        structs.NodePoolAll,
+			expectedErr: `node is not allowed to register in node pool "all"`,
+		},
+		{
+			name: "set default node pool when empty",
+			pool: "",
+			validateFn: func(t *testing.T, node *structs.Node) {
+				state := s.fsm.State()
+				ws := memdb.NewWatchSet()
+
+				// Verify node was registered with default node pool.
+				got, err := state.NodeByID(ws, node.ID)
+				must.NoError(t, err)
+				must.NotNil(t, got)
+				must.Eq(t, structs.NodePoolDefault, got.NodePool)
+			},
+		},
+		{
+			name: "set node pool requested",
+			pool: "my-pool",
+			validateFn: func(t *testing.T, node *structs.Node) {
+				state := s.fsm.State()
+				ws := memdb.NewWatchSet()
+
+				// Verify node was registered.
+				got, err := state.NodeByID(ws, node.ID)
+				must.NoError(t, err)
+				must.NotNil(t, got)
+
+				// Verify node pool was created.
+				pool, err := state.NodePoolByName(ws, "my-pool")
+				must.NoError(t, err)
+				must.NotNil(t, pool)
+
+				// Verify node was added to the pool.
+				must.Eq(t, "my-pool", got.NodePool)
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			node := mock.Node()
+			node.NodePool = tc.pool
+
+			req := &structs.NodeRegisterRequest{
+				Node:         node,
+				WriteRequest: structs.WriteRequest{Region: "global"},
+			}
+			var resp structs.GenericResponse
+			err := msgpackrpc.CallWithCodec(codec, "Node.Register", req, &resp)
+
+			if tc.expectedErr != "" {
+				must.ErrorContains(t, err, tc.expectedErr)
+			} else {
+				must.NoError(t, err)
+				if tc.validateFn != nil {
+					tc.validateFn(t, req.Node)
+				}
+			}
+		})
+	}
+}
+
+func TestClientEndpoint_Register_NodePool_Multiregion(t *testing.T) {
+	ci.Parallel(t)
+
+	// Helper function to setup client heartbeat.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	heartbeat := func(ctx context.Context, codec rpc.ClientCodec, req *structs.NodeUpdateStatusRequest) {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			default:
+			}
+
+			var resp structs.NodeUpdateResponse
+			msgpackrpc.CallWithCodec(codec, "Node.UpdateStatus", req, &resp)
+		}
+	}
+
+	// Create servers in two regions.
+	s1, rootToken1, cleanupS1 := TestACLServer(t, func(c *Config) {
+		c.Region = "region-1"
+		c.AuthoritativeRegion = "region-1"
+	})
+	defer cleanupS1()
+	codec1 := rpcClient(t, s1)
+	testutil.WaitForLeader(t, s1.RPC)
+
+	s2, _, cleanupS2 := TestACLServer(t, func(c *Config) {
+		c.Region = "region-2"
+		c.AuthoritativeRegion = "region-1"
+
+		// Speed-up replication for testing.
+		c.ReplicationBackoff = 500 * time.Millisecond
+		c.ReplicationToken = rootToken1.SecretID
+	})
+	defer cleanupS2()
+	codec2 := rpcClient(t, s2)
+	testutil.WaitForLeader(t, s2.RPC)
+
+	// Verify that registering a node with a new node pool in the authoritative
+	// region creates the node pool.
+	node1 := mock.Node()
+	node1.Status = ""
+	node1.NodePool = "new-pool-region-1"
+
+	// Register node in region-1.
+	req := &structs.NodeRegisterRequest{
+		Node:         node1,
+		WriteRequest: structs.WriteRequest{Region: "region-1"},
+	}
+	var resp structs.GenericResponse
+	err := msgpackrpc.CallWithCodec(codec1, "Node.Register", req, &resp)
+	must.NoError(t, err)
+
+	// Setup heartbeat for node in region-1.
+	go heartbeat(ctx, rpcClient(t, s1), &structs.NodeUpdateStatusRequest{
+		NodeID:       node1.ID,
+		Status:       structs.NodeStatusReady,
+		WriteRequest: structs.WriteRequest{Region: "region-1"},
+	})
+
+	// Verify client becomes ready.
+	must.Wait(t, wait.InitialSuccess(
+		wait.ErrorFunc(func() error {
+			n, err := s1.State().NodeByID(nil, node1.ID)
+			if err != nil {
+				return err
+			}
+			if n.Status != structs.NodeStatusReady {
+				return fmt.Errorf("expected node to be %s, got %s", structs.NodeStatusReady, n.Status)
+			}
+			return nil
+		}),
+		wait.Timeout(10*time.Second),
+		wait.Gap(time.Second),
+	))
+
+	// Verify that registering a node with a new node pool in the
+	// non-authoritative region does not create the node pool and the client is
+	// kept in the initializing status.
+	node2 := mock.Node()
+	node2.Status = ""
+	node2.NodePool = "new-pool-region-2"
+
+	// Register node in region-2.
+	req = &structs.NodeRegisterRequest{
+		Node:         node2,
+		WriteRequest: structs.WriteRequest{Region: "region-2"},
+	}
+	err = msgpackrpc.CallWithCodec(codec2, "Node.Register", req, &resp)
+	must.NoError(t, err)
+
+	// Setup heartbeat for node in region-2.
+	go heartbeat(ctx, rpcClient(t, s2), &structs.NodeUpdateStatusRequest{
+		NodeID:       node2.ID,
+		Status:       structs.NodeStatusReady,
+		WriteRequest: structs.WriteRequest{Region: "region-2"},
+	})
+
+	// Verify client is kept at the initializing status and has a node pool
+	// missing event.
+	must.Wait(t, wait.InitialSuccess(
+		wait.ErrorFunc(func() error {
+			n, err := s2.State().NodeByID(nil, node2.ID)
+			if err != nil {
+				return err
+			}
+			if !n.HasEvent(NodeWaitingForNodePool) {
+				return fmt.Errorf("node pool missing event not found:\n%v", n.Events)
+			}
+			return nil
+		}),
+		wait.Timeout(10*time.Second),
+		wait.Gap(time.Second),
+	))
+	must.Wait(t, wait.ContinualSuccess(
+		wait.ErrorFunc(func() error {
+			n, err := s2.State().NodeByID(nil, node2.ID)
+			if err != nil {
+				return err
+			}
+			if n.Status != structs.NodeStatusInit {
+				return fmt.Errorf("expected node to be %s, got %s", structs.NodeStatusInit, n.Status)
+			}
+			return nil
+		}),
+		wait.Timeout(time.Second),
+		wait.Gap(time.Second),
+	))
+
+	// Federate regions.
+	TestJoin(t, s1, s2)
+
+	// Verify node pool from authoritative region is replicated.
+	must.Wait(t, wait.InitialSuccess(
+		wait.ErrorFunc(func() error {
+			poolName := node1.NodePool
+			pool, err := s2.State().NodePoolByName(nil, poolName)
+			if err != nil {
+				return err
+			}
+			if pool == nil {
+				return fmt.Errorf("node pool %s not found in region-2", poolName)
+			}
+			return nil
+		}),
+		wait.Timeout(10*time.Second),
+		wait.Gap(time.Second),
+	))
+
+	// Create node pool for region-2.
+	nodePoolReq := &structs.NodePoolUpsertRequest{
+		NodePools: []*structs.NodePool{{Name: node2.NodePool}},
+		WriteRequest: structs.WriteRequest{
+			Region:    "region-2",
+			AuthToken: rootToken1.SecretID,
+		},
+	}
+	var nodePoolResp *structs.GenericResponse
+	err = msgpackrpc.CallWithCodec(codec2, "NodePool.UpsertNodePools", nodePoolReq, &nodePoolResp)
+	must.NoError(t, err)
+
+	// Verify node pool exists in both regions and the node in region-2 is now
+	// ready.
+	must.Wait(t, wait.InitialSuccess(
+		wait.ErrorFunc(func() error {
+			for region, s := range map[string]*state.StateStore{
+				"region-1": s1.State(),
+				"region-2": s2.State(),
+			} {
+				poolName := node2.NodePool
+				pool, err := s.NodePoolByName(nil, poolName)
+				if err != nil {
+					return err
+				}
+				if pool == nil {
+					return fmt.Errorf("expected node pool %s to exist in region %s", poolName, region)
+				}
+			}
+
+			n, err := s2.State().NodeByID(nil, node2.ID)
+			if err != nil {
+				return err
+			}
+			if n.Status != structs.NodeStatusReady {
+				return fmt.Errorf("expected node to be %s, got %s", structs.NodeStatusReady, n.Status)
+			}
+			return nil
+		}),
+		wait.Timeout(10*time.Second),
+		wait.Gap(time.Second),
+	))
+}
+
 // Test the deprecated single node deregistration path
 func TestClientEndpoint_DeregisterOne(t *testing.T) {
 	ci.Parallel(t)
@@ -385,6 +676,56 @@ func TestClientEndpoint_Deregister_Vault(t *testing.T) {
 	}
 }
 
+func TestClientEndpoint_Deregister_Vault_WorkloadIdentity(t *testing.T) {
+	ci.Parallel(t)
+
+	s1, cleanupS1 := TestServer(t, func(c *Config) {
+		// Enable Vault config and don't set any connection info to use the
+		// workload identity flow.
+		c.VaultConfigs[structs.VaultDefaultCluster].Enabled = pointer.Of(true)
+	})
+	defer cleanupS1()
+	codec := rpcClient(t, s1)
+	testutil.WaitForLeader(t, s1.RPC)
+
+	// Register mock node.
+	node := mock.Node()
+	reg := &structs.NodeRegisterRequest{
+		Node:         node,
+		WriteRequest: structs.WriteRequest{Region: "global"},
+	}
+	var resp structs.GenericResponse
+	err := msgpackrpc.CallWithCodec(codec, "Node.Register", reg, &resp)
+	must.NoError(t, err)
+
+	// Put some Vault accessors in the state store for that node
+	var accessors []*structs.VaultAccessor
+	for i := 0; i < 3; i++ {
+		va := mock.VaultAccessor()
+		va.NodeID = node.ID
+		accessors = append(accessors, va)
+	}
+	state := s1.fsm.State()
+	state.UpsertVaultAccessor(100, accessors)
+
+	// Deregister the mock node and verify no error happens when Vault tokens
+	// are revoked.
+	dereg := &structs.NodeDeregisterRequest{
+		NodeID:       node.ID,
+		WriteRequest: structs.WriteRequest{Region: "global"},
+	}
+	var resp2 structs.GenericResponse
+	err = msgpackrpc.CallWithCodec(codec, "Node.Deregister", dereg, &resp2)
+	must.NoError(t, err)
+
+	// Verify accessors are removed from state.
+	for _, va := range accessors {
+		got, err := state.VaultAccessor(nil, va.Accessor)
+		must.NoError(t, err)
+		must.Nil(t, got)
+	}
+}
+
 func TestClientEndpoint_UpdateStatus(t *testing.T) {
 	ci.Parallel(t)
 	require := require.New(t)
@@ -524,6 +865,276 @@ func TestClientEndpoint_UpdateStatus_Vault(t *testing.T) {
 	}
 }
 
+func TestClientEndpoint_UpdateStatus_Vault_WorkloadIdentity(t *testing.T) {
+	ci.Parallel(t)
+
+	s1, cleanupS1 := TestServer(t, func(c *Config) {
+		// Enable Vault config and don't set any connection info to use the
+		// workload identity flow.
+		c.VaultConfigs[structs.VaultDefaultCluster].Enabled = pointer.Of(true)
+	})
+	defer cleanupS1()
+	codec := rpcClient(t, s1)
+	testutil.WaitForLeader(t, s1.RPC)
+
+	// Register mock node.
+	node := mock.Node()
+	reg := &structs.NodeRegisterRequest{
+		Node:         node,
+		WriteRequest: structs.WriteRequest{Region: "global"},
+	}
+	var resp structs.NodeUpdateResponse
+	err := msgpackrpc.CallWithCodec(codec, "Node.Register", reg, &resp)
+	must.NoError(t, err)
+
+	// Put some Vault accessors in the state store for the node.
+	var accessors []*structs.VaultAccessor
+	for i := 0; i < 3; i++ {
+		va := mock.VaultAccessor()
+		va.NodeID = node.ID
+		accessors = append(accessors, va)
+	}
+	state := s1.fsm.State()
+	state.UpsertVaultAccessor(100, accessors)
+
+	// Update the status to be down and verify no error when Vault tokens are
+	// revoked.
+	updateReq := &structs.NodeUpdateStatusRequest{
+		NodeID:       node.ID,
+		Status:       structs.NodeStatusDown,
+		WriteRequest: structs.WriteRequest{Region: "global"},
+	}
+	var resp2 structs.NodeUpdateResponse
+	err = msgpackrpc.CallWithCodec(codec, "Node.UpdateStatus", updateReq, &resp2)
+	must.NoError(t, err)
+
+	// Verify accessors are removed from state.
+	for _, va := range accessors {
+		got, err := state.VaultAccessor(nil, va.Accessor)
+		must.NoError(t, err)
+		must.Nil(t, got)
+	}
+}
+
+func TestClientEndpoint_UpdateStatus_Reconnect(t *testing.T) {
+	ci.Parallel(t)
+
+	jobVersions := []struct {
+		name    string
+		jobSpec func(time.Duration) *structs.Job
+	}{
+		// Test using max_client_disconnect, remove after its deprecated  in favor
+		// of Disconnect.LostAfter introduced in 1.8.0.
+		{
+			name: "job-with-max-client-disconnect-deprecated",
+			jobSpec: func(maxClientDisconnect time.Duration) *structs.Job {
+				job := mock.Job()
+				job.TaskGroups[0].MaxClientDisconnect = &maxClientDisconnect
+
+				return job
+			},
+		},
+		{
+			name: "job-with-disconnect-block",
+			jobSpec: func(lostAfter time.Duration) *structs.Job {
+				job := mock.Job()
+				job.TaskGroups[0].Disconnect = &structs.DisconnectStrategy{
+					LostAfter: lostAfter,
+				}
+				return job
+			},
+		},
+	}
+
+	for _, version := range jobVersions {
+		t.Run(version.name, func(t *testing.T) {
+
+			// Setup server with tighter heartbeat so we don't have to wait so long
+			// for nodes to go down.
+			heartbeatTTL := time.Duration(500*testutil.TestMultiplier()) * time.Millisecond
+			s, cleanupS := TestServer(t, func(c *Config) {
+				c.MinHeartbeatTTL = heartbeatTTL
+				c.HeartbeatGrace = 2 * heartbeatTTL
+			})
+			codec := rpcClient(t, s)
+			defer cleanupS()
+			testutil.WaitForLeader(t, s.RPC)
+
+			// Register node.
+			node := mock.Node()
+			reg := &structs.NodeRegisterRequest{
+				Node:         node,
+				WriteRequest: structs.WriteRequest{Region: "global"},
+			}
+			var nodeUpdateResp structs.NodeUpdateResponse
+			err := msgpackrpc.CallWithCodec(codec, "Node.Register", reg, &nodeUpdateResp)
+			must.NoError(t, err)
+
+			// Start heartbeat.
+			heartbeat := func(ctx context.Context) {
+				ticker := time.NewTicker(heartbeatTTL / 2)
+				defer ticker.Stop()
+
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+						if t.Failed() {
+							return
+						}
+
+						req := &structs.NodeUpdateStatusRequest{
+							NodeID:       node.ID,
+							Status:       structs.NodeStatusReady,
+							WriteRequest: structs.WriteRequest{Region: "global"},
+						}
+						var resp structs.NodeUpdateResponse
+						// Ignore errors since an unexpected failed heartbeat will cause
+						// the test conditions to fail.
+						msgpackrpc.CallWithCodec(codec, "Node.UpdateStatus", req, &resp)
+					}
+				}
+			}
+			heartbeatCtx, cancelHeartbeat := context.WithCancel(context.Background())
+			defer cancelHeartbeat()
+			go heartbeat(heartbeatCtx)
+
+			// Wait for node to be ready.
+			testutil.WaitForClientStatus(t, s.RPC, node.ID, "global", structs.NodeStatusReady)
+
+			// Register job with Disconnect.LostAfter
+			job := version.jobSpec(time.Hour)
+			job.Constraints = []*structs.Constraint{}
+			job.TaskGroups[0].Count = 1
+			job.TaskGroups[0].Constraints = []*structs.Constraint{}
+			job.TaskGroups[0].Tasks[0].Driver = "mock_driver"
+			job.TaskGroups[0].Tasks[0].Config = map[string]interface{}{
+				"run_for": "10m",
+			}
+
+			jobReq := &structs.JobRegisterRequest{
+				Job: job,
+				WriteRequest: structs.WriteRequest{
+					Region:    "global",
+					Namespace: job.Namespace,
+				},
+			}
+			var jobResp structs.JobRegisterResponse
+			err = msgpackrpc.CallWithCodec(codec, "Job.Register", jobReq, &jobResp)
+			must.NoError(t, err)
+
+			// Wait for alloc to be pending in the server.
+			testutil.WaitForJobAllocStatus(t, s.RPC, job, map[string]int{
+				structs.AllocClientStatusPending: 1,
+			})
+
+			// Get allocs that node should run.
+			allocsReq := &structs.NodeSpecificRequest{
+				NodeID: node.ID,
+				QueryOptions: structs.QueryOptions{
+					Region: "global",
+				},
+			}
+			var allocsResp structs.NodeAllocsResponse
+			err = msgpackrpc.CallWithCodec(codec, "Node.GetAllocs", allocsReq, &allocsResp)
+			must.NoError(t, err)
+			must.Len(t, 1, allocsResp.Allocs)
+
+			// Tell server the alloc is running.
+			// Save the alloc so we can reuse the request later.
+			alloc := allocsResp.Allocs[0].Copy()
+			alloc.ClientStatus = structs.AllocClientStatusRunning
+
+			allocUpdateReq := &structs.AllocUpdateRequest{
+				Alloc: []*structs.Allocation{alloc},
+				WriteRequest: structs.WriteRequest{
+					Region: "global",
+				},
+			}
+			var resp structs.GenericResponse
+			err = msgpackrpc.CallWithCodec(codec, "Node.UpdateAlloc", allocUpdateReq, &resp)
+			must.NoError(t, err)
+
+			// Wait for alloc to be running in the server.
+			testutil.WaitForJobAllocStatus(t, s.RPC, job, map[string]int{
+				structs.AllocClientStatusRunning: 1,
+			})
+
+			// Stop heartbeat and wait for the client to be disconnected and the alloc
+			// to be unknown.
+			cancelHeartbeat()
+			testutil.WaitForClientStatus(t, s.RPC, node.ID, "global", structs.NodeStatusDisconnected)
+			testutil.WaitForJobAllocStatus(t, s.RPC, job, map[string]int{
+				structs.AllocClientStatusUnknown: 1,
+			})
+
+			// Restart heartbeat to reconnect node.
+			heartbeatCtx, cancelHeartbeat = context.WithCancel(context.Background())
+			defer cancelHeartbeat()
+			go heartbeat(heartbeatCtx)
+
+			// Wait a few heartbeats and check that the node is still initializing.
+			//
+			// The heartbeat should not update the node to ready until it updates its
+			// allocs status with the server so the scheduler have the necessary
+			// information to avoid unnecessary placements.
+			time.Sleep(3 * heartbeatTTL)
+			testutil.WaitForClientStatus(t, s.RPC, node.ID, "global", structs.NodeStatusInit)
+
+			// Get allocs that node should run.
+			// The node should only have one alloc assigned until it updates its allocs
+			// status with the server.
+			allocsReq = &structs.NodeSpecificRequest{
+				NodeID: node.ID,
+				QueryOptions: structs.QueryOptions{
+					Region: "global",
+				},
+			}
+			err = msgpackrpc.CallWithCodec(codec, "Node.GetAllocs", allocsReq, &allocsResp)
+			must.NoError(t, err)
+			must.Len(t, 1, allocsResp.Allocs)
+
+			// Tell server the alloc is still running.
+			err = msgpackrpc.CallWithCodec(codec, "Node.UpdateAlloc", allocUpdateReq, &resp)
+			must.NoError(t, err)
+
+			// The client must end in the same state as before it disconnected:
+			// - client status is ready.
+			// - only 1 alloc and the alloc is running.
+			// - all evals are terminal, so cluster is in a stable state.
+			testutil.WaitForClientStatus(t, s.RPC, node.ID, "global", structs.NodeStatusReady)
+			testutil.WaitForJobAllocStatus(t, s.RPC, job, map[string]int{
+				structs.AllocClientStatusRunning: 1,
+			})
+			testutil.WaitForResult(func() (bool, error) {
+				state := s.fsm.State()
+				ws := memdb.NewWatchSet()
+				evals, err := state.EvalsByJob(ws, job.Namespace, job.ID)
+				if err != nil {
+					return false, fmt.Errorf("failed to read evals: %v", err)
+				}
+				for _, eval := range evals {
+					// TODO: remove this check once the disconnect process stops
+					// leaking a max-disconnect-timeout eval.
+					// https://github.com/hashicorp/nomad/issues/12809
+					if eval.TriggeredBy == structs.EvalTriggerMaxDisconnectTimeout {
+						continue
+					}
+
+					if !eval.TerminalStatus() {
+						return false, fmt.Errorf("found %s eval", eval.Status)
+					}
+				}
+				return true, nil
+			}, func(err error) {
+				must.NoError(t, err)
+			})
+
+		})
+	}
+}
+
 func TestClientEndpoint_UpdateStatus_HeartbeatRecovery(t *testing.T) {
 	ci.Parallel(t)
 	require := require.New(t)
@@ -586,7 +1197,7 @@ func TestClientEndpoint_Register_GetEvals(t *testing.T) {
 	// Register a system job.
 	job := mock.SystemJob()
 	state := s1.fsm.State()
-	if err := state.UpsertJob(structs.MsgTypeTestSetup, 1, job); err != nil {
+	if err := state.UpsertJob(structs.MsgTypeTestSetup, 1, nil, job); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 
@@ -639,14 +1250,12 @@ func TestClientEndpoint_Register_GetEvals(t *testing.T) {
 	}
 
 	// Transition it to down and then ready
-	node.Status = structs.NodeStatusDown
-	reg = &structs.NodeRegisterRequest{
-		Node:         node,
+	req := &structs.NodeUpdateStatusRequest{
+		NodeID:       node.ID,
+		Status:       structs.NodeStatusDown,
 		WriteRequest: structs.WriteRequest{Region: "global"},
 	}
-
-	// Fetch the response
-	if err := msgpackrpc.CallWithCodec(codec, "Node.Register", reg, &resp); err != nil {
+	if err := msgpackrpc.CallWithCodec(codec, "Node.UpdateStatus", req, &resp); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 
@@ -654,14 +1263,12 @@ func TestClientEndpoint_Register_GetEvals(t *testing.T) {
 		t.Fatalf("expected one eval; got %#v", resp.EvalIDs)
 	}
 
-	node.Status = structs.NodeStatusReady
-	reg = &structs.NodeRegisterRequest{
-		Node:         node,
+	req = &structs.NodeUpdateStatusRequest{
+		NodeID:       node.ID,
+		Status:       structs.NodeStatusReady,
 		WriteRequest: structs.WriteRequest{Region: "global"},
 	}
-
-	// Fetch the response
-	if err := msgpackrpc.CallWithCodec(codec, "Node.Register", reg, &resp); err != nil {
+	if err := msgpackrpc.CallWithCodec(codec, "Node.UpdateStatus", req, &resp); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 
@@ -681,7 +1288,7 @@ func TestClientEndpoint_UpdateStatus_GetEvals(t *testing.T) {
 	// Register a system job.
 	job := mock.SystemJob()
 	state := s1.fsm.State()
-	if err := state.UpsertJob(structs.MsgTypeTestSetup, 1, job); err != nil {
+	if err := state.UpsertJob(structs.MsgTypeTestSetup, 1, nil, job); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 
@@ -1003,7 +1610,7 @@ func TestClientEndpoint_UpdateDrain(t *testing.T) {
 
 	// Register a system job
 	job := mock.SystemJob()
-	require.Nil(s1.State().UpsertJob(structs.MsgTypeTestSetup, 10, job))
+	require.Nil(s1.State().UpsertJob(structs.MsgTypeTestSetup, 10, nil, job))
 
 	// Update the eligibility and expect evals
 	dereg.DrainStrategy = nil
@@ -1369,12 +1976,12 @@ func TestClientEndpoint_Drain_Down(t *testing.T) {
 	require.Nil(msgpackrpc.CallWithCodec(codec, "Node.UpdateDrain", dereg, &resp2))
 
 	// Mark the node as down
-	node.Status = structs.NodeStatusDown
-	reg = &structs.NodeRegisterRequest{
-		Node:         node,
+	req := &structs.NodeUpdateStatusRequest{
+		NodeID:       node.ID,
+		Status:       structs.NodeStatusDown,
 		WriteRequest: structs.WriteRequest{Region: "global"},
 	}
-	require.Nil(msgpackrpc.CallWithCodec(codec, "Node.Register", reg, &resp))
+	require.Nil(msgpackrpc.CallWithCodec(codec, "Node.UpdateStatus", req, &resp))
 
 	// Ensure that the allocation has transitioned to lost
 	testutil.WaitForResult(func() (bool, error) {
@@ -1467,7 +2074,7 @@ func TestClientEndpoint_UpdateEligibility(t *testing.T) {
 
 	// Register a system job
 	job := mock.SystemJob()
-	require.Nil(s1.State().UpsertJob(structs.MsgTypeTestSetup, 10, job))
+	require.Nil(s1.State().UpsertJob(structs.MsgTypeTestSetup, 10, nil, job))
 
 	// Update the eligibility and expect evals
 	elig.Eligibility = structs.NodeSchedulingEligible
@@ -1583,7 +2190,7 @@ func TestClientEndpoint_GetNode(t *testing.T) {
 	node.StatusUpdatedAt = resp2.Node.StatusUpdatedAt
 	node.SecretID = ""
 	node.Events = resp2.Node.Events
-	require.Equal(t, node, resp2.Node)
+	must.Eq(t, node, resp2.Node)
 
 	// assert that the node register event was set correctly
 	if len(resp2.Node.Events) != 1 {
@@ -2464,7 +3071,7 @@ func TestClientEndpoint_UpdateAlloc(t *testing.T) {
 	// Inject mock job
 	job := mock.Job()
 	job.ID = "mytestjob"
-	err := state.UpsertJob(structs.MsgTypeTestSetup, 101, job)
+	err := state.UpsertJob(structs.MsgTypeTestSetup, 101, nil, job)
 	require.Nil(err)
 
 	// Inject fake allocations
@@ -2552,7 +3159,7 @@ func TestClientEndpoint_UpdateAlloc_NodeNotReady(t *testing.T) {
 	state := s1.fsm.State()
 
 	job := mock.Job()
-	err = state.UpsertJob(structs.MsgTypeTestSetup, 101, job)
+	err = state.UpsertJob(structs.MsgTypeTestSetup, 101, nil, job)
 	require.NoError(t, err)
 
 	alloc := mock.Alloc()
@@ -2581,7 +3188,7 @@ func TestClientEndpoint_UpdateAlloc_NodeNotReady(t *testing.T) {
 	}
 	var allocUpdateResp structs.NodeAllocsResponse
 	err = msgpackrpc.CallWithCodec(codec, "Node.UpdateAlloc", allocUpdateReq, &allocUpdateResp)
-	require.ErrorContains(t, err, "not ready")
+	require.ErrorContains(t, err, "not allowed to update allocs")
 
 	// Send request without an explicit node ID.
 	updatedAlloc.NodeID = ""
@@ -2709,7 +3316,7 @@ func TestClientEndpoint_UpdateAlloc_Vault(t *testing.T) {
 	// Inject mock job
 	job := mock.Job()
 	job.ID = alloc.JobID
-	err := state.UpsertJob(structs.MsgTypeTestSetup, 101, job)
+	err := state.UpsertJob(structs.MsgTypeTestSetup, 101, nil, job)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -2751,6 +3358,74 @@ func TestClientEndpoint_UpdateAlloc_Vault(t *testing.T) {
 	}
 }
 
+func TestClientEndpoint_UpdateAlloc_VaultWorkloadIdentity(t *testing.T) {
+	ci.Parallel(t)
+
+	s1, cleanupS1 := TestServer(t, func(c *Config) {
+		// Enable Vault config and don't set any connection info to use the
+		// workload identity flow.
+		c.VaultConfigs[structs.VaultDefaultCluster].Enabled = pointer.Of(true)
+	})
+	defer cleanupS1()
+	codec := rpcClient(t, s1)
+	testutil.WaitForLeader(t, s1.RPC)
+
+	// Create the node register request.
+	node := mock.Node()
+	reg := &structs.NodeRegisterRequest{
+		Node:         node,
+		WriteRequest: structs.WriteRequest{Region: "global"},
+	}
+	var resp structs.GenericResponse
+	err := msgpackrpc.CallWithCodec(codec, "Node.Register", reg, &resp)
+	must.NoError(t, err)
+
+	// Inject allocation and a few Vault accessors.
+	alloc := mock.Alloc()
+	alloc.NodeID = node.ID
+	state := s1.fsm.State()
+	state.UpsertJobSummary(99, mock.JobSummary(alloc.JobID))
+	err = state.UpsertAllocs(structs.MsgTypeTestSetup, 100, []*structs.Allocation{alloc})
+	must.NoError(t, err)
+
+	var accessors []*structs.VaultAccessor
+	for i := 0; i < 3; i++ {
+		va := mock.VaultAccessor()
+		va.NodeID = node.ID
+		va.AllocID = alloc.ID
+		accessors = append(accessors, va)
+	}
+	err = state.UpsertVaultAccessor(101, accessors)
+	must.NoError(t, err)
+
+	// Inject mock job.
+	job := mock.Job()
+	job.ID = alloc.JobID
+	err = state.UpsertJob(structs.MsgTypeTestSetup, 101, nil, job)
+	must.NoError(t, err)
+
+	// Update alloc status and verify no error happens when the orphaned Vault
+	// tokens are revoked.
+	clientAlloc := new(structs.Allocation)
+	*clientAlloc = *alloc
+	clientAlloc.ClientStatus = structs.AllocClientStatusFailed
+
+	update := &structs.AllocUpdateRequest{
+		Alloc:        []*structs.Allocation{clientAlloc},
+		WriteRequest: structs.WriteRequest{Region: "global"},
+	}
+	var resp2 structs.NodeAllocsResponse
+	err = msgpackrpc.CallWithCodec(codec, "Node.UpdateAlloc", update, &resp2)
+	must.NoError(t, err)
+
+	// Verify accessors are removed from state.
+	for _, va := range accessors {
+		got, err := state.VaultAccessor(nil, va.Accessor)
+		must.NoError(t, err)
+		must.Nil(t, got)
+	}
+}
+
 func TestClientEndpoint_CreateNodeEvals(t *testing.T) {
 	ci.Parallel(t)
 
@@ -2776,7 +3451,7 @@ func TestClientEndpoint_CreateNodeEvals(t *testing.T) {
 
 	// Inject a fake system job.
 	job := mock.SystemJob()
-	if err := state.UpsertJob(structs.MsgTypeTestSetup, idx, job); err != nil {
+	if err := state.UpsertJob(structs.MsgTypeTestSetup, idx, nil, job); err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	idx++
@@ -2868,14 +3543,14 @@ func TestClientEndpoint_CreateNodeEvals_MultipleNSes(t *testing.T) {
 
 	// Inject a fake system job.
 	defaultJob := mock.SystemJob()
-	err = state.UpsertJob(structs.MsgTypeTestSetup, idx, defaultJob)
+	err = state.UpsertJob(structs.MsgTypeTestSetup, idx, nil, defaultJob)
 	require.NoError(t, err)
 	idx++
 
 	nsJob := mock.SystemJob()
 	nsJob.ID = defaultJob.ID
 	nsJob.Namespace = ns1.Name
-	err = state.UpsertJob(structs.MsgTypeTestSetup, idx, nsJob)
+	err = state.UpsertJob(structs.MsgTypeTestSetup, idx, nil, nsJob)
 	require.NoError(t, err)
 	idx++
 
@@ -2929,14 +3604,14 @@ func TestClientEndpoint_CreateNodeEvals_MultipleDCes(t *testing.T) {
 	// Inject a fake system job in the same dc
 	defaultJob := mock.SystemJob()
 	defaultJob.Datacenters = []string{"test1", "test2"}
-	err = state.UpsertJob(structs.MsgTypeTestSetup, idx, defaultJob)
+	err = state.UpsertJob(structs.MsgTypeTestSetup, idx, nil, defaultJob)
 	require.NoError(t, err)
 	idx++
 
 	// Inject a fake system job in a different dc
 	nsJob := mock.SystemJob()
 	nsJob.Datacenters = []string{"test2", "test3"}
-	err = state.UpsertJob(structs.MsgTypeTestSetup, idx, nsJob)
+	err = state.UpsertJob(structs.MsgTypeTestSetup, idx, nil, nsJob)
 	require.NoError(t, err)
 	idx++
 
@@ -3462,8 +4137,8 @@ func TestClientEndpoint_DeriveVaultToken_Bad(t *testing.T) {
 		t.Fatalf("Expected no policies error: %v", resp.Error)
 	}
 
-	// Update to be terminal
-	alloc.DesiredStatus = structs.AllocDesiredStatusStop
+	// Update to be client-terminal
+	alloc.ClientStatus = structs.AllocClientStatusFailed
 	if err := state.UpsertAllocs(structs.MsgTypeTestSetup, 5, []*structs.Allocation{alloc}); err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -3475,6 +4150,7 @@ func TestClientEndpoint_DeriveVaultToken_Bad(t *testing.T) {
 	if resp.Error == nil || !strings.Contains(resp.Error.Error(), "terminal") {
 		t.Fatalf("Expected terminal allocation error: %v", resp.Error)
 	}
+
 }
 
 func TestClientEndpoint_DeriveVaultToken(t *testing.T) {
@@ -3488,8 +4164,8 @@ func TestClientEndpoint_DeriveVaultToken(t *testing.T) {
 
 	// Enable vault and allow authenticated
 	tr := true
-	s1.config.VaultConfig.Enabled = &tr
-	s1.config.VaultConfig.AllowUnauthenticated = &tr
+	s1.config.GetDefaultVault().Enabled = &tr
+	s1.config.GetDefaultVault().AllowUnauthenticated = &tr
 
 	// Replace the Vault Client on the server
 	tvc := &TestVaultClient{}
@@ -3581,8 +4257,8 @@ func TestClientEndpoint_DeriveVaultToken_VaultError(t *testing.T) {
 
 	// Enable vault and allow authenticated
 	tr := true
-	s1.config.VaultConfig.Enabled = &tr
-	s1.config.VaultConfig.AllowUnauthenticated = &tr
+	s1.config.GetDefaultVault().Enabled = &tr
+	s1.config.GetDefaultVault().AllowUnauthenticated = &tr
 
 	// Replace the Vault Client on the server
 	tvc := &TestVaultClient{}
@@ -3720,7 +4396,7 @@ func TestClientEndpoint_DeriveSIToken(t *testing.T) {
 	testutil.WaitForLeader(t, s1.RPC)
 
 	// Set allow unauthenticated (no operator token required)
-	s1.config.ConsulConfig.AllowUnauthenticated = pointer.Of(true)
+	s1.config.GetDefaultConsul().AllowUnauthenticated = pointer.Of(true)
 
 	// Create the node
 	node := mock.Node()
@@ -3772,7 +4448,7 @@ func TestClientEndpoint_DeriveSIToken_ConsulError(t *testing.T) {
 	testutil.WaitForLeader(t, s1.RPC)
 
 	// Set allow unauthenticated (no operator token required)
-	s1.config.ConsulConfig.AllowUnauthenticated = pointer.Of(true)
+	s1.config.GetDefaultConsul().AllowUnauthenticated = pointer.Of(true)
 
 	// Create the node
 	node := mock.Node()
@@ -3904,7 +4580,7 @@ func TestClientEndpoint_ShouldCreateNodeEval(t *testing.T) {
 }
 
 func TestClientEndpoint_UpdateAlloc_Evals_ByTrigger(t *testing.T) {
-	t.Parallel()
+	ci.Parallel(t)
 
 	type testCase struct {
 		name               string
@@ -4013,7 +4689,7 @@ func TestClientEndpoint_UpdateAlloc_Evals_ByTrigger(t *testing.T) {
 			job.ID = tc.name + "-test-job"
 
 			if !tc.missingJob {
-				err = fsmState.UpsertJob(structs.MsgTypeTestSetup, 101, job)
+				err = fsmState.UpsertJob(structs.MsgTypeTestSetup, 101, nil, job)
 				require.NoError(t, err)
 			}
 
@@ -4040,8 +4716,11 @@ func TestClientEndpoint_UpdateAlloc_Evals_ByTrigger(t *testing.T) {
 			}
 
 			updateReq := &structs.AllocUpdateRequest{
-				Alloc:        []*structs.Allocation{clientAlloc},
-				WriteRequest: structs.WriteRequest{Region: "global"},
+				Alloc: []*structs.Allocation{clientAlloc},
+				WriteRequest: structs.WriteRequest{
+					Region:    "global",
+					AuthToken: node.SecretID,
+				},
 			}
 
 			var nodeAllocResp structs.NodeAllocsResponse
@@ -4078,6 +4757,8 @@ func TestClientEndpoint_UpdateAlloc_Evals_ByTrigger(t *testing.T) {
 
 }
 
+// TestNode_List_PaginationFiltering asserts that API pagination and filtering
+// works against the Node.List RPC.
 func TestNode_List_PaginationFiltering(t *testing.T) {
 	ci.Parallel(t)
 
@@ -4092,21 +4773,25 @@ func TestNode_List_PaginationFiltering(t *testing.T) {
 		id     string
 		dc     string
 		status string
+		meta   map[string]string
 	}{
 		{
 			id:     "aaaa1111-3350-4b4b-d185-0e1992ed43e9",
 			dc:     "dc2",
 			status: structs.NodeStatusDisconnected,
+			meta:   map[string]string{"foo": "bar"},
 		},
 		{
 			id:     "aaaaaa22-3350-4b4b-d185-0e1992ed43e9",
 			dc:     "dc1",
 			status: structs.NodeStatusReady,
+			meta:   map[string]string{"foo": "bar"},
 		},
 		{
 			id:     "aaaaaa33-3350-4b4b-d185-0e1992ed43e9",
 			dc:     "dc3",
 			status: structs.NodeStatusReady,
+			meta:   map[string]string{"foo": "something else"},
 		},
 		{
 			id:     "aaaaaaaa-3350-4b4b-d185-0e1992ed43e9",
@@ -4133,6 +4818,7 @@ func TestNode_List_PaginationFiltering(t *testing.T) {
 		mockNode.ID = m.id
 		mockNode.Datacenter = m.dc
 		mockNode.Status = m.status
+		mockNode.Meta = m.meta
 		mockNode.CreateIndex = index
 		require.NoError(t, testState.UpsertNode(structs.MsgTypeTestSetup, index, mockNode))
 	}
@@ -4198,6 +4884,14 @@ func TestNode_List_PaginationFiltering(t *testing.T) {
 				"aaaaaaaa-3350-4b4b-d185-0e1992ed43e9",
 			},
 		},
+		{
+			name:   "filter on meta key",
+			filter: `Meta["foo"] == "bar"`,
+			expectedIDs: []string{
+				"aaaa1111-3350-4b4b-d185-0e1992ed43e9",
+				"aaaaaa22-3350-4b4b-d185-0e1992ed43e9",
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -4230,4 +4924,24 @@ func TestNode_List_PaginationFiltering(t *testing.T) {
 			require.Equal(t, tc.expectedNextToken, resp.QueryMeta.NextToken, "unexpected NextToken")
 		})
 	}
+}
+
+func TestNode_constructNodeServerInfoResponse_MissingNode(t *testing.T) {
+	ci.Parallel(t)
+
+	s, cleanup := TestServer(t, nil)
+	defer cleanup()
+	testutil.WaitForLeader(t, s.RPC)
+
+	// Create a node that isn't a member of the state to force a not found
+	node := mock.Node()
+	var reply structs.NodeUpdateResponse
+
+	nE := NewNodeEndpoint(s, nil)
+	snap, err := s.State().Snapshot()
+	must.NoError(t, err)
+
+	// call constructNodeServerInfoResponse. Before GH #17316 this would panic
+	require.NoError(t, nE.constructNodeServerInfoResponse(node.ID, snap, &reply))
+	must.NotNil(t, &reply)
 }

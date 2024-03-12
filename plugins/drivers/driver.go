@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package drivers
 
 import (
@@ -171,6 +174,16 @@ type Capabilities struct {
 	// adjust behavior such as propogating task handles between allocations
 	// to avoid downtime when a client is lost.
 	RemoteTasks bool
+
+	// DisableLogCollection indicates this driver has disabled log collection
+	// and the client should not start a logmon process.
+	DisableLogCollection bool
+
+	// DynamicWorkloadUsers indicates this driver is capable (but not required)
+	// of making use of UID/GID not backed by a user known to the operating system.
+	// The allocation of a unique, not-in-use UID/GID is managed by Nomad client
+	// ensuring no overlap.
+	DynamicWorkloadUsers bool
 }
 
 func (c *Capabilities) HasNetIsolationMode(m NetIsolationMode) bool {
@@ -267,6 +280,7 @@ type TaskConfig struct {
 	JobName          string
 	JobID            string
 	TaskGroupName    string
+	ParentJobID      string
 	Name             string // task.Name
 	Namespace        string
 	NodeName         string
@@ -405,7 +419,7 @@ type LinuxResources struct {
 	// and thus the calculation for CPUQuota cannot be done on the client.
 	// This is a capatability and should only be used by docker until the docker
 	// specific options are deprecated in favor of exposes CPUPeriod and
-	// CPUQuota at the task resource stanza.
+	// CPUQuota at the task resource block.
 	PercentTicks float64
 }
 
@@ -436,13 +450,15 @@ type MountConfig struct {
 	HostPath        string
 	Readonly        bool
 	PropagationMode string
+	SELinuxLabel    string
 }
 
 func (m *MountConfig) IsEqual(o *MountConfig) bool {
 	return m.TaskPath == o.TaskPath &&
 		m.HostPath == o.HostPath &&
 		m.Readonly == o.Readonly &&
-		m.PropagationMode == o.PropagationMode
+		m.PropagationMode == o.PropagationMode &&
+		m.SELinuxLabel == o.SELinuxLabel
 }
 
 func (m *MountConfig) Copy() *MountConfig {

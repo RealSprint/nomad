@@ -1,9 +1,12 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package fingerprint
 
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -94,7 +97,7 @@ func (f *EnvGCEFingerprint) Get(attribute string, recursive bool) (string, error
 	}
 
 	req := &http.Request{
-		Method: "GET",
+		Method: http.MethodGet,
 		URL:    parsedUrl,
 		Header: http.Header{
 			"Metadata-Flavor": []string{"Google"},
@@ -111,14 +114,14 @@ func (f *EnvGCEFingerprint) Get(attribute string, recursive bool) (string, error
 		return "", err
 	}
 
-	resp, err := ioutil.ReadAll(res.Body)
+	resp, err := io.ReadAll(res.Body)
 	res.Body.Close()
 	if err != nil {
 		f.logger.Error("error reading response body for GCE attribute", "attribute", attribute, "error", err)
 		return "", err
 	}
 
-	if res.StatusCode >= 400 {
+	if res.StatusCode >= http.StatusBadRequest {
 		return "", ReqError{res.StatusCode}
 	}
 

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package nomad
 
 import (
@@ -5,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"time"
 
 	"github.com/armon/go-metrics"
@@ -39,16 +43,22 @@ func (a *ClientAllocations) GarbageCollectAll(args *structs.NodeSpecificRequest,
 	// in the forwarding chain.
 	args.QueryOptions.AllowStale = true
 
+	authErr := a.srv.Authenticate(nil, args)
+
 	// Potentially forward to a different region.
 	if done, err := a.srv.forward("ClientAllocations.GarbageCollectAll", args, args, reply); done {
 		return err
 	}
+	a.srv.MeasureRPCRate("client_allocations", structs.RateMetricWrite, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
+	}
 	defer metrics.MeasureSince([]string{"nomad", "client_allocations", "garbage_collect_all"}, time.Now())
 
 	// Check node read permissions
-	if aclObj, err := a.srv.ResolveToken(args.AuthToken); err != nil {
+	if aclObj, err := a.srv.ResolveACL(args); err != nil {
 		return err
-	} else if aclObj != nil && !aclObj.AllowNodeWrite() {
+	} else if !aclObj.AllowNodeWrite() {
 		return structs.ErrPermissionDenied
 	}
 
@@ -85,9 +95,15 @@ func (a *ClientAllocations) Signal(args *structs.AllocSignalRequest, reply *stru
 	// in the forwarding chain.
 	args.QueryOptions.AllowStale = true
 
+	authErr := a.srv.Authenticate(nil, args)
+
 	// Potentially forward to a different region.
 	if done, err := a.srv.forward("ClientAllocations.Signal", args, args, reply); done {
 		return err
+	}
+	a.srv.MeasureRPCRate("client_allocations", structs.RateMetricWrite, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
 	}
 	defer metrics.MeasureSince([]string{"nomad", "client_allocations", "signal"}, time.Now())
 
@@ -108,9 +124,9 @@ func (a *ClientAllocations) Signal(args *structs.AllocSignalRequest, reply *stru
 	}
 
 	// Check namespace alloc-lifecycle permission.
-	if aclObj, err := a.srv.ResolveToken(args.AuthToken); err != nil {
+	if aclObj, err := a.srv.ResolveACL(args); err != nil {
 		return err
-	} else if aclObj != nil && !aclObj.AllowNsOp(alloc.Namespace, acl.NamespaceCapabilityAllocLifecycle) {
+	} else if !aclObj.AllowNsOp(alloc.Namespace, acl.NamespaceCapabilityAllocLifecycle) {
 		return structs.ErrPermissionDenied
 	}
 
@@ -137,9 +153,15 @@ func (a *ClientAllocations) GarbageCollect(args *structs.AllocSpecificRequest, r
 	// in the forwarding chain.
 	args.QueryOptions.AllowStale = true
 
+	authErr := a.srv.Authenticate(nil, args)
+
 	// Potentially forward to a different region.
 	if done, err := a.srv.forward("ClientAllocations.GarbageCollect", args, args, reply); done {
 		return err
+	}
+	a.srv.MeasureRPCRate("client_allocations", structs.RateMetricWrite, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
 	}
 	defer metrics.MeasureSince([]string{"nomad", "client_allocations", "garbage_collect"}, time.Now())
 
@@ -160,9 +182,9 @@ func (a *ClientAllocations) GarbageCollect(args *structs.AllocSpecificRequest, r
 	}
 
 	// Check namespace submit-job permission.
-	if aclObj, err := a.srv.ResolveToken(args.AuthToken); err != nil {
+	if aclObj, err := a.srv.ResolveACL(args); err != nil {
 		return err
-	} else if aclObj != nil && !aclObj.AllowNsOp(alloc.Namespace, acl.NamespaceCapabilitySubmitJob) {
+	} else if !aclObj.AllowNsOp(alloc.Namespace, acl.NamespaceCapabilitySubmitJob) {
 		return structs.ErrPermissionDenied
 	}
 
@@ -189,9 +211,15 @@ func (a *ClientAllocations) Restart(args *structs.AllocRestartRequest, reply *st
 	// in the forwarding chain.
 	args.QueryOptions.AllowStale = true
 
+	authErr := a.srv.Authenticate(nil, args)
+
 	// Potentially forward to a different region.
 	if done, err := a.srv.forward("ClientAllocations.Restart", args, args, reply); done {
 		return err
+	}
+	a.srv.MeasureRPCRate("client_allocations", structs.RateMetricWrite, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
 	}
 	defer metrics.MeasureSince([]string{"nomad", "client_allocations", "restart"}, time.Now())
 
@@ -207,9 +235,9 @@ func (a *ClientAllocations) Restart(args *structs.AllocRestartRequest, reply *st
 	}
 
 	// Check for namespace alloc-lifecycle permissions.
-	if aclObj, err := a.srv.ResolveToken(args.AuthToken); err != nil {
+	if aclObj, err := a.srv.ResolveACL(args); err != nil {
 		return err
-	} else if aclObj != nil && !aclObj.AllowNsOp(alloc.Namespace, acl.NamespaceCapabilityAllocLifecycle) {
+	} else if !aclObj.AllowNsOp(alloc.Namespace, acl.NamespaceCapabilityAllocLifecycle) {
 		return structs.ErrPermissionDenied
 	}
 
@@ -236,9 +264,15 @@ func (a *ClientAllocations) Stats(args *cstructs.AllocStatsRequest, reply *cstru
 	// in the forwarding chain.
 	args.QueryOptions.AllowStale = true
 
+	authErr := a.srv.Authenticate(nil, args)
+
 	// Potentially forward to a different region.
 	if done, err := a.srv.forward("ClientAllocations.Stats", args, args, reply); done {
 		return err
+	}
+	a.srv.MeasureRPCRate("client_allocations", structs.RateMetricRead, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
 	}
 	defer metrics.MeasureSince([]string{"nomad", "client_allocations", "stats"}, time.Now())
 
@@ -254,9 +288,9 @@ func (a *ClientAllocations) Stats(args *cstructs.AllocStatsRequest, reply *cstru
 	}
 
 	// Check for namespace read-job permissions.
-	if aclObj, err := a.srv.ResolveToken(args.AuthToken); err != nil {
+	if aclObj, err := a.srv.ResolveACL(args); err != nil {
 		return err
-	} else if aclObj != nil && !aclObj.AllowNsOp(alloc.Namespace, acl.NamespaceCapabilityReadJob) {
+	} else if !aclObj.AllowNsOp(alloc.Namespace, acl.NamespaceCapabilityReadJob) {
 		return structs.ErrPermissionDenied
 	}
 
@@ -287,9 +321,15 @@ func (a *ClientAllocations) Checks(args *cstructs.AllocChecksRequest, reply *cst
 	// hop in the forwarding chain.
 	args.QueryOptions.AllowStale = true
 
+	authErr := a.srv.Authenticate(nil, args)
+
 	// Potentially forward to a different region.
 	if done, err := a.srv.forward("ClientAllocations.Checks", args, args, reply); done {
 		return err
+	}
+	a.srv.MeasureRPCRate("client_allocations", structs.RateMetricRead, args)
+	if authErr != nil {
+		return structs.ErrPermissionDenied
 	}
 	defer metrics.MeasureSince([]string{"nomad", "client_allocations", "checks"}, time.Now())
 
@@ -308,9 +348,9 @@ func (a *ClientAllocations) Checks(args *cstructs.AllocChecksRequest, reply *cst
 	}
 
 	// Check for namespace read-job permissions.
-	if aclObj, err := a.srv.ResolveToken(args.AuthToken); err != nil {
+	if aclObj, err := a.srv.ResolveACL(args); err != nil {
 		return err
-	} else if aclObj != nil && !aclObj.AllowNsOp(alloc.Namespace, acl.NamespaceCapabilityReadJob) {
+	} else if !aclObj.AllowNsOp(alloc.Namespace, acl.NamespaceCapabilityReadJob) {
 		return structs.ErrPermissionDenied
 	}
 
@@ -344,10 +384,17 @@ func (a *ClientAllocations) exec(conn io.ReadWriteCloser) {
 		return
 	}
 
+	authErr := a.srv.Authenticate(nil, &args)
+
 	// Check if we need to forward to a different region
 	if r := args.RequestRegion(); r != a.srv.Region() {
 		forwardRegionStreamingRpc(a.srv, conn, encoder, &args, "Allocations.Exec",
 			args.AllocID, &args.QueryOptions)
+		return
+	}
+	a.srv.MeasureRPCRate("client_allocations", structs.RateMetricWrite, &args)
+	if authErr != nil {
+		handleStreamResultError(structs.ErrPermissionDenied, nil, encoder)
 		return
 	}
 
@@ -375,13 +422,44 @@ func (a *ClientAllocations) exec(conn io.ReadWriteCloser) {
 	}
 
 	// Check node read permissions
-	if aclObj, err := a.srv.ResolveToken(args.AuthToken); err != nil {
+	if aclObj, err := a.srv.ResolveACL(&args); err != nil {
 		handleStreamResultError(err, nil, encoder)
 		return
-	} else if aclObj != nil && !aclObj.AllowNsOp(alloc.Namespace, acl.NamespaceCapabilityAllocExec) {
+	} else if !aclObj.AllowNsOp(alloc.Namespace, acl.NamespaceCapabilityAllocExec) {
 		// client ultimately checks if AllocNodeExec is required
 		handleStreamResultError(structs.ErrPermissionDenied, nil, encoder)
 		return
+	}
+
+	if alloc.ClientTerminalStatus() {
+		handleStreamResultError(fmt.Errorf("exec not possible, client status of allocation %s is %s", alloc.ID, alloc.ClientStatus),
+			pointer.Of(int64(http.StatusBadRequest)), encoder)
+		return
+	}
+
+	// Handle job ID if requested.
+	if args.JobID != "" {
+		// Verify job exists.
+		job, err := snap.JobByID(nil, args.Namespace, args.JobID)
+		if err != nil {
+			handleStreamResultError(err,
+				pointer.Of(int64(http.StatusInternalServerError)), encoder)
+			return
+		}
+		if job == nil {
+			handleStreamResultError(
+				fmt.Errorf("job %s not found in namespace %s", args.JobID, args.Namespace),
+				pointer.Of(int64(http.StatusNotFound)), encoder)
+			return
+		}
+
+		// Verify requested allocation belongs to the job.
+		if args.JobID != alloc.JobID {
+			handleStreamResultError(
+				fmt.Errorf("job %s does not have allocation %s", args.JobID, alloc.ID),
+				pointer.Of(int64(http.StatusBadRequest)), encoder,
+			)
+		}
 	}
 
 	nodeID := alloc.NodeID

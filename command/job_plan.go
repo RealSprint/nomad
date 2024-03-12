@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
@@ -100,13 +103,13 @@ Plan Options:
   -vault-token
     Used to validate if the user submitting the job has permission to run the job
     according to its Vault policies. A Vault token must be supplied if the vault
-    stanza allow_unauthenticated is disabled in the Nomad server configuration.
+    block allow_unauthenticated is disabled in the Nomad server configuration.
     If the -vault-token flag is set, the passed Vault token is added to the jobspec
     before sending to the Nomad servers. This allows passing the Vault token
     without storing it in the job file. This overrides the token found in the
     $VAULT_TOKEN environment variable and the vault_token field in the job file.
     This token is cleared from the job after validating and cannot be used within
-    the job executing environment. Use the vault stanza when templating in a job
+    the job executing environment. Use the vault block when templating in a job
     with a Vault token.
 
   -vault-namespace
@@ -194,7 +197,7 @@ func (c *JobPlanCommand) Run(args []string) int {
 
 	path := args[0]
 	// Get Job struct from Jobfile
-	job, err := c.JobGetter.Get(path)
+	_, job, err := c.JobGetter.Get(path)
 	if err != nil {
 		c.Ui.Error(fmt.Sprintf("Error getting job struct: %s", err))
 		return 255
@@ -223,6 +226,10 @@ func (c *JobPlanCommand) Run(args []string) int {
 		vaultToken = os.Getenv("VAULT_TOKEN")
 	}
 
+	if vaultToken != "" {
+		job.VaultToken = pointer.Of(vaultToken)
+	}
+
 	// Set the vault token.
 	if vaultToken != "" {
 		job.VaultToken = pointer.Of(vaultToken)
@@ -234,9 +241,9 @@ func (c *JobPlanCommand) Run(args []string) int {
 	}
 
 	// Setup the options
-	opts := &api.PlanOptions{}
-	if diff {
-		opts.Diff = true
+	opts := &api.PlanOptions{
+		// Always request the diff so we can tell if there are changes.
+		Diff: true,
 	}
 	if policyOverride {
 		opts.PolicyOverride = true
@@ -260,6 +267,10 @@ func (c *JobPlanCommand) Run(args []string) int {
 
 	for _, varFile := range c.JobGetter.VarFiles {
 		runArgs.WriteString(fmt.Sprintf("-var-file=%q ", varFile))
+	}
+
+	if c.namespace != "" {
+		runArgs.WriteString(fmt.Sprintf("-namespace=%q ", c.namespace))
 	}
 
 	exitCode := c.outputPlannedJob(job, resp, diff, verbose)

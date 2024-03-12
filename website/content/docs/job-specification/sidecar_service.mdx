@@ -1,19 +1,19 @@
 ---
 layout: docs
-page_title: sidecar_service Stanza - Job Specification
+page_title: sidecar_service Block - Job Specification
 description: |-
-  The "sidecar_service" stanza allows specifying options for configuring
+  The "sidecar_service" block allows specifying options for configuring
   sidecar proxies used in Consul Connect integration
 ---
 
-# `sidecar_service` Stanza
+# `sidecar_service` Block
 
 <Placement groups={['job', 'group', 'service', 'connect', 'sidecar_service']} />
 
-The `sidecar_service` stanza allows configuring various options for the sidecar
+The `sidecar_service` block allows configuring various options for the sidecar
 proxy managed by Nomad for [Consul
-Connect](/docs/integrations/consul-connect) integration. It is
-valid only within the context of a connect stanza.
+Connect](/nomad/docs/integrations/consul-connect) integration. It is
+valid only within the context of a connect block.
 
 ```hcl
 job "countdash" {
@@ -49,6 +49,8 @@ job "countdash" {
 - `disable_default_tcp_check` `(bool: false)` - disable the default TCP health
   check.
 
+- `meta` <code>(map&lt;string|string&gt;: nil)</code> - Specifies arbitrary KV metadata pairs.
+
 - `port` `(string: )` - Port label for sidecar service.
 
 - `proxy` <code>([proxy][]: nil)</code> - This is used to configure the
@@ -59,7 +61,7 @@ job "countdash" {
 
 ## `sidecar_service` Examples
 
-The following example is a minimal `sidecar_service` stanza with defaults
+The following example is a minimal `sidecar_service` block with defaults
 
 ```hcl
   connect {
@@ -67,7 +69,7 @@ The following example is a minimal `sidecar_service` stanza with defaults
   }
 ```
 
-The following example includes specifying upstreams.
+The following example includes specifying upstreams and meta.
 
 ```hcl
    sidecar_service {
@@ -77,13 +79,16 @@ The following example includes specifying upstreams.
          local_bind_port = 8080
        }
      }
+     meta {
+       "test-key" = "test-value"
+     }
    }
 
 ```
 
-[job]: /docs/job-specification/job 'Nomad job Job Specification'
-[group]: /docs/job-specification/group 'Nomad group Job Specification'
-[task]: /docs/job-specification/task 'Nomad task Job Specification'
-[interpolation]: /docs/runtime/interpolation 'Nomad interpolation'
-[sidecar_service]: /docs/job-specification/sidecar_service 'Nomad sidecar service Specification'
-[proxy]: /docs/job-specification/proxy 'Nomad sidecar proxy config Specification'
+[job]: /nomad/docs/job-specification/job 'Nomad job Job Specification'
+[group]: /nomad/docs/job-specification/group 'Nomad group Job Specification'
+[task]: /nomad/docs/job-specification/task 'Nomad task Job Specification'
+[interpolation]: /nomad/docs/runtime/interpolation 'Nomad interpolation'
+[sidecar_service]: /nomad/docs/job-specification/sidecar_service 'Nomad sidecar service Specification'
+[proxy]: /nomad/docs/job-specification/proxy 'Nomad sidecar proxy config Specification'

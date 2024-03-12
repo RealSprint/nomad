@@ -1,3 +1,8 @@
+{{!
+  Copyright (c) HashiCorp, Inc.
+  SPDX-License-Identifier: BUSL-1.1
+~}}
+
 <td data-test-indicators class="is-narrow">
   {{#if this.allocation.unhealthyDrivers.length}}
     <span
@@ -132,3 +137,6 @@
     @error={{this.statsError}}
   />
 </td>
+{{#if this.model.job.actions.length}}
+  <td class="job-actions-cell" />
+{{/if}}

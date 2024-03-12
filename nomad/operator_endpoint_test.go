@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package nomad
 
 import (
@@ -5,8 +8,8 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
+	"net/rpc"
 	"os"
 	"path"
 	"reflect"
@@ -14,20 +17,26 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/hashicorp/go-msgpack/codec"
 	msgpackrpc "github.com/hashicorp/net-rpc-msgpackrpc"
 	"github.com/hashicorp/nomad/acl"
 	"github.com/hashicorp/nomad/ci"
 	cstructs "github.com/hashicorp/nomad/client/structs"
-	"github.com/hashicorp/nomad/helper/freeport"
 	"github.com/hashicorp/nomad/helper/snapshot"
 	"github.com/hashicorp/nomad/helper/uuid"
 	"github.com/hashicorp/nomad/nomad/mock"
 	"github.com/hashicorp/nomad/nomad/structs"
 	"github.com/hashicorp/nomad/testutil"
 	"github.com/hashicorp/raft"
+	"github.com/shoenig/test/must"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+)
+
+var (
+	// RPC Permission Denied Errors - currently `rpc error: Permission denied`
+	rpcPermDeniedErr = rpc.ServerError(structs.ErrPermissionDenied.Error())
 )
 
 func TestOperator_RaftGetConfiguration(t *testing.T) {
@@ -148,8 +157,7 @@ func TestOperator_RaftRemovePeerByAddress(t *testing.T) {
 	codec := rpcClient(t, s1)
 	testutil.WaitForLeader(t, s1.RPC)
 
-	ports := freeport.MustTake(1)
-	defer freeport.Return(ports)
+	ports := ci.PortAllocator.Grab(1)
 
 	// Try to remove a peer that's not there.
 	arg := structs.RaftPeerByAddressRequest{
@@ -216,8 +224,7 @@ func TestOperator_RaftRemovePeerByAddress_ACL(t *testing.T) {
 	// Create ACL token
 	invalidToken := mock.CreatePolicyAndToken(t, state, 1001, "test-invalid", mock.NodePolicy(acl.PolicyWrite))
 
-	ports := freeport.MustTake(1)
-	defer freeport.Return(ports)
+	ports := ci.PortAllocator.Grab(1)
 
 	arg := structs.RaftPeerByAddressRequest{
 		Address: raft.ServerAddress(fmt.Sprintf("127.0.0.1:%d", ports[0])),
@@ -276,8 +283,7 @@ func TestOperator_RaftRemovePeerByID(t *testing.T) {
 		t.Fatalf("err: %v", err)
 	}
 
-	ports := freeport.MustTake(1)
-	defer freeport.Return(ports)
+	ports := ci.PortAllocator.Grab(1)
 
 	// Add it manually to Raft.
 	{
@@ -337,8 +343,7 @@ func TestOperator_RaftRemovePeerByID_ACL(t *testing.T) {
 	}
 	arg.Region = s1.config.Region
 
-	ports := freeport.MustTake(1)
-	defer freeport.Return(ports)
+	ports := ci.PortAllocator.Grab(1)
 
 	// Add peer manually to Raft.
 	{
@@ -371,11 +376,218 @@ func TestOperator_RaftRemovePeerByID_ACL(t *testing.T) {
 	}
 }
 
+type testcluster struct {
+	t       *testing.T
+	server  []*Server
+	cleanup []func()
+	token   *structs.ACLToken
+	rpc     func(string, any, any) error
+}
+
+func (tc testcluster) Cleanup() {
+	for _, cFn := range tc.cleanup {
+		cFn()
+	}
+}
+
+type tcArgs struct {
+	size      int
+	enableACL bool
+}
+
+func newTestCluster(t *testing.T, args tcArgs) (tc testcluster) {
+	// handle the zero case reasonably for count
+	if args.size == 0 {
+		args.size = 3
+	}
+	if args.size < 1 {
+		t.Fatal("newTestCluster must have size greater than zero")
+	}
+	cSize := args.size
+	out := testcluster{
+		t:       t,
+		server:  make([]*Server, cSize),
+		cleanup: make([]func(), cSize),
+	}
+
+	for i := 0; i < cSize; i += 1 {
+		out.server[i], out.cleanup[i] = TestServer(t, func(c *Config) {
+			c.NodeName = fmt.Sprintf("node-%v", i+1)
+			c.RaftConfig.ProtocolVersion = raft.ProtocolVersion(3)
+			c.BootstrapExpect = cSize
+			c.ACLEnabled = args.enableACL
+		})
+	}
+	t.Cleanup(out.Cleanup)
+	out.rpc = out.server[0].RPC
+
+	TestJoin(t, out.server...)
+	out.WaitForLeader()
+
+	if args.enableACL {
+		// Bootstrap the ACL subsystem
+		token := mock.ACLManagementToken()
+		err := out.server[0].State().BootstrapACLTokens(structs.MsgTypeTestSetup, 1, 0, token)
+		if err != nil {
+			t.Fatalf("failed to bootstrap ACL token: %v", err)
+		}
+		t.Logf("bootstrap token: %v", *token)
+		out.token = token
+	}
+	return out
+}
+
+func (tc testcluster) WaitForLeader() {
+	testutil.WaitForLeader(tc.t, tc.rpc)
+}
+
+func (tc testcluster) leader() *Server {
+	tc.WaitForLeader()
+	for _, s := range tc.server {
+		if isLeader, _ := s.getLeader(); isLeader {
+			return s
+		}
+	}
+	return nil
+}
+
+func (tc testcluster) anyFollower() *Server {
+	if len(tc.server) < 2 {
+		return nil
+	}
+
+	testutil.WaitForLeader(tc.t, tc.rpc)
+	for _, s := range tc.server {
+		if isLeader, _ := s.getLeader(); !isLeader {
+			return s
+		}
+	}
+	// something weird happened.
+	return nil
+}
+
+func TestOperator_TransferLeadershipToServerAddress_ACL(t *testing.T) {
+	ci.Parallel(t)
+
+	tc := newTestCluster(t, tcArgs{enableACL: true})
+	s1 := tc.leader()
+	codec := rpcClient(t, s1)
+	state := s1.fsm.State()
+
+	lAddr, _ := s1.raft.LeaderWithID()
+
+	var addr raft.ServerAddress
+	// Find the first non-leader server in the list.
+	for a := range s1.localPeers {
+		addr = a
+		if addr != lAddr {
+			break
+		}
+	}
+
+	// Create ACL token
+	invalidToken := mock.CreatePolicyAndToken(t, state, 1001, "test-invalid", mock.NodePolicy(acl.PolicyWrite))
+
+	arg := &structs.RaftPeerRequest{
+		RaftIDAddress: structs.RaftIDAddress{Address: addr},
+		WriteRequest:  structs.WriteRequest{Region: s1.config.Region},
+	}
+
+	var reply struct{}
+
+	t.Run("no-token", func(t *testing.T) {
+		// Try with no token and expect permission denied
+		err := msgpackrpc.CallWithCodec(codec, "Operator.TransferLeadershipToPeer", arg, &reply)
+		must.Error(t, err)
+		must.ErrorIs(t, err, rpcPermDeniedErr)
+	})
+
+	t.Run("invalid-token", func(t *testing.T) {
+		// Try with an invalid token and expect permission denied
+		arg.AuthToken = invalidToken.SecretID
+		err := msgpackrpc.CallWithCodec(codec, "Operator.TransferLeadershipToPeer", arg, &reply)
+		must.Error(t, err)
+		must.ErrorIs(t, err, rpcPermDeniedErr)
+	})
+
+	t.Run("good-token", func(t *testing.T) {
+		// Try with a management token
+		arg.AuthToken = tc.token.SecretID
+		err := msgpackrpc.CallWithCodec(codec, "Operator.TransferLeadershipToPeer", arg, &reply)
+		must.NoError(t, err)
+
+		// Is the expected leader the new one?
+		tc.WaitForLeader()
+		lAddrNew, _ := s1.raft.LeaderWithID()
+		must.Eq(t, addr, lAddrNew)
+	})
+}
+
+func TestOperator_TransferLeadershipToServerID_ACL(t *testing.T) {
+	ci.Parallel(t)
+	tc := newTestCluster(t, tcArgs{enableACL: true})
+	s1 := tc.leader()
+	codec := rpcClient(t, s1)
+	state := s1.fsm.State()
+
+	_, ldrID := s1.raft.LeaderWithID()
+
+	var tgtID raft.ServerID
+	// Find the first non-leader server in the list.
+	s1.peerLock.Lock()
+	for _, sp := range s1.localPeers {
+		tgtID = raft.ServerID(sp.ID)
+		if tgtID != ldrID {
+			break
+		}
+	}
+	s1.peerLock.Unlock()
+
+	// Create ACL token
+	invalidToken := mock.CreatePolicyAndToken(t, state, 1001, "test-invalid", mock.NodePolicy(acl.PolicyWrite))
+
+	arg := &structs.RaftPeerRequest{
+		RaftIDAddress: structs.RaftIDAddress{
+			ID: tgtID,
+		},
+		WriteRequest: structs.WriteRequest{Region: s1.config.Region},
+	}
+
+	var reply struct{}
+
+	t.Run("no-token", func(t *testing.T) {
+		// Try with no token and expect permission denied
+		err := msgpackrpc.CallWithCodec(codec, "Operator.TransferLeadershipToPeer", arg, &reply)
+		must.Error(t, err)
+		must.ErrorIs(t, err, rpcPermDeniedErr)
+	})
+
+	t.Run("invalid-token", func(t *testing.T) {
+		// Try with an invalid token and expect permission denied
+		arg.AuthToken = invalidToken.SecretID
+		err := msgpackrpc.CallWithCodec(codec, "Operator.TransferLeadershipToPeer", arg, &reply)
+		must.Error(t, err)
+		must.ErrorIs(t, err, rpcPermDeniedErr)
+	})
+
+	t.Run("good-token", func(t *testing.T) {
+		// Try with a management token
+		arg.AuthToken = tc.token.SecretID
+		err := msgpackrpc.CallWithCodec(codec, "Operator.TransferLeadershipToPeer", arg, &reply)
+		must.NoError(t, err)
+
+		// Is the expected leader the new one?
+		tc.WaitForLeader()
+		_, ldrID := s1.raft.LeaderWithID()
+		must.Eq(t, tgtID, ldrID)
+	})
+}
+
 func TestOperator_SchedulerGetConfiguration(t *testing.T) {
 	ci.Parallel(t)
 
 	s1, cleanupS1 := TestServer(t, func(c *Config) {
-		c.Build = "0.9.0+unittest"
+		c.Build = "1.3.0+unittest"
 	})
 	defer cleanupS1()
 	codec := rpcClient(t, s1)
@@ -399,7 +611,7 @@ func TestOperator_SchedulerSetConfiguration(t *testing.T) {
 	ci.Parallel(t)
 
 	s1, cleanupS1 := TestServer(t, func(c *Config) {
-		c.Build = "0.9.0+unittest"
+		c.Build = "1.3.0+unittest"
 	})
 	defer cleanupS1()
 	rpcCodec := rpcClient(t, s1)
@@ -445,7 +657,7 @@ func TestOperator_SchedulerGetConfiguration_ACL(t *testing.T) {
 
 	s1, root, cleanupS1 := TestACLServer(t, func(c *Config) {
 		c.RaftConfig.ProtocolVersion = 3
-		c.Build = "0.9.0+unittest"
+		c.Build = "1.3.0+unittest"
 	})
 	defer cleanupS1()
 	codec := rpcClient(t, s1)
@@ -492,7 +704,7 @@ func TestOperator_SchedulerSetConfiguration_ACL(t *testing.T) {
 
 	s1, root, cleanupS1 := TestACLServer(t, func(c *Config) {
 		c.RaftConfig.ProtocolVersion = 3
-		c.Build = "0.9.0+unittest"
+		c.Build = "1.3.0+unittest"
 	})
 	defer cleanupS1()
 	codec := rpcClient(t, s1)
@@ -619,7 +831,7 @@ func TestOperator_SnapshotSave(t *testing.T) {
 
 			index := resp.Index
 
-			snap, err := ioutil.TempFile("", "nomadtests-snapshot-")
+			snap, err := os.CreateTemp("", "nomadtests-snapshot-")
 			require.NoError(t, err)
 			defer os.Remove(snap.Name())
 
@@ -669,7 +881,7 @@ func TestOperator_SnapshotSave_ACL(t *testing.T) {
 	}{
 		{"root", root.SecretID, 0, nil},
 		{"no_permission_token", deniedToken.SecretID, 403, structs.ErrPermissionDenied},
-		{"invalid token", uuid.Generate(), 400, structs.ErrTokenNotFound},
+		{"invalid token", uuid.Generate(), 403, structs.ErrPermissionDenied},
 		{"unauthenticated", "", 403, structs.ErrPermissionDenied},
 	}
 
@@ -712,7 +924,7 @@ func TestOperator_SnapshotSave_ACL(t *testing.T) {
 			require.NotEmpty(t, resp.SnapshotChecksum)
 			require.Contains(t, resp.SnapshotChecksum, "sha-256=")
 
-			io.Copy(ioutil.Discard, p1)
+			io.Copy(io.Discard, p1)
 		})
 	}
 }
@@ -762,7 +974,7 @@ func generateSnapshot(t *testing.T) (*snapshot.Snapshot, *structs.Job) {
 	err := msgpackrpc.CallWithCodec(codec, "Job.Register", jobReq, &jobResp)
 	require.NoError(t, err)
 
-	err = s.State().UpsertJob(structs.MsgTypeTestSetup, 1000, job)
+	err = s.State().UpsertJob(structs.MsgTypeTestSetup, 1000, nil, job)
 	require.NoError(t, err)
 
 	snapshot, err := snapshot.New(s.logger, s.raft)
@@ -891,7 +1103,7 @@ func TestOperator_SnapshotRestore_ACL(t *testing.T) {
 	}{
 		{"root", 0, nil},
 		{"no_permission_token", 403, structs.ErrPermissionDenied},
-		{"invalid token", 400, structs.ErrTokenNotFound},
+		{"invalid token", 403, structs.ErrPermissionDenied},
 		{"unauthenticated", 403, structs.ErrPermissionDenied},
 	}
 
@@ -973,7 +1185,187 @@ func TestOperator_SnapshotRestore_ACL(t *testing.T) {
 
 			require.NotZero(t, resp.Index)
 
-			io.Copy(ioutil.Discard, p1)
+			io.Copy(io.Discard, p1)
+		})
+	}
+}
+
+func TestOperator_UpgradeCheckRequest_VaultWorkloadIdentity(t *testing.T) {
+	ci.Parallel(t)
+
+	s1, cleanupS1 := TestServer(t, nil)
+	defer cleanupS1()
+	testutil.WaitForLeader(t, s1.RPC)
+
+	codec := rpcClient(t, s1)
+	state := s1.fsm.State()
+
+	// Register mock nodes, one pre-1.7.
+	node := mock.Node()
+	node.Attributes["nomad.version"] = "1.7.2"
+	err := state.UpsertNode(structs.MsgTypeTestSetup, 1000, node)
+	must.NoError(t, err)
+
+	outdatedNode := mock.Node()
+	outdatedNode.Attributes["nomad.version"] = "1.6.4"
+	err = state.UpsertNode(structs.MsgTypeTestSetup, 1001, outdatedNode)
+	must.NoError(t, err)
+
+	// Create non-default namespace.
+	ns := mock.Namespace()
+	state.UpsertNamespaces(1002, []*structs.Namespace{ns})
+
+	// Register Vault jobs, one with and another without workload identity.
+	jobNoWID := mock.Job()
+	jobNoWID.TaskGroups[0].Tasks[0].Vault = &structs.Vault{
+		Cluster:  "default",
+		Policies: []string{"test"},
+	}
+	// Add multiple tasks and groups to make sure we don't have duplicate jobs
+	// in the result.
+	jobNoWID.TaskGroups[0].Tasks = append(jobNoWID.TaskGroups[0].Tasks, jobNoWID.TaskGroups[0].Tasks[0].Copy())
+	jobNoWID.TaskGroups[0].Tasks[1].Name = "task-1"
+	jobNoWID.TaskGroups = append(jobNoWID.TaskGroups, jobNoWID.TaskGroups[0].Copy())
+	jobNoWID.TaskGroups[1].Name = "tg-1"
+
+	err = state.UpsertJob(structs.MsgTypeTestSetup, 1003, nil, jobNoWID)
+	must.NoError(t, err)
+
+	jobNoWIDNonDefaultNS := mock.Job()
+	jobNoWIDNonDefaultNS.Namespace = ns.Name
+	jobNoWIDNonDefaultNS.TaskGroups[0].Tasks[0].Vault = &structs.Vault{
+		Cluster:  "default",
+		Policies: []string{"test"},
+	}
+	err = state.UpsertJob(structs.MsgTypeTestSetup, 1004, nil, jobNoWIDNonDefaultNS)
+	must.NoError(t, err)
+
+	jobWithWID := mock.Job()
+	jobWithWID.TaskGroups[0].Tasks[0].Vault = &structs.Vault{
+		Cluster: "default",
+	}
+	jobWithWID.TaskGroups[0].Tasks[0].Identities = []*structs.WorkloadIdentity{{
+		Name: "vault_default",
+	}}
+	err = state.UpsertJob(structs.MsgTypeTestSetup, 1005, nil, jobWithWID)
+	must.NoError(t, err)
+
+	// Create allocs for the jobs.
+	allocJobNoWID := mock.Alloc()
+	allocJobNoWID.Job = jobNoWID
+	allocJobNoWID.JobID = jobNoWID.ID
+	allocJobNoWID.NodeID = node.ID
+
+	allocJobWithWID := mock.Alloc()
+	allocJobWithWID.Job = jobWithWID
+	allocJobWithWID.JobID = jobWithWID.ID
+	allocJobWithWID.NodeID = node.ID
+
+	err = state.UpsertAllocs(structs.MsgTypeTestSetup, 1006, []*structs.Allocation{allocJobNoWID, allocJobWithWID})
+	must.NoError(t, err)
+
+	// Create Vault token accessor for job without Vault identity and one that
+	// is no longer used.
+	tokenJobNoWID := mock.VaultAccessor()
+	tokenJobNoWID.AllocID = allocJobNoWID.ID
+	tokenJobNoWID.NodeID = node.ID
+
+	tokenUnused := mock.VaultAccessor()
+	err = state.UpsertVaultAccessor(1007, []*structs.VaultAccessor{tokenJobNoWID, tokenUnused})
+	must.NoError(t, err)
+
+	// Make request.
+	args := &structs.UpgradeCheckVaultWorkloadIdentityRequest{
+		QueryOptions: structs.QueryOptions{
+			Region:    "global",
+			AuthToken: node.SecretID,
+		},
+	}
+	var resp structs.UpgradeCheckVaultWorkloadIdentityResponse
+	err = msgpackrpc.CallWithCodec(codec, "Operator.UpgradeCheckVaultWorkloadIdentity", args, &resp)
+	must.NoError(t, err)
+	must.Eq(t, 1007, resp.Index)
+
+	// Verify only jobs without Vault identity are returned.
+	must.Len(t, 2, resp.JobsWithoutVaultIdentity)
+	must.SliceContains(t, resp.JobsWithoutVaultIdentity, jobNoWID.Stub(nil, nil), must.Cmp(cmpopts.IgnoreFields(
+		structs.JobListStub{},
+		"Status",
+		"ModifyIndex",
+	)))
+	must.SliceContains(t, resp.JobsWithoutVaultIdentity, jobNoWIDNonDefaultNS.Stub(nil, nil), must.Cmp(cmpopts.IgnoreFields(
+		structs.JobListStub{},
+		"Status",
+		"ModifyIndex",
+	)))
+
+	// Verify only outdated nodes are returned.
+	must.Len(t, 1, resp.OutdatedNodes)
+	must.SliceContains(t, resp.OutdatedNodes, outdatedNode.Stub(nil))
+
+	// Verify Vault ACL tokens are returned.
+	must.Len(t, 2, resp.VaultTokens)
+	must.SliceContains(t, resp.VaultTokens, tokenJobNoWID)
+	must.SliceContains(t, resp.VaultTokens, tokenUnused)
+}
+
+func TestOperator_UpgradeCheckRequest_VaultWorkloadIdentity_ACL(t *testing.T) {
+	ci.Parallel(t)
+
+	s1, root, cleanupS1 := TestACLServer(t, nil)
+	defer cleanupS1()
+	testutil.WaitForLeader(t, s1.RPC)
+
+	codec := rpcClient(t, s1)
+	state := s1.fsm.State()
+
+	// Create test tokens and policies.
+	allowed := mock.CreatePolicyAndToken(t, state, 1000, "allowed", `operator {policy = "read"}`)
+	notAllowed := mock.CreatePolicyAndToken(t, state, 1002, "not-allowed", mock.NamespacePolicy("default", "write", nil))
+
+	testCases := []struct {
+		name        string
+		token       string
+		expectedErr string
+	}{
+		{
+			name:        "root token is allowed",
+			token:       root.SecretID,
+			expectedErr: "",
+		},
+		{
+			name:        "operator read token is allowed",
+			token:       allowed.SecretID,
+			expectedErr: "",
+		},
+		{
+			name:        "token not allowed",
+			token:       notAllowed.SecretID,
+			expectedErr: structs.ErrPermissionDenied.Error(),
+		},
+		{
+			name:        "missing token not allowed",
+			token:       "",
+			expectedErr: structs.ErrPermissionDenied.Error(),
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Make request.
+			args := &structs.UpgradeCheckVaultWorkloadIdentityRequest{
+				QueryOptions: structs.QueryOptions{
+					Region:    "global",
+					AuthToken: tc.token,
+				},
+			}
+			var resp structs.UpgradeCheckVaultWorkloadIdentityResponse
+			err := msgpackrpc.CallWithCodec(codec, "Operator.UpgradeCheckVaultWorkloadIdentity", args, &resp)
+			if tc.expectedErr == "" {
+				must.NoError(t, err)
+			} else {
+				must.ErrorContains(t, err, tc.expectedErr)
+			}
 		})
 	}
 }

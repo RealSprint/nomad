@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 import Watchable from './watchable';
 import codesForError from '../utils/codes-for-error';
 import classic from 'ember-classic-decorator';
@@ -11,5 +16,13 @@ export default class NamespaceAdapter extends Watchable {
         return { Name: id };
       }
     });
+  }
+
+  urlForCreateRecord(_modelName, model) {
+    return this.urlForUpdateRecord(model.attr('name'), 'namespace');
+  }
+
+  urlForDeleteRecord(id) {
+    return this.urlForUpdateRecord(id, 'namespace');
   }
 }

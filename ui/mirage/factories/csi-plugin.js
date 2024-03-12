@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 import { Factory } from 'ember-cli-mirage';
 import faker from 'nomad-ui/mirage/faker';
 import { STORAGE_PROVIDERS } from '../common';
@@ -48,9 +53,13 @@ export default Factory.extend({
   afterCreate(plugin, server) {
     let storageNodes;
     let storageControllers;
+    server.create('namespace', { id: 'default' });
 
     if (plugin.isMonolith) {
-      const pluginJob = server.create('job', { type: 'service', createAllocations: false });
+      const pluginJob = server.create('job', {
+        type: 'service',
+        createAllocations: false,
+      });
       const count = plugin.nodesExpected;
       storageNodes = server.createList('storage-node', count, {
         job: pluginJob,

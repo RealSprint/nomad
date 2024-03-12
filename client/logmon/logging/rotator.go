@@ -1,10 +1,12 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package logging
 
 import (
 	"bufio"
 	"bytes"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"sort"
@@ -189,7 +191,7 @@ func (f *FileRotator) nextFile() error {
 
 // lastFile finds out the rotated file with the largest index in a path.
 func (f *FileRotator) lastFile() error {
-	finfos, err := ioutil.ReadDir(f.path)
+	finfos, err := os.ReadDir(f.path)
 	if err != nil {
 		return err
 	}
@@ -275,7 +277,7 @@ func (f *FileRotator) purgeOldFiles() {
 		select {
 		case <-f.purgeCh:
 			var fIndexes []int
-			files, err := ioutil.ReadDir(f.path)
+			files, err := os.ReadDir(f.path)
 			if err != nil {
 				f.logger.Error("error getting directory listing", "error", err)
 				return

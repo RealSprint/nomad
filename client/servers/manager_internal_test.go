@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package servers
 
 import (
@@ -10,11 +13,6 @@ import (
 	"github.com/hashicorp/nomad/ci"
 	"github.com/hashicorp/nomad/helper/testlog"
 )
-
-func init() {
-	// Seed the random number generator
-	rand.Seed(time.Now().UnixNano())
-}
 
 type fauxAddr struct {
 	Addr string

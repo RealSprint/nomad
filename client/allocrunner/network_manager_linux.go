@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package allocrunner
 
 import (
@@ -44,7 +47,7 @@ func newNetworkManager(alloc *structs.Allocation, driverManager drivermanager.Ma
 	// to do extra work
 	driverCaps := make(map[string]struct{})
 	for _, task := range tg.Tasks {
-		// the task's netmode defaults to the the task group but can be overridden
+		// the task's netmode defaults to the task group but can be overridden
 		taskNetMode := tgNetMode
 		if len(task.Resources.Networks) > 0 && task.Resources.Networks[0].Mode != "" {
 			taskNetMode = task.Resources.Networks[0].Mode
@@ -90,7 +93,7 @@ func newNetworkManager(alloc *structs.Allocation, driverManager drivermanager.Ma
 
 			nm = netManager
 			networkInitiator = task.Name
-		} else if tg.Networks[0].Hostname != "" {
+		} else if len(tg.Networks) > 0 && tg.Networks[0].Hostname != "" {
 			// TODO jrasell: remove once the default linux network manager
 			//  supports setting the hostname in bridged mode. This currently
 			//  indicates only Docker supports this, which is true unless a
@@ -149,6 +152,9 @@ func (*defaultNetworkManager) CreateNetwork(allocID string, _ *drivers.NetworkCr
 }
 
 func (*defaultNetworkManager) DestroyNetwork(allocID string, spec *drivers.NetworkIsolationSpec) error {
+	if spec == nil {
+		return nil
+	}
 	return nsutil.UnmountNS(spec.Path)
 }
 
@@ -171,7 +177,7 @@ func netModeToIsolationMode(netMode string) drivers.NetIsolationMode {
 func newNetworkConfigurator(log hclog.Logger, alloc *structs.Allocation, config *clientconfig.Config) (NetworkConfigurator, error) {
 	tg := alloc.Job.LookupTaskGroup(alloc.TaskGroup)
 
-	// Check if network stanza is given
+	// Check if network block is given
 	if len(tg.Networks) == 0 {
 		return &hostNetworkConfigurator{}, nil
 	}
@@ -184,7 +190,7 @@ func newNetworkConfigurator(log hclog.Logger, alloc *structs.Allocation, config 
 
 	switch {
 	case netMode == "bridge":
-		c, err := newBridgeNetworkConfigurator(log, config.BridgeNetworkName, config.BridgeNetworkAllocSubnet, config.CNIPath, ignorePortMappingHostIP)
+		c, err := newBridgeNetworkConfigurator(log, config.BridgeNetworkName, config.BridgeNetworkAllocSubnet, config.BridgeNetworkHairpinMode, config.CNIPath, ignorePortMappingHostIP)
 		if err != nil {
 			return nil, err
 		}

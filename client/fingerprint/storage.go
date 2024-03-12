@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package fingerprint
 
 import (
@@ -41,15 +44,22 @@ func (f *StorageFingerprint) Fingerprint(req *FingerprintRequest, resp *Fingerpr
 		return fmt.Errorf("failed to determine disk space for %s: %v", storageDir, err)
 	}
 
+	if cfg.DiskTotalMB > 0 {
+		total = uint64(cfg.DiskTotalMB) * bytesPerMegabyte
+	}
+	if cfg.DiskFreeMB > 0 {
+		free = uint64(cfg.DiskFreeMB) * bytesPerMegabyte
+	}
+
+	if total < free {
+		return fmt.Errorf("detected more free disk space (%d) than total disk space (%d), use disk_total_mb and disk_free_mb to correct", free, total)
+	}
+
 	resp.AddAttribute("unique.storage.volume", volume)
 	resp.AddAttribute("unique.storage.bytestotal", strconv.FormatUint(total, 10))
 	resp.AddAttribute("unique.storage.bytesfree", strconv.FormatUint(free, 10))
 
 	// set the disk size for the response
-	// COMPAT(0.10): Remove in 0.10
-	resp.Resources = &structs.Resources{
-		DiskMB: int(free / bytesPerMegabyte),
-	}
 	resp.NodeResources = &structs.NodeResources{
 		Disk: structs.NodeDiskResources{
 			DiskMB: int64(free / bytesPerMegabyte),

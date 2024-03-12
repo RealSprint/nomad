@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package taskrunner
 
 import (
@@ -6,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"os"
 	"os/exec"
@@ -43,28 +45,34 @@ const (
 	envoyBootstrapMaxJitter = 500 * time.Millisecond
 )
 
+var (
+	errEnvoyBootstrapError = errors.New("error creating bootstrap configuration for Connect proxy sidecar")
+)
+
 type consulTransportConfig struct {
-	HTTPAddr  string // required
-	Auth      string // optional, env CONSUL_HTTP_AUTH
-	SSL       string // optional, env CONSUL_HTTP_SSL
-	VerifySSL string // optional, env CONSUL_HTTP_SSL_VERIFY
-	CAFile    string // optional, arg -ca-file
-	CertFile  string // optional, arg -client-cert
-	KeyFile   string // optional, arg -client-key
-	Namespace string // optional, only consul Enterprise, env CONSUL_NAMESPACE
+	HTTPAddr   string // required
+	Auth       string // optional, env CONSUL_HTTP_AUTH
+	SSL        string // optional, env CONSUL_HTTP_SSL
+	VerifySSL  string // optional, env CONSUL_HTTP_SSL_VERIFY
+	GRPCCAFile string // optional, arg -grpc-ca-file
+	CAFile     string // optional, arg -ca-file
+	CertFile   string // optional, arg -client-cert
+	KeyFile    string // optional, arg -client-key
+	Namespace  string // optional, only consul Enterprise, env CONSUL_NAMESPACE
 	// CAPath (dir) not supported by Nomad's config object
 }
 
-func newConsulTransportConfig(consul *config.ConsulConfig) consulTransportConfig {
+func newConsulTransportConfig(cc *config.ConsulConfig) consulTransportConfig {
 	return consulTransportConfig{
-		HTTPAddr:  consul.Addr,
-		Auth:      consul.Auth,
-		SSL:       decodeTriState(consul.EnableSSL),
-		VerifySSL: decodeTriState(consul.VerifySSL),
-		CAFile:    consul.CAFile,
-		CertFile:  consul.CertFile,
-		KeyFile:   consul.KeyFile,
-		Namespace: consul.Namespace,
+		HTTPAddr:   cc.Addr,
+		Auth:       cc.Auth,
+		SSL:        decodeTriState(cc.EnableSSL),
+		VerifySSL:  decodeTriState(cc.VerifySSL),
+		GRPCCAFile: cc.GRPCCAFile,
+		CAFile:     cc.CAFile,
+		CertFile:   cc.CertFile,
+		KeyFile:    cc.KeyFile,
+		Namespace:  cc.Namespace,
 	}
 }
 
@@ -125,7 +133,7 @@ type envoyBootstrapHook struct {
 	// envoyBootstrapWaitTime is the total amount of time hook will wait for Consul
 	envoyBootstrapWaitTime time.Duration
 
-	// envoyBootstrapInitialGap is the initial wait gap when retyring
+	// envoyBootstrapInitialGap is the initial wait gap when retrying
 	envoyBoostrapInitialGap time.Duration
 
 	// envoyBootstrapMaxJitter is the maximum amount of jitter applied to retries
@@ -227,8 +235,6 @@ func (h *envoyBootstrapHook) lookupService(svcKind, svcName string, taskEnv *tas
 // Must be aware of both launching envoy as a sidecar proxy, as well as a connect gateway.
 func (h *envoyBootstrapHook) Prestart(ctx context.Context, req *ifs.TaskPrestartRequest, resp *ifs.TaskPrestartResponse) error {
 	if !req.Task.Kind.IsConnectProxy() && !req.Task.Kind.IsAnyConnectGateway() {
-		// Not a Connect proxy sidecar
-		resp.Done = true
 		return nil
 	}
 
@@ -350,8 +356,8 @@ func (h *envoyBootstrapHook) Prestart(ctx context.Context, req *ifs.TaskPrestart
 
 		// Command succeeded, exit.
 		if cmdErr == nil {
-			// Bootstrap written. Mark as done and move on.
-			resp.Done = true
+			// Bootstrap written. Move on without marking as Done as Prestart needs
+			// to rerun after node reboots.
 			return false, nil
 		}
 
@@ -371,7 +377,10 @@ func (h *envoyBootstrapHook) Prestart(ctx context.Context, req *ifs.TaskPrestart
 		// Wrap the last error from Consul and set that as our status.
 		_, recoverable := cmdErr.(*exec.ExitError)
 		return structs.NewRecoverableError(
-			fmt.Errorf("error creating bootstrap configuration for Connect proxy sidecar: %v", cmdErr),
+			fmt.Errorf("%w: %v; see: <https://developer.hashicorp.com/nomad/s/envoy-bootstrap-error>",
+				errEnvoyBootstrapError,
+				cmdErr,
+			),
 			recoverable,
 		)
 	}
@@ -439,7 +448,7 @@ func buildEnvoyBind(alloc *structs.Allocation, ifce, service, task string, taskE
 }
 
 func (h *envoyBootstrapHook) writeConfig(filename, config string) error {
-	if err := ioutil.WriteFile(filename, []byte(config), 0440); err != nil {
+	if err := os.WriteFile(filename, []byte(config), 0440); err != nil {
 		_ = os.Remove(filename)
 		return err
 	}
@@ -542,29 +551,19 @@ func (e envoyBootstrapArgs) args() []string {
 		"-bootstrap",
 	}
 
-	if v := e.gateway; v != "" {
-		arguments = append(arguments, "-gateway", v)
+	appendIfSet := func(param, value string) {
+		if value != "" {
+			arguments = append(arguments, param, value)
+		}
 	}
 
-	if v := e.siToken; v != "" {
-		arguments = append(arguments, "-token", v)
-	}
-
-	if v := e.consulConfig.CAFile; v != "" {
-		arguments = append(arguments, "-ca-file", v)
-	}
-
-	if v := e.consulConfig.CertFile; v != "" {
-		arguments = append(arguments, "-client-cert", v)
-	}
-
-	if v := e.consulConfig.KeyFile; v != "" {
-		arguments = append(arguments, "-client-key", v)
-	}
-
-	if v := e.namespace; v != "" {
-		arguments = append(arguments, "-namespace", v)
-	}
+	appendIfSet("-gateway", e.gateway)
+	appendIfSet("-token", e.siToken)
+	appendIfSet("-grpc-ca-file", e.consulConfig.GRPCCAFile)
+	appendIfSet("-ca-file", e.consulConfig.CAFile)
+	appendIfSet("-client-cert", e.consulConfig.CertFile)
+	appendIfSet("-client-key", e.consulConfig.KeyFile)
+	appendIfSet("-namespace", e.namespace)
 
 	return arguments
 }
@@ -597,7 +596,7 @@ func (e envoyBootstrapArgs) env(env []string) []string {
 // Consul ACLs are enabled), it will be in place by the time we try to read it.
 func (h *envoyBootstrapHook) maybeLoadSIToken(task, dir string) (string, error) {
 	tokenPath := filepath.Join(dir, sidsTokenFile)
-	token, err := ioutil.ReadFile(tokenPath)
+	token, err := os.ReadFile(tokenPath)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			h.logger.Error("failed to load SI token", "task", task, "error", err)

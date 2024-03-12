@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
@@ -9,7 +12,6 @@ import (
 	"github.com/hashicorp/nomad/nomad/mock"
 	"github.com/mitchellh/cli"
 	"github.com/shoenig/test/must"
-	"github.com/stretchr/testify/require"
 )
 
 func TestACLBootstrapCommand(t *testing.T) {
@@ -22,7 +24,7 @@ func TestACLBootstrapCommand(t *testing.T) {
 	}
 
 	srv, _, url := testServer(t, true, config)
-	defer stopTestAgent(srv)
+	defer srv.Shutdown()
 
 	must.Nil(t, srv.RootToken)
 
@@ -34,7 +36,7 @@ func TestACLBootstrapCommand(t *testing.T) {
 
 	out := ui.OutputWriter.String()
 	must.StrContains(t, out, "Secret ID")
-	require.Contains(t, out, "Expiry Time  = <none>")
+	must.StrContains(t, out, "Expiry Time  = <none>")
 }
 
 // If a bootstrap token has already been created, attempts to create more should
@@ -47,7 +49,7 @@ func TestACLBootstrapCommand_ExistingBootstrapToken(t *testing.T) {
 	}
 
 	srv, _, url := testServer(t, true, config)
-	defer stopTestAgent(srv)
+	defer srv.Shutdown()
 
 	must.NotNil(t, srv.RootToken)
 
@@ -66,7 +68,7 @@ func TestACLBootstrapCommand_NonACLServer(t *testing.T) {
 	ci.Parallel(t)
 
 	srv, _, url := testServer(t, true, nil)
-	defer stopTestAgent(srv)
+	defer srv.Shutdown()
 
 	ui := cli.NewMockUi()
 	cmd := &ACLBootstrapCommand{Meta: Meta{Ui: ui, flagAddress: url}}
@@ -100,7 +102,7 @@ func TestACLBootstrapCommand_WithOperatorFileBootstrapToken(t *testing.T) {
 	must.NoError(t, err)
 
 	srv, _, url := testServer(t, true, config)
-	defer stopTestAgent(srv)
+	defer srv.Shutdown()
 
 	must.Nil(t, srv.RootToken)
 
@@ -112,7 +114,7 @@ func TestACLBootstrapCommand_WithOperatorFileBootstrapToken(t *testing.T) {
 
 	out := ui.OutputWriter.String()
 	must.StrContains(t, out, mockToken.SecretID)
-	require.Contains(t, out, "Expiry Time  = <none>")
+	must.StrContains(t, out, "Expiry Time  = <none>")
 }
 
 // Attempting to bootstrap the server with an invalid operator provided token in a file should
@@ -138,7 +140,7 @@ func TestACLBootstrapCommand_WithBadOperatorFileBootstrapToken(t *testing.T) {
 	must.NoError(t, err)
 
 	srv, _, url := testServer(t, true, config)
-	defer stopTestAgent(srv)
+	defer srv.Shutdown()
 
 	must.Nil(t, srv.RootToken)
 

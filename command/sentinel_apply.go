@@ -1,8 +1,11 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
 	"strings"
 
@@ -91,13 +94,13 @@ func (c *SentinelApplyCommand) Run(args []string) int {
 	file := args[1]
 	var rawPolicy []byte
 	if file == "-" {
-		rawPolicy, err = ioutil.ReadAll(os.Stdin)
+		rawPolicy, err = io.ReadAll(os.Stdin)
 		if err != nil {
 			c.Ui.Error(fmt.Sprintf("Failed to read stdin: %v", err))
 			return 1
 		}
 	} else {
-		rawPolicy, err = ioutil.ReadFile(file)
+		rawPolicy, err = os.ReadFile(file)
 		if err != nil {
 			c.Ui.Error(fmt.Sprintf("Failed to read file: %v", err))
 			return 1

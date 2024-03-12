@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package api
 
 import (
@@ -16,18 +19,10 @@ import (
 	"time"
 
 	"github.com/hashicorp/nomad/api/internal/testutil"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/shoenig/test/must"
 )
 
 type configCallback func(c *Config)
-
-// seen is used to track which tests we have already marked as parallel
-var seen map[*testing.T]struct{}
-
-func init() {
-	seen = make(map[*testing.T]struct{})
-}
 
 func makeACLClient(t *testing.T, cb1 configCallback,
 	cb2 testutil.ServerConfigCallback) (*Client, *testutil.TestServer, *ACLToken) {
@@ -70,6 +65,7 @@ func makeClient(t *testing.T, cb1 configCallback,
 
 func TestRequestTime(t *testing.T) {
 	testutil.Parallel(t)
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(100 * time.Millisecond)
 		d, err := json.Marshal(struct{ Done bool }{true})
@@ -77,7 +73,7 @@ func TestRequestTime(t *testing.T) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		w.Write(d)
+		_, _ = w.Write(d)
 	}))
 	defer srv.Close()
 
@@ -99,7 +95,7 @@ func TestRequestTime(t *testing.T) {
 		t.Errorf("bad request time: %d", qm.RequestTime)
 	}
 
-	wm, err := client.write("/", struct{ S string }{"input"}, &out, nil)
+	wm, err := client.put("/", struct{ S string }{"input"}, &out, nil)
 	if err != nil {
 		t.Fatalf("write err: %v", err)
 	}
@@ -176,11 +172,11 @@ func TestSetQueryOptions(t *testing.T) {
 
 	try := func(key, exp string) {
 		result := r.params.Get(key)
-		require.Equal(t, exp, result)
+		must.Eq(t, exp, result)
 	}
 
 	// Check auth token is set
-	require.Equal(t, "foobar", r.token)
+	must.Eq(t, "foobar", r.token)
 
 	// Check query parameters are set
 	try("region", "foo")
@@ -375,12 +371,12 @@ func TestQueryString(t *testing.T) {
 }
 
 func TestClient_NodeClient(t *testing.T) {
-	http := "testdomain:4646"
+	addr := "testdomain:4646"
 	tlsNode := func(string, *QueryOptions) (*Node, *QueryMeta, error) {
 		return &Node{
 			ID:         generateUUID(),
 			Status:     "ready",
-			HTTPAddr:   http,
+			HTTPAddr:   addr,
 			TLSEnabled: true,
 		}, nil, nil
 	}
@@ -388,7 +384,7 @@ func TestClient_NodeClient(t *testing.T) {
 		return &Node{
 			ID:         generateUUID(),
 			Status:     "ready",
-			HTTPAddr:   http,
+			HTTPAddr:   addr,
 			TLSEnabled: false,
 		}, nil, nil
 	}
@@ -399,15 +395,15 @@ func TestClient_NodeClient(t *testing.T) {
 	}
 
 	clientNoRegion, err := NewClient(DefaultConfig())
-	assert.Nil(t, err)
+	must.NoError(t, err)
 
 	regionConfig := DefaultConfig()
 	regionConfig.Region = "bar"
 	clientRegion, err := NewClient(regionConfig)
-	assert.Nil(t, err)
+	must.NoError(t, err)
 
-	expectedTLSAddr := fmt.Sprintf("https://%s", http)
-	expectedNoTLSAddr := fmt.Sprintf("http://%s", http)
+	expectedTLSAddr := fmt.Sprintf("https://%s", addr)
+	expectedNoTLSAddr := fmt.Sprintf("http://%s", addr)
 
 	cases := []struct {
 		Node                  nodeLookup
@@ -486,13 +482,12 @@ func TestClient_NodeClient(t *testing.T) {
 	for _, c := range cases {
 		name := fmt.Sprintf("%s__%s__%s", c.ExpectedAddr, c.ExpectedRegion, c.ExpectedTLSServerName)
 		t.Run(name, func(t *testing.T) {
-			assert := assert.New(t)
-			nodeClient, err := c.Client.getNodeClientImpl("testID", -1, c.QueryOptions, c.Node)
-			assert.Nil(err)
-			assert.Equal(c.ExpectedRegion, nodeClient.config.Region)
-			assert.Equal(c.ExpectedAddr, nodeClient.config.Address)
-			assert.NotNil(nodeClient.config.TLSConfig)
-			assert.Equal(c.ExpectedTLSServerName, nodeClient.config.TLSConfig.TLSServerName)
+			nodeClient, getErr := c.Client.getNodeClientImpl("testID", -1, c.QueryOptions, c.Node)
+			must.NoError(t, getErr)
+			must.Eq(t, c.ExpectedRegion, nodeClient.config.Region)
+			must.Eq(t, c.ExpectedAddr, nodeClient.config.Address)
+			must.NotNil(t, nodeClient.config.TLSConfig)
+			must.Eq(t, c.ExpectedTLSServerName, nodeClient.config.TLSConfig.TLSServerName)
 		})
 	}
 }
@@ -506,43 +501,39 @@ func TestCloneHttpClient(t *testing.T) {
 
 	t.Run("closing with negative timeout", func(t *testing.T) {
 		clone, err := cloneWithTimeout(client, -1)
-		require.True(t, originalTransport == client.Transport, "original transport changed")
-		require.NoError(t, err)
-		require.Equal(t, client, clone)
-		require.True(t, client == clone)
+		must.True(t, originalTransport == client.Transport, must.Sprint("original transport changed"))
+		must.NoError(t, err)
+		must.True(t, client == clone)
 	})
 
 	t.Run("closing with positive timeout", func(t *testing.T) {
 		clone, err := cloneWithTimeout(client, 1*time.Second)
-		require.True(t, originalTransport == client.Transport, "original transport changed")
-		require.NoError(t, err)
-		require.NotEqual(t, client, clone)
-		require.True(t, client != clone)
-		require.True(t, client.Transport != clone.Transport)
+		must.True(t, originalTransport == client.Transport, must.Sprint("original transport changed"))
+		must.NoError(t, err)
+		must.True(t, client != clone)
+		must.True(t, client.Transport != clone.Transport)
 
 		// test that proxy function is the same in clone
 		clonedProxy := clone.Transport.(*http.Transport).Proxy
-		require.NotNil(t, clonedProxy)
+		must.NotNil(t, clonedProxy)
 		_, err = clonedProxy(nil)
-		require.Error(t, err)
-		require.Equal(t, "stub function", err.Error())
+		must.Error(t, err)
+		must.EqError(t, err, "stub function")
 
 		// if we reset transport, the strutcs are equal
 		clone.Transport = originalTransport
-		require.Equal(t, client, clone)
+		must.Eq(t, client, clone)
 	})
 
 }
 
 func TestClient_HeaderRaceCondition(t *testing.T) {
-	require := require.New(t)
-
 	conf := DefaultConfig()
 	conf.Headers = map[string][]string{
 		"test-header": {"a"},
 	}
 	client, err := NewClient(conf)
-	require.NoError(err)
+	must.NoError(t, err)
 
 	c := make(chan int)
 
@@ -554,9 +545,9 @@ func TestClient_HeaderRaceCondition(t *testing.T) {
 	req, _ := client.newRequest("GET", "/any/path/will/do")
 	r, _ := req.toHTTP()
 
-	require.Len(r.Header, 2, "local request should have two headers")
-	require.Equal(2, <-c, "goroutine  request should have two headers")
-	require.Len(conf.Headers, 1, "config headers should not mutate")
+	must.MapLen(t, 2, r.Header, must.Sprint("local request should have two headers"))
+	must.Eq(t, 2, <-c, must.Sprint("goroutine  request should have two headers"))
+	must.MapLen(t, 1, conf.Headers, must.Sprint("config headers should not mutate"))
 }
 
 func TestClient_autoUnzip(t *testing.T) {
@@ -564,7 +555,7 @@ func TestClient_autoUnzip(t *testing.T) {
 
 	try := func(resp *http.Response, exp error) {
 		err := client.autoUnzip(resp)
-		require.Equal(t, exp, err)
+		must.Eq(t, exp, err)
 	}
 
 	// response object is nil
@@ -594,9 +585,9 @@ func TestClient_autoUnzip(t *testing.T) {
 	var b bytes.Buffer
 	w := gzip.NewWriter(&b)
 	_, err := w.Write([]byte("hello world"))
-	require.NoError(t, err)
+	must.NoError(t, err)
 	err = w.Close()
-	require.NoError(t, err)
+	must.NoError(t, err)
 
 	// content-encoding is gzip and body is gzip data
 	try(&http.Response{

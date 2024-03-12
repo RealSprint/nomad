@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 'use strict';
 
 const proxyPath = '/v1';
@@ -40,13 +45,10 @@ module.exports = function (app, options) {
     proxy.web(req, res, { target: proxyAddress });
   });
 
-  server.on('upgrade', function (req, socket, head) {
-    if (
-      req.url.startsWith('/v1/client/allocation') &&
-      req.url.includes('exec?')
-    ) {
-      req.headers.origin = proxyAddress;
-      proxy.ws(req, socket, head, { target: proxyAddress });
-    }
+  server.on('upgrade', function (req) {
+    // Set Origin header so Nomad accepts the proxied request.
+    // WebSocket proxing is handled by ember-cli.
+    // https://github.com/ember-cli/ember-cli/blob/v3.28.5/lib/tasks/server/middleware/proxy-server/index.js#L51
+    req.headers.origin = proxyAddress;
   });
 };

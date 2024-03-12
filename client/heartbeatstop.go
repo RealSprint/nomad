@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package client
 
 import (
@@ -5,6 +8,8 @@ import (
 	"time"
 
 	hclog "github.com/hashicorp/go-hclog"
+
+	"github.com/hashicorp/nomad/client/allocrunner/interfaces"
 	"github.com/hashicorp/nomad/nomad/structs"
 )
 
@@ -13,14 +18,14 @@ type heartbeatStop struct {
 	startupGrace  time.Time
 	allocInterval map[string]time.Duration
 	allocHookCh   chan *structs.Allocation
-	getRunner     func(string) (AllocRunner, error)
+	getRunner     func(string) (interfaces.AllocRunner, error)
 	logger        hclog.InterceptLogger
 	shutdownCh    chan struct{}
 	lock          *sync.RWMutex
 }
 
 func newHeartbeatStop(
-	getRunner func(string) (AllocRunner, error),
+	getRunner func(string) (interfaces.AllocRunner, error),
 	timeout time.Duration,
 	logger hclog.InterceptLogger,
 	shutdownCh chan struct{}) *heartbeatStop {
@@ -42,7 +47,7 @@ func newHeartbeatStop(
 // allocation to be stopped if the taskgroup is configured appropriately
 func (h *heartbeatStop) allocHook(alloc *structs.Allocation) {
 	tg := allocTaskGroup(alloc)
-	if tg.StopAfterClientDisconnect != nil {
+	if tg.GetDisconnectStopTimeout() != nil {
 		h.allocHookCh <- alloc
 	}
 }
@@ -51,8 +56,9 @@ func (h *heartbeatStop) allocHook(alloc *structs.Allocation) {
 // past that it should be prevented from restarting
 func (h *heartbeatStop) shouldStop(alloc *structs.Allocation) bool {
 	tg := allocTaskGroup(alloc)
-	if tg.StopAfterClientDisconnect != nil {
-		return h.shouldStopAfter(time.Now(), *tg.StopAfterClientDisconnect)
+	timeout := tg.GetDisconnectStopTimeout()
+	if timeout != nil {
+		return h.shouldStopAfter(time.Now(), *timeout)
 	}
 	return false
 }
@@ -98,8 +104,9 @@ func (h *heartbeatStop) watch() {
 
 		case alloc := <-h.allocHookCh:
 			tg := allocTaskGroup(alloc)
-			if tg.StopAfterClientDisconnect != nil {
-				h.allocInterval[alloc.ID] = *tg.StopAfterClientDisconnect
+			timeout := tg.GetDisconnectStopTimeout()
+			if timeout != nil {
+				h.allocInterval[alloc.ID] = *timeout
 			}
 
 		case <-timeout:

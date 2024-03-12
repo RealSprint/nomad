@@ -1,15 +1,19 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package consul
 
 import (
 	"fmt"
+	"maps"
 	"net"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/nomad/nomad/structs"
-	"golang.org/x/exp/slices"
 )
 
 // newConnect creates a new Consul AgentServiceConnect struct based on a Nomad
@@ -18,7 +22,7 @@ import (
 func newConnect(serviceID string, info structs.AllocInfo, serviceName string, nc *structs.ConsulConnect, networks structs.Networks, ports structs.AllocatedPorts) (*api.AgentServiceConnect, error) {
 	switch {
 	case nc == nil:
-		// no connect stanza means there is no connect service to register
+		// no connect block means there is no connect service to register
 		return nil, nil
 
 	case nc.IsGateway():
@@ -56,7 +60,7 @@ func newConnectGateway(connect *structs.ConsulConnect) *api.AgentServiceConnectP
 
 	var envoyConfig map[string]interface{}
 
-	// Populate the envoy configuration from the gateway.proxy stanza, if
+	// Populate the envoy configuration from the gateway.proxy block, if
 	// such configuration is provided.
 	if proxy := connect.Gateway.Proxy; proxy != nil {
 		envoyConfig = make(map[string]interface{})
@@ -93,7 +97,7 @@ func newConnectGateway(connect *structs.ConsulConnect) *api.AgentServiceConnectP
 
 func connectSidecarRegistration(serviceID string, info structs.AllocInfo, css *structs.ConsulSidecarService, networks structs.Networks, ports structs.AllocatedPorts) (*api.AgentServiceRegistration, error) {
 	if css == nil {
-		// no sidecar stanza means there is no sidecar service to register
+		// no sidecar block means there is no sidecar service to register
 		return nil, nil
 	}
 
@@ -128,6 +132,7 @@ func connectSidecarRegistration(serviceID string, info structs.AllocInfo, css *s
 		Address: cMapping.HostIP,
 		Proxy:   proxy,
 		Checks:  checks,
+		Meta:    maps.Clone(css.Meta),
 	}, nil
 }
 
@@ -198,10 +203,15 @@ func connectUpstreams(in []structs.ConsulUpstream) []api.Upstream {
 		upstreams[i] = api.Upstream{
 			DestinationName:      upstream.DestinationName,
 			DestinationNamespace: upstream.DestinationNamespace,
+			DestinationType:      api.UpstreamDestType(upstream.DestinationType),
+			DestinationPeer:      upstream.DestinationPeer,
 			LocalBindPort:        upstream.LocalBindPort,
+			LocalBindSocketPath:  upstream.LocalBindSocketPath,
+			LocalBindSocketMode:  upstream.LocalBindSocketMode,
 			Datacenter:           upstream.Datacenter,
 			LocalBindAddress:     upstream.LocalBindAddress,
 			MeshGateway:          connectMeshGateway(upstream.MeshGateway),
+			Config:               maps.Clone(upstream.Config),
 		}
 	}
 	return upstreams

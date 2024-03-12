@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package interfaces
 
 import (
@@ -33,8 +36,6 @@ import (
                                   +-----------+
                                      *Kill
                                 (forces terminal)
-
-Link: http://stable.ascii-flow.appspot.com/#Draw4489375405966393064/1824429135
 */
 
 // TaskHook is a lifecycle hook into the life cycle of a task runner.
@@ -64,6 +65,9 @@ type TaskPrestartRequest struct {
 
 	// TaskEnv is the task's environment
 	TaskEnv *taskenv.TaskEnv
+
+	// Alloc is the current version of the allocation
+	Alloc *structs.Allocation
 }
 
 type TaskPrestartResponse struct {
@@ -83,6 +87,15 @@ type TaskPrestartResponse struct {
 
 	// Done lets the hook indicate that it completed successfully and
 	// should not be run again.
+	//
+	// Use sparringly! In general hooks should be idempotent and therefore Done
+	// is unneeded. You never know at what point an agent might crash, and it can
+	// be hard to reason about how Done=true impacts agent restarts and node
+	// reboots. See #19787 for example.
+	//
+	// Done is useful for expensive operations such as downloading artifacts, or
+	// for operations which might fail needlessly if rerun while a node is
+	// disconnected.
 	Done bool
 }
 
@@ -183,6 +196,9 @@ type TaskStopRequest struct {
 	// ExistingState is previously set hook data and should only be
 	// read. Stop hooks cannot alter state.
 	ExistingState map[string]string
+
+	// TaskDir contains the task's directory tree on the host
+	TaskDir *allocdir.TaskDir
 }
 
 type TaskStopResponse struct{}

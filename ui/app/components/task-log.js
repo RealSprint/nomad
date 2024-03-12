@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 import { inject as service } from '@ember/service';
 import Component from '@ember/component';
 import { action, computed } from '@ember/object';
@@ -7,6 +12,7 @@ import { logger } from 'nomad-ui/utils/classes/log';
 import timeout from 'nomad-ui/utils/timeout';
 import { classNames } from '@ember-decorators/component';
 import classic from 'ember-classic-decorator';
+import localStorageProperty from 'nomad-ui/utils/properties/local-storage';
 
 class MockAbortController {
   abort() {
@@ -28,6 +34,7 @@ export default class TaskLog extends Component {
 
   // When true, logs cannot be fetched from either the client or the server
   noConnection = false;
+  logsDisabled = false;
 
   clientTimeout = 1000;
   serverTimeout = 5000;
@@ -36,6 +43,8 @@ export default class TaskLog extends Component {
   streamMode = 'streaming';
 
   shouldFillHeight = true;
+
+  @localStorageProperty('nomadShouldWrapCode', false) wrapped;
 
   @alias('userSettings.logMode') mode;
 
@@ -74,6 +83,11 @@ export default class TaskLog extends Component {
         timeout(timing),
       ]).then(
         (response) => {
+          // whenever the log files 404, it is due to log collection
+          // being disabled.
+          if (response.status === 404) {
+            this.set('logsDisabled', true);
+          }
           return response;
         },
         (error) => {
@@ -117,5 +131,10 @@ export default class TaskLog extends Component {
   @action
   failoverToServer() {
     this.set('useServer', true);
+  }
+
+  @action toggleWrap() {
+    this.toggleProperty('wrapped');
+    return false;
   }
 }

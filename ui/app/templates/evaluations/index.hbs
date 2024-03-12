@@ -1,3 +1,8 @@
+{{!
+  Copyright (c) HashiCorp, Inc.
+  SPDX-License-Identifier: BUSL-1.1
+~}}
+
 {{page-title "Evaluations"}}
 {{did-update this.notifyEvalChange this.currentEval}}
 <section class="section">
@@ -81,7 +86,7 @@
             <td data-test-id
                 {{keyboard-shortcut 
                   enumerated=true
-                  action=(fn this.handleEvaluationClick row.model)
+                  action=(fn this.handleEvaluationClick row.model "keynav")
                 }}
             >
               {{row.model.shortId}}

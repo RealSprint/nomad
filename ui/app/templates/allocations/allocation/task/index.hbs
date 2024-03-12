@@ -1,3 +1,8 @@
+{{!
+  Copyright (c) HashiCorp, Inc.
+  SPDX-License-Identifier: BUSL-1.1
+~}}
+
 {{page-title "Task " this.model.name}}
 <TaskSubnav @task={{this.model}} />
 <section class="section">
@@ -25,8 +30,8 @@
       </div>
     </div>
   {{/if}}
-  <h1 class="title with-flex" data-test-title>
-    <div>
+  <Hds::PageHeader class="job-page-header" as |PH|>
+    <PH.Title data-test-title>
       {{this.model.name}}
       {{#if this.model.isConnectProxy}}
         <ProxyTag @class="bumper-left" />
@@ -39,9 +44,17 @@
       >
         {{this.model.state}}
       </span>
-    </div>
-    <div>
+    </PH.Title>
+    <PH.Actions>
       {{#if this.model.isRunning}}
+
+        {{#if this.shouldShowActions}}
+          <ActionsDropdown
+            @actions={{this.model.task.actions}}
+            @allocation={{this.model.allocation}}
+          />
+        {{/if}}
+
         <div class="two-step-button">
           <Exec::OpenButton
             @job={{this.model.task.taskGroup.job}}
@@ -50,6 +63,7 @@
             @task={{this.model.task}}
           />
         </div>
+
         <TwoStepButton
           data-test-restart
           @alignRight={{true}}
@@ -62,8 +76,8 @@
           @onConfirm={{perform this.restartTask}}
         />
       {{/if}}
-    </div>
-  </h1>
+    </PH.Actions>
+  </Hds::PageHeader>
   <div class="boxed-section is-small">
     <div class="boxed-section-body inline-definitions">
       <span class="label">
@@ -209,7 +223,7 @@
     <div class="boxed-section-body is-full-bleed">
       <ListTable
         @source={{reverse this.model.events}}
-        @class="is-striped" as |t|
+        @class="is-striped recent-events-table" as |t|
       >
         <t.head>
           <th class="is-3">

@@ -1,15 +1,18 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
-	"io/ioutil"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/hashicorp/nomad/ci"
+	"github.com/hashicorp/nomad/helper/pointer"
 	"github.com/hashicorp/nomad/testutil"
 	"github.com/mitchellh/cli"
-	"github.com/stretchr/testify/require"
+	"github.com/shoenig/test/must"
 )
 
 func TestValidateCommand_Implements(t *testing.T) {
@@ -25,10 +28,10 @@ func TestValidateCommand_Files(t *testing.T) {
 
 	// Create a Nomad server
 	s := testutil.NewTestServer(t, func(c *testutil.TestServerConfig) {
-		c.Vault.Address = v.HTTPAddr
-		c.Vault.Enabled = true
-		c.Vault.AllowUnauthenticated = false
-		c.Vault.Token = v.RootToken
+		c.Vaults[0].Address = v.HTTPAddr
+		c.Vaults[0].Enabled = true
+		c.Vaults[0].AllowUnauthenticated = pointer.Of(false)
+		c.Vaults[0].Token = v.RootToken
 	})
 	defer s.Stop()
 
@@ -37,7 +40,7 @@ func TestValidateCommand_Files(t *testing.T) {
 		cmd := &JobValidateCommand{Meta: Meta{Ui: ui, flagAddress: "http://" + s.HTTPAddr}}
 		args := []string{"testdata/example-basic.nomad"}
 		code := cmd.Run(args)
-		require.Equal(t, 0, code)
+		must.Zero(t, code)
 	})
 
 	t.Run("vault no token", func(t *testing.T) {
@@ -45,8 +48,8 @@ func TestValidateCommand_Files(t *testing.T) {
 		cmd := &JobValidateCommand{Meta: Meta{Ui: ui}}
 		args := []string{"-address", "http://" + s.HTTPAddr, "testdata/example-vault.nomad"}
 		code := cmd.Run(args)
-		require.Contains(t, ui.ErrorWriter.String(), "* Vault used in the job but missing Vault token")
-		require.Equal(t, 1, code)
+		must.StrContains(t, ui.ErrorWriter.String(), "* Vault used in the job but missing Vault token")
+		must.One(t, code)
 	})
 
 	t.Run("vault bad token via flag", func(t *testing.T) {
@@ -54,8 +57,8 @@ func TestValidateCommand_Files(t *testing.T) {
 		cmd := &JobValidateCommand{Meta: Meta{Ui: ui}}
 		args := []string{"-address", "http://" + s.HTTPAddr, "-vault-token=abc123", "testdata/example-vault.nomad"}
 		code := cmd.Run(args)
-		require.Contains(t, ui.ErrorWriter.String(), "* bad token")
-		require.Equal(t, 1, code)
+		must.StrContains(t, ui.ErrorWriter.String(), "* bad token")
+		must.One(t, code)
 	})
 
 	t.Run("vault token bad via env", func(t *testing.T) {
@@ -64,8 +67,8 @@ func TestValidateCommand_Files(t *testing.T) {
 		cmd := &JobValidateCommand{Meta: Meta{Ui: ui}}
 		args := []string{"-address", "http://" + s.HTTPAddr, "testdata/example-vault.nomad"}
 		code := cmd.Run(args)
-		require.Contains(t, ui.ErrorWriter.String(), "* bad token")
-		require.Equal(t, 1, code)
+		must.StrContains(t, ui.ErrorWriter.String(), "* bad token")
+		must.One(t, code)
 	})
 }
 func TestValidateCommand_hcl1_hcl2_strict(t *testing.T) {
@@ -79,9 +82,9 @@ func TestValidateCommand_hcl1_hcl2_strict(t *testing.T) {
 		got := cmd.Run([]string{
 			"-hcl1", "-hcl2-strict",
 			"-address", addr,
-			"assets/example-short.nomad",
+			"asset/example-short.nomad.hcl",
 		})
-		require.Equal(t, 0, got, ui.ErrorWriter.String())
+		must.Zero(t, got)
 	})
 }
 
@@ -109,7 +112,7 @@ func TestValidateCommand_Fails(t *testing.T) {
 	ui.ErrorWriter.Reset()
 
 	// Fails on invalid HCL
-	fh1, err := ioutil.TempFile("", "nomad")
+	fh1, err := os.CreateTemp("", "nomad")
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -126,7 +129,7 @@ func TestValidateCommand_Fails(t *testing.T) {
 	ui.ErrorWriter.Reset()
 
 	// Fails on invalid job spec
-	fh2, err := ioutil.TempFile("", "nomad")
+	fh2, err := os.CreateTemp("", "nomad")
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -218,11 +221,9 @@ func TestValidateCommand_JSON(t *testing.T) {
 
 	code := cmd.Run([]string{"-address", addr, "-json", "testdata/example-short.json"})
 
-	require.Zerof(t, code, "stdout: %s\nstdout: %s\n",
-		ui.OutputWriter.String(), ui.ErrorWriter.String())
+	must.Zero(t, code)
 
 	code = cmd.Run([]string{"-address", addr, "-json", "testdata/example-short-bad.json"})
 
-	require.Equalf(t, 1, code, "stdout: %s\nstdout: %s\n",
-		ui.OutputWriter.String(), ui.ErrorWriter.String())
+	must.One(t, code)
 }

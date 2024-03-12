@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package fingerprint
 
 import (
@@ -34,6 +37,7 @@ var (
 		"cni":         NewCNIFingerprint, // networks
 		"cpu":         NewCPUFingerprint,
 		"host":        NewHostFingerprint,
+		"landlock":    NewLandlockFingerprint,
 		"memory":      NewMemoryFingerprint,
 		"network":     NewNetworkFingerprint,
 		"nomad":       NewNomadFingerprint,

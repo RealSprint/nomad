@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package serviceregistration
 
 import (
@@ -45,6 +48,8 @@ type Handler interface {
 	UpdateTTL(id, namespace, output, status string) error
 }
 
+type HandlerFunc func(string) Handler
+
 // WorkloadRestarter allows the checkWatcher to restart tasks or entire task
 // groups.
 type WorkloadRestarter interface {
@@ -71,34 +76,32 @@ func (a *AllocRegistration) Copy() *AllocRegistration {
 	return c
 }
 
-// NumServices returns the number of registered services.
+// NumServices returns the number of registered task AND group services.
+// Group services are prefixed with "group-".
 func (a *AllocRegistration) NumServices() int {
 	if a == nil {
 		return 0
 	}
 
 	total := 0
-	for _, treg := range a.Tasks {
-		for _, sreg := range treg.Services {
-			if sreg.Service != nil {
-				total++
-			}
-		}
+	for _, task := range a.Tasks {
+		total += len(task.Services)
 	}
 
 	return total
 }
 
-// NumChecks returns the number of registered checks.
+// NumChecks returns the number of registered checks from both task AND group
+// services. Group services are prefixed with "group-".
 func (a *AllocRegistration) NumChecks() int {
 	if a == nil {
 		return 0
 	}
 
 	total := 0
-	for _, treg := range a.Tasks {
-		for _, sreg := range treg.Services {
-			total += len(sreg.Checks)
+	for _, task := range a.Tasks {
+		for _, service := range task.Services {
+			total += len(service.Checks)
 		}
 	}
 
@@ -143,6 +146,12 @@ type ServiceRegistration struct {
 
 	// Checks is the status of the registered checks.
 	Checks []*api.AgentCheck
+
+	// SidecarService is the AgentService registered in Consul for any Connect sidecar
+	SidecarService *api.AgentService
+
+	// SidecarChecks is the status of the registered checks for any Connect sidecar
+	SidecarChecks []*api.AgentCheck
 }
 
 func (s *ServiceRegistration) copy() *ServiceRegistration {

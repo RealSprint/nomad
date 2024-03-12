@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) HashiCorp, Inc.
+ * SPDX-License-Identifier: BUSL-1.1
+ */
+
 /* eslint-disable qunit/require-expect */
 /* eslint-disable qunit/no-conditional-assertions */
 import { currentURL } from '@ember/test-helpers';
@@ -17,6 +22,7 @@ module('Acceptance | regions (only one)', function (hooks) {
 
   hooks.beforeEach(function () {
     server.create('agent');
+    server.create('node-pool');
     server.create('node');
     server.createList('job', 2, {
       createAllocations: false,
@@ -35,7 +41,7 @@ module('Acceptance | regions (only one)', function (hooks) {
     await JobsList.visit();
 
     assert.notOk(Layout.navbar.regionSwitcher.isPresent, 'No region switcher');
-    assert.equal(document.title, 'Jobs - Nomad');
+    assert.ok(document.title.includes('Jobs'));
   });
 
   test('when the only region is not named "global", the region switcher still is not shown', async function (assert) {
@@ -83,6 +89,7 @@ module('Acceptance | regions (many)', function (hooks) {
 
   hooks.beforeEach(function () {
     server.create('agent');
+    server.create('node-pool');
     server.create('node');
     server.createList('job', 2, {
       createAllocations: false,
@@ -100,7 +107,7 @@ module('Acceptance | regions (many)', function (hooks) {
       Layout.navbar.regionSwitcher.isPresent,
       'Region switcher is shown'
     );
-    assert.equal(document.title, 'Jobs - global - Nomad');
+    assert.ok(document.title.includes('Jobs - global'));
   });
 
   test('when on the default region, pages do not include the region query param', async function (assert) {
@@ -187,29 +194,34 @@ module('Acceptance | regions (many)', function (hooks) {
     await JobsList.jobs.objectAt(0).clickRow();
     await Layout.gutter.visitClients();
     await Layout.gutter.visitServers();
-    const [
-      ,
-      ,
-      ,
-      // License request
-      // Token/policies request
-      // Search feature detection
-      regionsRequest,
-      defaultRegionRequest,
-      ...appRequests
-    ] = server.pretender.handledRequests;
+
+    const regionsRequest = server.pretender.handledRequests.find((req) =>
+      req.responseURL.includes('/v1/regions')
+    );
+    const licenseRequest = server.pretender.handledRequests.find((req) =>
+      req.responseURL.includes('/v1/operator/license')
+    );
+    const appRequests = server.pretender.handledRequests.filter(
+      (req) =>
+        !req.responseURL.includes('/v1/regions') &&
+        !req.responseURL.includes('/v1/operator/license')
+    );
 
     assert.notOk(
       regionsRequest.url.includes('region='),
       'The regions request is made without a region qp'
     );
     assert.notOk(
-      defaultRegionRequest.url.includes('region='),
+      licenseRequest.url.includes('region='),
       'The default region request is made without a region qp'
     );
 
     appRequests.forEach((req) => {
-      if (req.url === '/v1/agent/self') {
+      if (
+        req.url === '/v1/agent/self' ||
+        req.url === '/v1/acl/token/self' ||
+        req.url === '/v1/agent/members'
+      ) {
         assert.notOk(req.url.includes('region='), `(no region) ${req.url}`);
       } else {
         assert.ok(req.url.includes(`region=${region}`), req.url);

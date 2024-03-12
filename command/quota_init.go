@@ -1,8 +1,10 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"strings"
 
@@ -97,7 +99,7 @@ func (c *QuotaInitCommand) Run(args []string) int {
 	}
 
 	// Write out the example
-	err = ioutil.WriteFile(fileName, []byte(fileContent), 0660)
+	err = os.WriteFile(fileName, []byte(fileContent), 0660)
 	if err != nil {
 		c.Ui.Error(fmt.Sprintf("Failed to write %q: %v", fileName, err))
 		return 1

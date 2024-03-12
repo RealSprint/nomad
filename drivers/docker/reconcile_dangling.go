@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package docker
 
 import (
@@ -9,6 +12,7 @@ import (
 
 	docker "github.com/fsouza/go-dockerclient"
 	hclog "github.com/hashicorp/go-hclog"
+	"github.com/hashicorp/go-set/v2"
 )
 
 // containerReconciler detects and kills unexpectedly running containers.
@@ -18,13 +22,13 @@ import (
 // creation API call fail with a network error.  containerReconciler
 // scans for these untracked containers and kill them.
 type containerReconciler struct {
-	ctx    context.Context
-	config *ContainerGCConfig
-	client *docker.Client
-	logger hclog.Logger
+	ctx       context.Context
+	config    *ContainerGCConfig
+	logger    hclog.Logger
+	getClient func() (*docker.Client, error)
 
 	isDriverHealthy   func() bool
-	trackedContainers func() map[string]bool
+	trackedContainers func() set.Collection[string]
 	isNomadContainer  func(c docker.APIContainers) bool
 
 	once sync.Once
@@ -32,10 +36,10 @@ type containerReconciler struct {
 
 func newReconciler(d *Driver) *containerReconciler {
 	return &containerReconciler{
-		ctx:    d.ctx,
-		config: &d.config.GC.DanglingContainers,
-		client: client,
-		logger: d.logger,
+		ctx:       d.ctx,
+		config:    &d.config.GC.DanglingContainers,
+		getClient: d.getDockerClient,
+		logger:    d.logger,
 
 		isDriverHealthy:   func() bool { return d.previouslyDetected() && d.fingerprintSuccessful() },
 		trackedContainers: d.trackedContainers,
@@ -96,7 +100,7 @@ func (r *containerReconciler) removeDanglingContainersIteration() error {
 		return fmt.Errorf("failed to find untracked containers: %v", err)
 	}
 
-	if len(untracked) == 0 {
+	if untracked.Empty() {
 		return nil
 	}
 
@@ -105,9 +109,14 @@ func (r *containerReconciler) removeDanglingContainersIteration() error {
 		return nil
 	}
 
-	for _, id := range untracked {
+	dockerClient, err := r.getClient()
+	if err != nil {
+		return err
+	}
+
+	for _, id := range untracked.Slice() {
 		ctx, cancel := r.dockerAPIQueryContext()
-		err := client.RemoveContainer(docker.RemoveContainerOptions{
+		err := dockerClient.RemoveContainer(docker.RemoveContainerOptions{
 			Context: ctx,
 			ID:      id,
 			Force:   true,
@@ -125,13 +134,18 @@ func (r *containerReconciler) removeDanglingContainersIteration() error {
 
 // untrackedContainers returns the ids of containers that suspected
 // to have been started by Nomad but aren't tracked by this driver
-func (r *containerReconciler) untrackedContainers(tracked map[string]bool, cutoffTime time.Time) ([]string, error) {
-	result := []string{}
+func (r *containerReconciler) untrackedContainers(tracked set.Collection[string], cutoffTime time.Time) (*set.Set[string], error) {
+	result := set.New[string](10)
 
 	ctx, cancel := r.dockerAPIQueryContext()
 	defer cancel()
 
-	cc, err := client.ListContainers(docker.ListContainersOptions{
+	dockerClient, err := r.getClient()
+	if err != nil {
+		return nil, err
+	}
+
+	cc, err := dockerClient.ListContainers(docker.ListContainersOptions{
 		Context: ctx,
 		All:     false, // only reconcile running containers
 	})
@@ -142,7 +156,7 @@ func (r *containerReconciler) untrackedContainers(tracked map[string]bool, cutof
 	cutoff := cutoffTime.Unix()
 
 	for _, c := range cc {
-		if tracked[c.ID] {
+		if tracked.Contains(c.ID) {
 			continue
 		}
 
@@ -154,9 +168,8 @@ func (r *containerReconciler) untrackedContainers(tracked map[string]bool, cutof
 			continue
 		}
 
-		result = append(result, c.ID)
+		result.Insert(c.ID)
 	}
-
 	return result, nil
 }
 
@@ -165,7 +178,7 @@ func (r *containerReconciler) untrackedContainers(tracked map[string]bool, cutof
 //
 // We'll try hitting Docker API on subsequent iteration.
 func (r *containerReconciler) dockerAPIQueryContext() (context.Context, context.CancelFunc) {
-	// use a reasoanble floor to avoid very small limit
+	// use a reasonable floor to avoid very small limit
 	timeout := 30 * time.Second
 
 	if timeout < r.config.period {
@@ -211,18 +224,15 @@ func hasNomadName(c docker.APIContainers) bool {
 			return true
 		}
 	}
-
 	return false
 }
 
-func (d *Driver) trackedContainers() map[string]bool {
-	d.tasks.lock.RLock()
-	defer d.tasks.lock.RUnlock()
-
-	r := make(map[string]bool, len(d.tasks.store))
-	for _, h := range d.tasks.store {
-		r[h.containerID] = true
-	}
-
-	return r
+// trackedContainers returns the set of container IDs of containers that were
+// started by Driver and are expected to be running. This includes both normal
+// Task containers, as well as infra pause containers.
+func (d *Driver) trackedContainers() set.Collection[string] {
+	// collect the task containers
+	ids := d.tasks.IDs()
+	// now also accumulate pause containers
+	return d.pauseContainers.union(ids)
 }

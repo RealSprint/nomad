@@ -1,9 +1,12 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package fingerprint
 
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -12,7 +15,6 @@ import (
 
 	cleanhttp "github.com/hashicorp/go-cleanhttp"
 	log "github.com/hashicorp/go-hclog"
-
 	"github.com/hashicorp/nomad/helper/useragent"
 	"github.com/hashicorp/nomad/nomad/structs"
 )
@@ -79,7 +81,7 @@ func (f *EnvAzureFingerprint) Get(attribute string, format string) (string, erro
 	}
 
 	req := &http.Request{
-		Method: "GET",
+		Method: http.MethodGet,
 		URL:    parsedURL,
 		Header: http.Header{
 			"Metadata":   []string{"true"},
@@ -96,14 +98,14 @@ func (f *EnvAzureFingerprint) Get(attribute string, format string) (string, erro
 		return "", err
 	}
 
-	resp, err := ioutil.ReadAll(res.Body)
+	resp, err := io.ReadAll(res.Body)
 	res.Body.Close()
 	if err != nil {
 		f.logger.Error("error reading response body for Azure attribute", "attribute", attribute, "error", err)
 		return "", err
 	}
 
-	if res.StatusCode >= 400 {
+	if res.StatusCode >= http.StatusBadRequest {
 		return "", ReqError{res.StatusCode}
 	}
 

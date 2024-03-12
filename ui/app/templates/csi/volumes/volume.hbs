@@ -1,3 +1,8 @@
+{{!
+  Copyright (c) HashiCorp, Inc.
+  SPDX-License-Identifier: BUSL-1.1
+~}}
+
 {{#each this.breadcrumbs as |crumb|}}
   <Breadcrumb @crumb={{crumb}} />
 {{/each}}
@@ -39,7 +44,7 @@
           @source={{this.sortedWriteAllocations}}
           @class="with-foot" as |t|>
           <t.head>
-            <th class="is-narrow"></th>
+            <th class="is-narrow"><span class="visually-hidden">Driver Health, Scheduling, and Preemption</span></th>
             <th>ID</th>
             <th>Created</th>
             <th>Modified</th>
@@ -81,7 +86,7 @@
           @source={{this.sortedReadAllocations}}
           @class="with-foot" as |t|>
           <t.head>
-            <th class="is-narrow"></th>
+            <th class="is-narrow"><span class="visually-hidden">Driver Health, Scheduling, and Preemption</span></th>
             <th>ID</th>
             <th>Modified</th>
             <th>Created</th>

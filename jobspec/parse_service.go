@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package jobspec
 
 import (
@@ -105,7 +108,7 @@ func parseService(o *ast.ObjectItem) (*api.Service, error) {
 	// Filter connect
 	if co := listVal.Filter("connect"); len(co.Items) > 0 {
 		if len(co.Items) > 1 {
-			return nil, fmt.Errorf("connect '%s': cannot have more than 1 connect stanza", service.Name)
+			return nil, fmt.Errorf("connect '%s': cannot have more than 1 connect block", service.Name)
 		}
 		c, err := parseConnect(co.Items[0])
 		if err != nil {
@@ -290,7 +293,7 @@ func parseGateway(o *ast.ObjectItem) (*api.ConsulGateway, error) {
 	// extract and parse the ingress block
 	if io := listVal.Filter("ingress"); len(io.Items) > 0 {
 		if len(io.Items) > 1 {
-			return nil, fmt.Errorf("ingress, %s", "multiple ingress stanzas not allowed")
+			return nil, fmt.Errorf("ingress, %s", "multiple ingress blocks not allowed")
 		}
 
 		ingress, err := parseIngressConfigEntry(io.Items[0])
@@ -302,7 +305,7 @@ func parseGateway(o *ast.ObjectItem) (*api.ConsulGateway, error) {
 
 	if to := listVal.Filter("terminating"); len(to.Items) > 0 {
 		if len(to.Items) > 1 {
-			return nil, fmt.Errorf("terminating, %s", "multiple terminating stanzas not allowed")
+			return nil, fmt.Errorf("terminating, %s", "multiple terminating blocks not allowed")
 		}
 
 		terminating, err := parseTerminatingConfigEntry(to.Items[0])
@@ -314,7 +317,7 @@ func parseGateway(o *ast.ObjectItem) (*api.ConsulGateway, error) {
 
 	if mo := listVal.Filter("mesh"); len(mo.Items) > 0 {
 		if len(mo.Items) > 1 {
-			return nil, fmt.Errorf("mesh, %s", "multiple mesh stanzas not allowed")
+			return nil, fmt.Errorf("mesh, %s", "multiple mesh blocks not allowed")
 		}
 
 		// mesh should have no keys
@@ -664,6 +667,7 @@ func parseSidecarService(o *ast.ObjectItem) (*api.ConsulSidecarService, error) {
 		"proxy",
 		"tags",
 		"disable_default_tcp_check",
+		"meta",
 	}
 
 	if err := checkHCLKeys(o.Val, valid); err != nil {
@@ -819,7 +823,7 @@ func parseProxy(o *ast.ObjectItem) (*api.ConsulProxy, error) {
 		if e, err := parseExpose(eo.Items[0]); err != nil {
 			return nil, err
 		} else {
-			proxy.ExposeConfig = e
+			proxy.Expose = e
 		}
 	}
 
@@ -870,13 +874,13 @@ func parseExpose(eo *ast.ObjectItem) (*api.ConsulExposeConfig, error) {
 
 	po := listVal.Filter("path") // array
 	if len(po.Items) > 0 {
-		expose.Path = make([]*api.ConsulExposePath, len(po.Items))
+		expose.Paths = make([]*api.ConsulExposePath, len(po.Items))
 		for i := range po.Items {
 			p, err := parseExposePath(po.Items[i])
 			if err != nil {
 				return nil, err
 			}
-			expose.Path[i] = p
+			expose.Paths[i] = p
 		}
 	}
 
@@ -918,8 +922,12 @@ func parseExposePath(epo *ast.ObjectItem) (*api.ConsulExposePath, error) {
 func parseUpstream(uo *ast.ObjectItem) (*api.ConsulUpstream, error) {
 	valid := []string{
 		"destination_name",
+		"destination_peer",
+		"destination_type",
 		"local_bind_port",
 		"local_bind_address",
+		"local_bind_socket_path",
+		"local_bind_socket_mode",
 		"datacenter",
 		"mesh_gateway",
 	}
@@ -1020,6 +1028,7 @@ func parseChecks(service *api.Service, checkObjs *ast.ObjectList) error {
 			"task",
 			"success_before_passing",
 			"failures_before_critical",
+			"failures_before_warning",
 			"on_update",
 			"body",
 		}
@@ -1033,7 +1042,7 @@ func parseChecks(service *api.Service, checkObjs *ast.ObjectList) error {
 			return err
 		}
 
-		// HCL allows repeating stanzas so merge 'header' into a single
+		// HCL allows repeating blocks so merge 'header' into a single
 		// map[string][]string.
 		if headerI, ok := cm["header"]; ok {
 			headerRaw, ok := headerI.([]map[string]interface{})

@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 package drivers
 
 import (
@@ -6,8 +9,7 @@ import (
 	"github.com/hashicorp/nomad/helper/uuid"
 	"github.com/hashicorp/nomad/nomad/structs"
 	"github.com/hashicorp/nomad/plugins/drivers/proto"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/shoenig/test/must"
 )
 
 func TestResourceUsageRoundTrip(t *testing.T) {
@@ -33,17 +35,22 @@ func TestResourceUsageRoundTrip(t *testing.T) {
 	}
 
 	parsed := resourceUsageFromProto(resourceUsageToProto(input))
-
-	require.EqualValues(t, parsed, input)
+	must.Eq(t, parsed, input)
 }
 
 func TestTaskConfigRoundTrip(t *testing.T) {
 
 	input := &TaskConfig{
 		ID:            uuid.Generate(),
-		Name:          "task",
 		JobName:       "job",
+		JobID:         "job-id",
 		TaskGroupName: "group",
+		Name:          "task",
+		Namespace:     "default",
+		NodeName:      "node-1",
+		NodeID:        uuid.Generate(),
+		Env:           map[string]string{"gir": "zim"},
+		DeviceEnv:     map[string]string{"foo": "bar"},
 		Resources: &Resources{
 			NomadResources: &structs.AllocatedTaskResources{
 				Cpu: structs.AllocatedCpuResources{
@@ -82,8 +89,6 @@ func TestTaskConfigRoundTrip(t *testing.T) {
 				PropagationMode: "private",
 			},
 		},
-		Env:        map[string]string{"gir": "zim"},
-		DeviceEnv:  map[string]string{"foo": "bar"},
 		User:       "user",
 		AllocDir:   "allocDir",
 		StdoutPath: "stdout",
@@ -102,8 +107,7 @@ func TestTaskConfigRoundTrip(t *testing.T) {
 	}
 
 	parsed := taskConfigFromProto(taskConfigToProto(input))
-
-	require.EqualValues(t, input, parsed)
+	must.Eq(t, input, parsed)
 
 }
 
@@ -133,7 +137,7 @@ func Test_networkCreateRequestFromProto(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			actualOutput := networkCreateRequestFromProto(tc.inputPB)
-			assert.Equal(t, tc.expectedOutput, actualOutput, tc.name)
+			must.Eq(t, tc.expectedOutput, actualOutput)
 		})
 	}
 }

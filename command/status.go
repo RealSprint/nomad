@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
@@ -23,6 +26,9 @@ Usage: nomad status [options] <identifier>
   Display the status output for any given resource. The command will
   detect the type of resource being queried and display the appropriate
   status output.
+
+  If no arguments are provided, the command will fallback to "nomad job status",
+  which will list all jobs.
 
 General Options:
 

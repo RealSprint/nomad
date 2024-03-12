@@ -1,10 +1,13 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: MPL-2.0
+
 //go:build !windows
 // +build !windows
 
 package hostnames
 
 import (
-	"io/ioutil"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -105,7 +108,7 @@ func TestGenerateEtcHostsMount(t *testing.T) {
 			} else {
 				require.NotNil(got)
 				require.FileExists(dest)
-				tmpHosts, err := ioutil.ReadFile(dest)
+				tmpHosts, err := os.ReadFile(dest)
 				require.NoError(err)
 				for _, line := range tc.expected {
 					require.Contains(string(tmpHosts), line)

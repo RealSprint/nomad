@@ -22,15 +22,14 @@ inside the plugin's tasks.
 
 ## CSI Plugins
 
-Every storage vendor has its own APIs and workflows, and the
-industry-standard Container Storage Interface specification unifies
-these APIs in a way that's agnostic to both the storage vendor and the
-container orchestrator. Each storage provider can build its own CSI
-plugin. Jobs can claim storage volumes from AWS Elastic Block Storage
-(EBS) volumes, GCP persistent disks, Ceph, Portworx, vSphere, etc. The
-Nomad scheduler will be aware of volumes created by CSI plugins and
-schedule workloads based on the availability of volumes on a given
-Nomad client node.
+Every storage vendor has its own APIs and workflows, and the industry-standard
+Container Storage Interface specification unifies these APIs in a way that's
+agnostic to both the storage vendor and the container orchestrator. Each storage
+provider can build its own CSI plugin. Jobs can claim storage volumes from AWS
+Elastic Block Storage (EBS) volumes, GCP persistent disks, Ceph, Portworx,
+etc. The Nomad scheduler will be aware of volumes created by CSI plugins and
+schedule workloads based on the availability of volumes on a given Nomad client
+node.
 
 A list of available CSI plugins can be found in the [Kubernetes CSI
 documentation][csi-drivers-list]. Spec-compliant plugins should work with Nomad.
@@ -140,4 +139,4 @@ volume’s claim capacity has been freed up for scheduling.
 
 [csi-spec]: https://github.com/container-storage-interface/spec
 [csi-drivers-list]: https://kubernetes-csi.github.io/docs/drivers.html
-[csi_plugin]: /docs/job-specification/csi_plugin
+[csi_plugin]: /nomad/docs/job-specification/csi_plugin

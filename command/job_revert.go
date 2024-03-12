@@ -1,3 +1,6 @@
+// Copyright (c) HashiCorp, Inc.
+// SPDX-License-Identifier: BUSL-1.1
+
 package command
 
 import (
@@ -22,7 +25,10 @@ Usage: nomad job revert [options] <job> <version>
   versions to revert to can be found using "nomad job history" command.
 
   When ACLs are enabled, this command requires a token with the 'submit-job'
-  and 'list-jobs' capabilities for the job's namespace.
+  capability for the job's namespace. The 'list-jobs' capability is required to
+  run the command with a job prefix instead of the exact job ID. The 'read-job'
+  capability is required to monitor the resulting evaluation when -detach is
+  not used.
 
 General Options:
 
@@ -126,7 +132,7 @@ func (c *JobRevertCommand) Run(args []string) int {
 		vaultToken = os.Getenv("VAULT_TOKEN")
 	}
 
-	jobID := strings.TrimSpace(args[0])
+	// Parse the job version
 	revertVersion, ok, err := parseVersion(args[1])
 	if !ok {
 		c.Ui.Error("The job version to revert to must be specified using the -job-version flag")
@@ -138,25 +144,16 @@ func (c *JobRevertCommand) Run(args []string) int {
 	}
 
 	// Check if the job exists
-	jobs, _, err := client.Jobs().PrefixList(jobID)
+	jobIDPrefix := strings.TrimSpace(args[0])
+	jobID, namespace, err := c.JobIDByPrefix(client, jobIDPrefix, nil)
 	if err != nil {
-		c.Ui.Error(fmt.Sprintf("Error listing jobs: %s", err))
+		c.Ui.Error(err.Error())
 		return 1
-	}
-	if len(jobs) == 0 {
-		c.Ui.Error(fmt.Sprintf("No job(s) with prefix or id %q found", jobID))
-		return 1
-	}
-	if len(jobs) > 1 {
-		if (jobID != jobs[0].ID) || (c.allNamespaces() && jobs[0].ID == jobs[1].ID) {
-			c.Ui.Error(fmt.Sprintf("Prefix matched multiple jobs\n\n%s", createStatusListOutput(jobs, c.allNamespaces())))
-			return 1
-		}
 	}
 
 	// Prefix lookup matched a single job
-	q := &api.WriteOptions{Namespace: jobs[0].JobSummary.Namespace}
-	resp, _, err := client.Jobs().Revert(jobs[0].ID, revertVersion, nil, q, consulToken, vaultToken)
+	q := &api.WriteOptions{Namespace: namespace}
+	resp, _, err := client.Jobs().Revert(jobID, revertVersion, nil, q, consulToken, vaultToken)
 	if err != nil {
 		c.Ui.Error(fmt.Sprintf("Error retrieving job versions: %s", err))
 		return 1

@@ -1,3 +1,8 @@
+{{!
+  Copyright (c) HashiCorp, Inc.
+  SPDX-License-Identifier: BUSL-1.1
+~}}
+
 <ListAccordion data-test-scale-events @source={{@events}} @key="time" as |a|>
   <a.head
     @buttonLabel="details"
@@ -23,20 +28,16 @@
       </div>
       <div class="column is-2">
         {{#if a.item.hasCount}}
-          <span
-            data-test-count-icon
-            class="tooltip"
-            aria-label="Count
+          <Hds::TooltipButton data-test-count-icon @text="Count
               {{if a.item.increased "increased" "decreased"}}
                to
-              {{a.item.count}}"
-          >
+              {{a.item.count}}" aria-label="More information">
             {{#if a.item.increased}}
-              {{x-icon "arrow-up" class="is-danger"}}
+              <FlightIcon @name="arrow-up" />
             {{else}}
-              {{x-icon "arrow-down" class="is-primary"}}
+              <FlightIcon @name="arrow-down" />
             {{/if}}
-          </span>
+          </Hds::TooltipButton>
           <span data-test-count>
             {{a.item.count}}
           </span>
