@@ -9635,10 +9635,10 @@ SETEQUALS:
 
 // Affinity is used to score placement options based on a weight
 type Affinity struct {
-	LTarget string // Left-hand target
-	RTarget string // Right-hand target
-	Operand string // Affinity operand (<=, <, =, !=, >, >=), set_contains_all, set_contains_any
-	Weight  int8   // Weight applied to nodes that match the affinity. Can be negative
+	LTarget		      string // Left-hand target
+	RTarget		      string // Right-hand target
+	Operand		      string // Affinity operand (<=, <, =, !=, >, >=), set_contains_all, set_contains_any
+	Weight		      int8   // Weight applied to nodes that match the affinity. Can be negative
 	NormalizeNodeAffinity bool
 }
 
