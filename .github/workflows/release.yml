@@ -139,7 +139,8 @@ jobs:
       - name: Invoke build workflow
         id: invoke-build
         env:
-          GH_TOKEN: ${{ env.ELEVATED_GITHUB_TOKEN || secrets.ELEVATED_GITHUB_TOKEN }}
+          # GH_TOKEN: ${{ env.ELEVATED_GITHUB_TOKEN || secrets.ELEVATED_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh workflow run build.yml --ref ${{ github.ref_name }} --field build-ref=${{ steps.commit-change-push.outputs.build-ref }} --field make-prerelease=false
 
