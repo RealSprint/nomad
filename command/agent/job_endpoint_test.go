@@ -2569,7 +2569,7 @@ func TestJobs_ApiJobToStructsJob(t *testing.T) {
 				RTarget: "b",
 				Operand: "c",
 				Weight:  pointer.Of(int8(50)),
-				NormalizeNodeAffinity: true,
+				NormalizeNodeAffinity: pointer.Of(bool(true)),
 			},
 		},
 		Update: &api.UpdateStrategy{
@@ -2642,7 +2642,7 @@ func TestJobs_ApiJobToStructsJob(t *testing.T) {
 						RTarget: "y",
 						Operand: "z",
 						Weight:  pointer.Of(int8(100)),
-						NormalizeNodeAffinity: true,
+						NormalizeNodeAffinity: pointer.Of(bool(true)),
 					},
 				},
 				RestartPolicy: &api.RestartPolicy{
@@ -2780,7 +2780,7 @@ func TestJobs_ApiJobToStructsJob(t *testing.T) {
 								RTarget: "b",
 								Operand: "c",
 								Weight:  pointer.Of(int8(50)),
-								NormalizeNodeAffinity: true,
+								NormalizeNodeAffinity: pointer.Of(bool(true)),
 							},
 						},
 						Identities: []*api.WorkloadIdentity{
@@ -2895,7 +2895,7 @@ func TestJobs_ApiJobToStructsJob(t *testing.T) {
 											RTarget: "b",
 											Operand: "c",
 											Weight:  pointer.Of(int8(50)),
-											NormalizeNodeAffinity: true,
+											NormalizeNodeAffinity: pointer.Of(bool(true)),
 										},
 									},
 								},
