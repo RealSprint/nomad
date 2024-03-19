@@ -202,6 +202,10 @@ func NewAffinity(lTarget string, operand string, rTarget string, weight int8, no
 }
 
 func (a *Affinity) Canonicalize() {
+	if a.Weight == nil {
+		a.Weight = pointerOf(int8(50))
+	}
+
 	if a.NormalizeNodeAffinity == nil {
 		a.NormalizeNodeAffinity = pointerOf(bool(true))
 	}
