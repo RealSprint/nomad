@@ -84,4 +84,21 @@ module.exports = [
     destination: '/nomad/docs/integrations/consul/service-mesh',
     permanent: true,
   },
+  {
+    source: '/nomad/tools/autoscaling/agent/source',
+    destination: '/nomad/tools/autoscaling/agent/policy',
+    permanent: true,
+  },
+  // permanently remove /plugins/drivers/remote
+  {
+    source: '/nomad/plugins/drivers/remote/:slug*',
+    destination: 'nomad/plugins/drivers/',
+    permanent: true,
+  },
+  // permanently remove /plugins/drivers/remote
+  {
+    source: '/nomad/plugins/drivers/community/lxc',
+    destination: '/nomad/plugins/drivers/community/',
+    permanent: true,
+  },
 ]

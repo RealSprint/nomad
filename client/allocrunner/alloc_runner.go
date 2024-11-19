@@ -6,6 +6,7 @@ package allocrunner
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sync"
 	"time"
 
@@ -31,6 +32,7 @@ import (
 	"github.com/hashicorp/nomad/client/serviceregistration/wrapper"
 	cstate "github.com/hashicorp/nomad/client/state"
 	cstructs "github.com/hashicorp/nomad/client/structs"
+	"github.com/hashicorp/nomad/client/taskenv"
 	"github.com/hashicorp/nomad/client/vaultclient"
 	"github.com/hashicorp/nomad/client/widmgr"
 	"github.com/hashicorp/nomad/helper/pointer"
@@ -38,7 +40,6 @@ import (
 	"github.com/hashicorp/nomad/nomad/structs"
 	"github.com/hashicorp/nomad/plugins/device"
 	"github.com/hashicorp/nomad/plugins/drivers"
-	"golang.org/x/exp/maps"
 )
 
 // allocRunner is used to run all the tasks in a given allocation
@@ -269,12 +270,10 @@ func NewAllocRunner(config *config.AllocRunnerConfig) (interfaces.AllocRunner, e
 	ar.allocBroadcaster = cstructs.NewAllocBroadcaster(ar.logger)
 
 	// Create alloc dir
-	//
-	// TODO(shoenig): need to decide what version of alloc dir to use, and the
-	// return value should probably now be an interface
 	ar.allocDir = allocdir.NewAllocDir(
 		ar.logger,
 		config.ClientConfig.AllocDir,
+		config.ClientConfig.AllocMountsDir,
 		alloc.ID,
 	)
 
@@ -284,8 +283,17 @@ func NewAllocRunner(config *config.AllocRunnerConfig) (interfaces.AllocRunner, e
 	ar.shutdownDelayCtx = shutdownDelayCtx
 	ar.shutdownDelayCancelFn = shutdownDelayCancel
 
+	// Create a *taskenv.Builder for the allocation so the WID manager can
+	// interpolate services with the allocation and tasks as needed
+	envBuilder := taskenv.NewBuilder(
+		config.ClientConfig.Node,
+		ar.Alloc(),
+		nil,
+		config.ClientConfig.Region,
+	).SetAllocDir(ar.allocDir.AllocDirPath())
+
 	// initialize the workload identity manager
-	widmgr := widmgr.NewWIDMgr(ar.widsigner, alloc, ar.stateDB, ar.logger)
+	widmgr := widmgr.NewWIDMgr(ar.widsigner, alloc, ar.stateDB, ar.logger, envBuilder)
 	ar.widmgr = widmgr
 
 	// Initialize the runners hooks.
@@ -308,7 +316,7 @@ func (ar *allocRunner) initTaskRunners(tasks []*structs.Task) error {
 			Alloc:               ar.alloc,
 			ClientConfig:        ar.clientConfig,
 			Task:                task,
-			TaskDir:             ar.allocDir.NewTaskDir(task.Name),
+			TaskDir:             ar.allocDir.NewTaskDir(task),
 			Logger:              ar.logger,
 			StateDB:             ar.stateDB,
 			StateUpdater:        ar,
@@ -917,6 +925,12 @@ func (ar *allocRunner) SetNetworkStatus(s *structs.AllocNetworkStatus) {
 	ans := s.Copy()
 	ar.state.NetworkStatus = ans
 	ar.hookResources.SetAllocNetworkStatus(ans)
+
+	// Iterate each task runner and add the status information. This allows the
+	// task to build the environment variables with this information available.
+	for _, tr := range ar.tasks {
+		tr.SetNetworkStatus(ans)
+	}
 }
 
 func (ar *allocRunner) NetworkStatus() *structs.AllocNetworkStatus {

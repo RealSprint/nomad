@@ -7,7 +7,9 @@ package numalib
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -37,6 +39,7 @@ const (
 	cpuBaseFile    = sysRoot + "/cpu/cpu%d/cpufreq/base_frequency"
 	cpuSocketFile  = sysRoot + "/cpu/cpu%d/topology/physical_package_id"
 	cpuSiblingFile = sysRoot + "/cpu/cpu%d/topology/thread_siblings_list"
+	deviceFiles    = "/sys/bus/pci/devices"
 )
 
 // pathReaderFn is a path reader function, injected into all value getters to
@@ -58,38 +61,56 @@ func (s *Sysfs) ScanSystem(top *Topology) {
 
 	// detect core performance data
 	s.discoverCores(top, os.ReadFile)
+
+	// detect pci device bus associativity
+	s.discoverPCI(top, os.ReadFile)
 }
 
 func (*Sysfs) available() bool {
 	return true
 }
 
+func (*Sysfs) discoverPCI(st *Topology, readerFunc pathReaderFn) {
+	st.BusAssociativity = make(map[string]hw.NodeID)
+
+	filepath.WalkDir(deviceFiles, func(path string, de fs.DirEntry, err error) error {
+		device := filepath.Base(path)
+		numaFile := filepath.Join(path, "numa_node")
+		node, err := getNumeric[int](numaFile, 64, readerFunc)
+		if err == nil && node >= 0 {
+			st.BusAssociativity[device] = hw.NodeID(node)
+		}
+		return nil
+	})
+}
+
 func (*Sysfs) discoverOnline(st *Topology, readerFunc pathReaderFn) {
 	ids, err := getIDSet[hw.NodeID](nodeOnline, readerFunc)
 	if err == nil {
-		st.NodeIDs = ids
+		st.nodeIDs = ids
+		st.Nodes = st.nodeIDs.Slice()
 	}
 }
 
 func (*Sysfs) discoverCosts(st *Topology, readerFunc pathReaderFn) {
-	if st.NodeIDs.Empty() {
+	if st.nodeIDs.Empty() {
 		return
 	}
 
-	dimension := st.NodeIDs.Size()
-	st.Distances = make(SLIT, st.NodeIDs.Size())
+	dimension := st.nodeIDs.Size()
+	st.Distances = make(SLIT, st.nodeIDs.Size())
 	for i := 0; i < dimension; i++ {
 		st.Distances[i] = make([]Cost, dimension)
 	}
 
-	_ = st.NodeIDs.ForEach(func(id hw.NodeID) error {
+	_ = st.nodeIDs.ForEach(func(id hw.NodeID) error {
 		s, err := getString(distanceFile, readerFunc, id)
 		if err != nil {
 			return err
 		}
 
 		for i, c := range strings.Fields(s) {
-			cost, _ := strconv.Atoi(c)
+			cost, _ := strconv.ParseUint(c, 10, 8)
 			st.Distances[id][i] = Cost(cost)
 		}
 		return nil
@@ -104,20 +125,21 @@ func (*Sysfs) discoverCores(st *Topology, readerFunc pathReaderFn) {
 	st.Cores = make([]Core, onlineCores.Size())
 
 	switch {
-	case st.NodeIDs == nil:
+	case st.nodeIDs == nil:
 		// We did not find node data, no node to associate with
 		_ = onlineCores.ForEach(func(core hw.CoreID) error {
-			st.NodeIDs = idset.From[hw.NodeID]([]hw.NodeID{0})
+			st.nodeIDs = idset.From[hw.NodeID]([]hw.NodeID{0})
 			const node = 0
 			const socket = 0
-			cpuMax, _ := getNumeric[hw.KHz](cpuMaxFile, readerFunc, core)
-			base, _ := getNumeric[hw.KHz](cpuBaseFile, readerFunc, core)
+			cpuMax, _ := getNumeric[hw.KHz](cpuMaxFile, 64, readerFunc, core)
+			base, _ := getNumeric[hw.KHz](cpuBaseFile, 64, readerFunc, core)
 			st.insert(node, socket, core, Performance, cpuMax, base)
+			st.Nodes = st.nodeIDs.Slice()
 			return nil
 		})
 	default:
 		// We found node data, associate cores to nodes
-		_ = st.NodeIDs.ForEach(func(node hw.NodeID) error {
+		_ = st.nodeIDs.ForEach(func(node hw.NodeID) error {
 			s, err := readerFunc(fmt.Sprintf(cpulistFile, node))
 			if err != nil {
 				return err
@@ -126,9 +148,9 @@ func (*Sysfs) discoverCores(st *Topology, readerFunc pathReaderFn) {
 			cores := idset.Parse[hw.CoreID](string(s))
 			_ = cores.ForEach(func(core hw.CoreID) error {
 				// best effort, zero values are defaults
-				socket, _ := getNumeric[hw.SocketID](cpuSocketFile, readerFunc, core)
-				cpuMax, _ := getNumeric[hw.KHz](cpuMaxFile, readerFunc, core)
-				base, _ := getNumeric[hw.KHz](cpuBaseFile, readerFunc, core)
+				socket, _ := getNumeric[hw.SocketID](cpuSocketFile, 8, readerFunc, core)
+				cpuMax, _ := getNumeric[hw.KHz](cpuMaxFile, 64, readerFunc, core)
+				base, _ := getNumeric[hw.KHz](cpuBaseFile, 64, readerFunc, core)
 				siblings, _ := getIDSet[hw.CoreID](cpuSiblingFile, readerFunc, core)
 
 				// if we get an incorrect core number, this means we're not getting the right
@@ -154,13 +176,13 @@ func getIDSet[T idset.ID](path string, readerFunc pathReaderFn, args ...any) (*i
 	return idset.Parse[T](string(s)), nil
 }
 
-func getNumeric[T int | idset.ID](path string, readerFunc pathReaderFn, args ...any) (T, error) {
+func getNumeric[T int | idset.ID](path string, bitSize int, readerFunc pathReaderFn, args ...any) (T, error) {
 	path = fmt.Sprintf(path, args...)
 	s, err := readerFunc(path)
 	if err != nil {
 		return 0, err
 	}
-	i, err := strconv.Atoi(strings.TrimSpace(string(s)))
+	i, err := strconv.ParseInt(strings.TrimSpace(string(s)), 10, bitSize)
 	if err != nil {
 		return 0, err
 	}
@@ -231,7 +253,7 @@ func (s *Fallback) ScanSystem(top *Topology) {
 	broken := false
 
 	switch {
-	case top.NodeIDs.Empty():
+	case top.nodeIDs.Empty():
 		broken = true
 	case len(top.Distances) == 0:
 		broken = true
@@ -251,7 +273,8 @@ func (s *Fallback) ScanSystem(top *Topology) {
 
 	// we have a broken topology; reset it and fallback to the generic scanner
 	// basically treating this client like a windows / unsupported OS
-	top.NodeIDs = nil
+	top.nodeIDs = nil
+	top.Nodes = nil
 	top.Distances = nil
 	top.Cores = nil
 

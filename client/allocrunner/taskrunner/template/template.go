@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -19,17 +18,14 @@ import (
 
 	ctconf "github.com/hashicorp/consul-template/config"
 	"github.com/hashicorp/consul-template/manager"
-	"github.com/hashicorp/consul-template/renderer"
 	"github.com/hashicorp/consul-template/signals"
 	envparse "github.com/hashicorp/go-envparse"
 	"github.com/hashicorp/go-hclog"
 	multierror "github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/nomad/client/allocrunner/taskrunner/interfaces"
-	trenderer "github.com/hashicorp/nomad/client/allocrunner/taskrunner/template/renderer"
 	"github.com/hashicorp/nomad/client/config"
 	"github.com/hashicorp/nomad/client/taskenv"
 	"github.com/hashicorp/nomad/helper/pointer"
-	"github.com/hashicorp/nomad/helper/subproc"
 	"github.com/hashicorp/nomad/nomad/structs"
 	structsc "github.com/hashicorp/nomad/nomad/structs/config"
 )
@@ -63,10 +59,6 @@ type TaskTemplateManager struct {
 
 	// runner is the consul-template runner
 	runner *manager.Runner
-
-	// handle is used to execute scripts
-	handle     interfaces.ScriptExecutor
-	handleLock sync.Mutex
 
 	// signals is a lookup map from the string representation of a signal to its
 	// actual signal
@@ -194,13 +186,6 @@ func NewTaskTemplateManager(config *TaskTemplateManagerConfig) (*TaskTemplateMan
 		tm.signals[tmpl.ChangeSignal] = sig
 	}
 
-	// the platform sandbox needs to be created before we construct the runner
-	// so that reading the template is sandboxed
-	err := createPlatformSandbox(config)
-	if err != nil {
-		return nil, err
-	}
-
 	// Build the consul-template runner
 	runner, lookup, err := templateRunner(config)
 	if err != nil {
@@ -229,16 +214,6 @@ func (tm *TaskTemplateManager) Stop() {
 	if tm.runner != nil {
 		tm.runner.Stop()
 	}
-
-	destroyPlatformSandbox(tm.config)
-}
-
-// SetDriverHandle sets the executor
-func (tm *TaskTemplateManager) SetDriverHandle(executor interfaces.ScriptExecutor) {
-	tm.handleLock.Lock()
-	defer tm.handleLock.Unlock()
-	tm.handle = executor
-
 }
 
 // run is the long lived loop that handles errors and templates being rendered
@@ -250,10 +225,14 @@ func (tm *TaskTemplateManager) run() {
 		return
 	}
 
-	// Start the runner
+	// Start the runner. We don't defer a call to tm.runner.Stop here so that
+	// the runner can keep dynamic secrets alive during the task's
+	// kill_timeout. We stop the runner in the Stop hook, which is guaranteed to
+	// be called during task kill.
 	go tm.runner.Start()
 
-	// Block till all the templates have been rendered
+	// Block till all the templates have been rendered or until an error has
+	// triggered taskrunner Kill, which closes tm.shutdownCh before we return
 	tm.handleFirstRender()
 
 	// Detect if there was a shutdown.
@@ -298,6 +277,10 @@ func (tm *TaskTemplateManager) handleFirstRender() {
 		<-eventTimer.C
 	}
 
+	// dirtyEvents are events that actually rendered to disk and need to trigger
+	// their respective change_mode operation
+	dirtyEvents := map[string]*manager.RenderEvent{}
+
 	// outstandingEvent tracks whether there is an outstanding event that should
 	// be fired.
 	outstandingEvent := false
@@ -313,6 +296,9 @@ WAIT:
 				continue
 			}
 
+			// we don't return here so that we wait for tm.shutdownCh in the
+			// next pass thru the loop; this ensures the callers doesn't unblock
+			// prematurely
 			tm.config.Lifecycle.Kill(context.Background(),
 				structs.NewTaskEvent(structs.TaskKilling).
 					SetFailsTask().
@@ -326,22 +312,25 @@ WAIT:
 				continue
 			}
 
-			dirty := false
 			for _, event := range events {
 				// This template hasn't been rendered
 				if event.LastWouldRender.IsZero() {
 					continue WAIT
 				}
-				if event.WouldRender && event.DidRender {
-					dirty = true
+				// If the template _actually_ rendered to disk, mark it
+				// dirty. We track events here so that onTemplateRendered
+				// doesn't go back to the runner's RenderedEvents and process
+				// events that don't make us dirty.
+				if !event.LastDidRender.IsZero() {
+					dirtyEvents[event.Template.ID()] = event
 				}
 			}
 
 			// if there's a driver handle then the task is already running and
 			// that changes how we want to behave on first render
-			if dirty && tm.config.Lifecycle.IsRunning() {
+			if len(dirtyEvents) > 0 && tm.config.Lifecycle.IsRunning() {
 				handledRenders := make(map[string]time.Time, len(tm.config.Templates))
-				tm.onTemplateRendered(handledRenders, time.Time{})
+				tm.onTemplateRendered(handledRenders, time.Time{}, dirtyEvents)
 			}
 
 			break WAIT
@@ -427,17 +416,21 @@ func (tm *TaskTemplateManager) handleTemplateRerenders(allRenderedTime time.Time
 				continue
 			}
 
+			// we don't return here so that we wait for tm.shutdownCh in the
+			// next pass thru the loop; this ensures the callers doesn't unblock
+			// prematurely
 			tm.config.Lifecycle.Kill(context.Background(),
 				structs.NewTaskEvent(structs.TaskKilling).
 					SetFailsTask().
 					SetDisplayMessage(fmt.Sprintf("Template failed: %v", err)))
 		case <-tm.runner.TemplateRenderedCh():
-			tm.onTemplateRendered(handledRenders, allRenderedTime)
+			events := tm.runner.RenderEvents()
+			tm.onTemplateRendered(handledRenders, allRenderedTime, events)
 		}
 	}
 }
 
-func (tm *TaskTemplateManager) onTemplateRendered(handledRenders map[string]time.Time, allRenderedTime time.Time) {
+func (tm *TaskTemplateManager) onTemplateRendered(handledRenders map[string]time.Time, allRenderedTime time.Time, events map[string]*manager.RenderEvent) {
 
 	var handling []string
 	signals := make(map[string]struct{})
@@ -445,7 +438,6 @@ func (tm *TaskTemplateManager) onTemplateRendered(handledRenders map[string]time
 	restart := false
 	var splay time.Duration
 
-	events := tm.runner.RenderEvents()
 	for id, event := range events {
 
 		// First time through
@@ -586,19 +578,10 @@ func (tm *TaskTemplateManager) handleScriptError(script *structs.ChangeScript, m
 func (tm *TaskTemplateManager) processScript(script *structs.ChangeScript, wg *sync.WaitGroup) {
 	defer wg.Done()
 
-	if tm.handle == nil {
-		failureMsg := fmt.Sprintf(
-			"Template failed to run script %v with arguments %v because task driver doesn't support the exec operation",
-			script.Command,
-			script.Args,
-		)
-		tm.handleScriptError(script, failureMsg)
-		return
-	}
-	_, exitCode, err := tm.handle.Exec(script.Timeout, script.Command, script.Args)
+	_, exitCode, err := tm.config.Lifecycle.Exec(script.Timeout, script.Command, script.Args)
 	if err != nil {
 		failureMsg := fmt.Sprintf(
-			"Template failed to run script %v with arguments %v on change: %v Exit code: %v",
+			"Template failed to run script %v with arguments %v on change: %v. Exit code: %v",
 			script.Command,
 			script.Args,
 			err,
@@ -609,7 +592,7 @@ func (tm *TaskTemplateManager) processScript(script *structs.ChangeScript, wg *s
 	}
 	if exitCode != 0 {
 		failureMsg := fmt.Sprintf(
-			"Template ran script %v with arguments %v on change but it exited with code code: %v",
+			"Template ran script %v with arguments %v on change but it exited with code: %v",
 			script.Command,
 			script.Args,
 			exitCode,
@@ -620,10 +603,9 @@ func (tm *TaskTemplateManager) processScript(script *structs.ChangeScript, wg *s
 	tm.config.Events.EmitEvent(structs.NewTaskEvent(structs.TaskHookMessage).
 		SetDisplayMessage(
 			fmt.Sprintf(
-				"Template successfully ran script %v with arguments: %v. Exit code: %v",
+				"Template successfully ran script %v with arguments: %v. Exit code: 0",
 				script.Command,
 				script.Args,
-				exitCode,
 			)))
 }
 
@@ -1002,90 +984,6 @@ type sandboxConfig struct {
 	group       string
 	taskID      string
 	contents    []byte
-}
-
-func ReaderFn(taskID, taskDir string, sandboxEnabled bool) func(string) ([]byte, error) {
-	if !sandboxEnabled {
-		return nil
-	}
-	thisBin := subproc.Self()
-
-	return func(src string) ([]byte, error) {
-
-		sandboxCfg := &sandboxConfig{
-			thisBin:     thisBin,
-			sandboxPath: taskDir,
-			sourcePath:  src,
-			taskID:      taskID,
-		}
-
-		stdout, stderr, code, err := readTemplateFromSandbox(sandboxCfg)
-		if err != nil && code != 0 {
-			return nil, fmt.Errorf("%v: %s", err, string(stderr))
-		}
-
-		// this will get wrapped in CT log formatter
-		fmt.Fprintf(os.Stderr, "[DEBUG] %s", string(stderr))
-		return stdout, nil
-	}
-}
-
-func RenderFn(taskID, taskDir string, sandboxEnabled bool) func(*renderer.RenderInput) (*renderer.RenderResult, error) {
-	if !sandboxEnabled {
-		return nil
-	}
-	thisBin := subproc.Self()
-
-	return func(i *renderer.RenderInput) (*renderer.RenderResult, error) {
-		wouldRender := false
-		didRender := false
-
-		sandboxCfg := &sandboxConfig{
-			thisBin:     thisBin,
-			sandboxPath: taskDir,
-			destPath:    i.Path,
-			perms:       strconv.FormatUint(uint64(i.Perms), 8),
-			user:        i.User,
-			group:       i.Group,
-			taskID:      taskID,
-			contents:    i.Contents,
-		}
-
-		logs, code, err := renderTemplateInSandbox(sandboxCfg)
-		if err != nil {
-			if len(logs) > 0 {
-				log.Printf("[ERROR] %v: %s", err, logs)
-			} else {
-				log.Printf("[ERROR] %v", err)
-			}
-			return &renderer.RenderResult{
-				DidRender:   false,
-				WouldRender: false,
-				Contents:    []byte{},
-			}, fmt.Errorf("template render subprocess failed: %w", err)
-		}
-		if code == trenderer.ExitWouldRenderButDidnt {
-			didRender = false
-			wouldRender = true
-		} else {
-			didRender = true
-			wouldRender = true
-		}
-
-		// the subprocess emits logs matching the consul-template runner, but we
-		// CT doesn't support hclog, so we just print the whole output here to
-		// stderr the same way CT does so the results look seamless
-		if len(logs) > 0 {
-			log.Printf("[DEBUG] %s", logs)
-		}
-
-		result := &renderer.RenderResult{
-			DidRender:   didRender,
-			WouldRender: wouldRender,
-			Contents:    i.Contents,
-		}
-		return result, nil
-	}
 }
 
 // loadTemplateEnv loads task environment variables from all templates.

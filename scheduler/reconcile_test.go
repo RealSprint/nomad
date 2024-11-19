@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hashicorp/go-set/v2"
+	"github.com/hashicorp/go-set/v3"
 	"github.com/hashicorp/nomad/ci"
 	"github.com/hashicorp/nomad/helper/pointer"
 	"github.com/hashicorp/nomad/helper/testlog"
@@ -337,7 +337,9 @@ func buildDisconnectedNodes(allocs []*structs.Allocation, count int) map[string]
 
 func buildResumableAllocations(count int, clientStatus, desiredStatus string, nodeScore float64) (*structs.Job, []*structs.Allocation) {
 	job := mock.Job()
-	job.TaskGroups[0].MaxClientDisconnect = pointer.Of(5 * time.Minute)
+	job.TaskGroups[0].Disconnect = &structs.DisconnectStrategy{
+		LostAfter: 5 * time.Minute,
+	}
 	job.TaskGroups[0].Count = count
 
 	return job, buildAllocations(job, count, clientStatus, desiredStatus, nodeScore)
@@ -940,7 +942,7 @@ func TestReconciler_LostNode_PreventRescheduleOnLost(t *testing.T) {
 			maxClientDisconnect:     pointer.Of(10 * time.Second),
 			PreventRescheduleOnLost: false,
 			reschedulePolicy:        disabledReschedulePolicy,
-			expectPlace:             2,
+			expectPlace:             1,
 			expectStop:              1,
 			expectIgnore:            4,
 			expectDisconnect:        1,
@@ -951,13 +953,12 @@ func TestReconciler_LostNode_PreventRescheduleOnLost(t *testing.T) {
 			maxClientDisconnect:     pointer.Of(10 * time.Second),
 			PreventRescheduleOnLost: true,
 			reschedulePolicy:        disabledReschedulePolicy,
-			expectPlace:             1, // This behaviour needs to be verified
+			expectPlace:             0,
 			expectStop:              0,
 			expectIgnore:            5,
 			expectDisconnect:        2,
 			allocStatus:             structs.AllocClientStatusUnknown,
 		},
-
 		{
 			name:                    "PreventRescheduleOnLost off, MaxClientDisconnect off, Reschedule on",
 			maxClientDisconnect:     nil,
@@ -991,8 +992,8 @@ func TestReconciler_LostNode_PreventRescheduleOnLost(t *testing.T) {
 				Attempts: 1,
 			},
 			expectPlace:      3,
-			expectStop:       1,
-			expectIgnore:     3,
+			expectStop:       2,
+			expectIgnore:     2,
 			expectDisconnect: 1,
 			allocStatus:      structs.AllocClientStatusLost,
 		},
@@ -1624,7 +1625,7 @@ func TestReconciler_MultiTG_SingleUpdateBlock(t *testing.T) {
 		}
 	}
 
-	d := structs.NewDeployment(job, 50)
+	d := structs.NewDeployment(job, 50, time.Now().UnixNano())
 	d.TaskGroups[job.TaskGroups[0].Name] = &structs.DeploymentState{
 		DesiredTotal: 10,
 	}
@@ -2383,7 +2384,7 @@ func TestReconciler_RescheduleNow_Service_WithCanaries(t *testing.T) {
 	job2 := job.Copy()
 	job2.Version++
 
-	d := structs.NewDeployment(job2, 50)
+	d := structs.NewDeployment(job2, 50, time.Now().UnixNano())
 	d.StatusDescription = structs.DeploymentStatusDescriptionRunningNeedsPromotion
 	s := &structs.DeploymentState{
 		DesiredCanaries: 2,
@@ -2490,7 +2491,7 @@ func TestReconciler_RescheduleNow_Service_Canaries(t *testing.T) {
 	job2 := job.Copy()
 	job2.Version++
 
-	d := structs.NewDeployment(job2, 50)
+	d := structs.NewDeployment(job2, 50, time.Now().UnixNano())
 	d.StatusDescription = structs.DeploymentStatusDescriptionRunningNeedsPromotion
 	s := &structs.DeploymentState{
 		DesiredCanaries: 2,
@@ -2618,7 +2619,7 @@ func TestReconciler_RescheduleNow_Service_Canaries_Limit(t *testing.T) {
 	job2 := job.Copy()
 	job2.Version++
 
-	d := structs.NewDeployment(job2, 50)
+	d := structs.NewDeployment(job2, 50, time.Now().UnixNano())
 	d.StatusDescription = structs.DeploymentStatusDescriptionRunningNeedsPromotion
 	s := &structs.DeploymentState{
 		DesiredCanaries: 2,
@@ -2789,8 +2790,8 @@ func TestReconciler_CancelDeployment_JobStop(t *testing.T) {
 	job := mock.Job()
 	job.Stop = true
 
-	running := structs.NewDeployment(job, 50)
-	failed := structs.NewDeployment(job, 50)
+	running := structs.NewDeployment(job, 50, time.Now().UnixNano())
+	failed := structs.NewDeployment(job, 50, time.Now().UnixNano())
 	failed.Status = structs.DeploymentStatusFailed
 
 	cases := []struct {
@@ -2890,8 +2891,8 @@ func TestReconciler_CancelDeployment_JobUpdate(t *testing.T) {
 	job := mock.Job()
 
 	// Create two deployments
-	running := structs.NewDeployment(job, 50)
-	failed := structs.NewDeployment(job, 50)
+	running := structs.NewDeployment(job, 50, time.Now().UnixNano())
+	failed := structs.NewDeployment(job, 50, time.Now().UnixNano())
 	failed.Status = structs.DeploymentStatusFailed
 
 	// Make the job newer than the deployment
@@ -2984,7 +2985,9 @@ func TestReconciler_CreateDeployment_RollingUpgrade_Destructive(t *testing.T) {
 		nil, allocs, nil, "", 50, true)
 	r := reconciler.Compute()
 
-	d := structs.NewDeployment(job, 50)
+	// reconciler sets the creation time automatically so we have to copy here,
+	// otherwise there will be a discrepancy
+	d := structs.NewDeployment(job, 50, r.deployment.CreateTime)
 	d.TaskGroups[job.TaskGroups[0].Name] = &structs.DeploymentState{
 		DesiredTotal: 10,
 	}
@@ -3030,7 +3033,9 @@ func TestReconciler_CreateDeployment_RollingUpgrade_Inplace(t *testing.T) {
 		nil, allocs, nil, "", 50, true)
 	r := reconciler.Compute()
 
-	d := structs.NewDeployment(job, 50)
+	// reconciler sets the creation time automatically so we have to copy here,
+	// otherwise there will be a discrepancy
+	d := structs.NewDeployment(job, 50, r.deployment.CreateTime)
 	d.TaskGroups[job.TaskGroups[0].Name] = &structs.DeploymentState{
 		DesiredTotal: 10,
 	}
@@ -3075,7 +3080,9 @@ func TestReconciler_CreateDeployment_NewerCreateIndex(t *testing.T) {
 		nil, allocs, nil, "", 50, true)
 	r := reconciler.Compute()
 
-	d := structs.NewDeployment(job, 50)
+	// reconciler sets the creation time automatically so we have to copy here,
+	// otherwise there will be a discrepancy
+	d := structs.NewDeployment(job, 50, r.deployment.CreateTime)
 	d.TaskGroups[job.TaskGroups[0].Name] = &structs.DeploymentState{
 		DesiredTotal: 5,
 	}
@@ -3166,7 +3173,7 @@ func TestReconciler_PausedOrFailedDeployment_NoMoreCanaries(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			// Create a deployment that is paused/failed and has placed some canaries
-			d := structs.NewDeployment(job, 50)
+			d := structs.NewDeployment(job, 50, time.Now().UnixNano())
 			d.Status = c.deploymentStatus
 			d.TaskGroups[job.TaskGroups[0].Name] = &structs.DeploymentState{
 				Promoted:        false,
@@ -3247,7 +3254,7 @@ func TestReconciler_PausedOrFailedDeployment_NoMorePlacements(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			// Create a deployment that is paused and has placed some canaries
-			d := structs.NewDeployment(job, 50)
+			d := structs.NewDeployment(job, 50, time.Now().UnixNano())
 			d.Status = c.deploymentStatus
 			d.TaskGroups[job.TaskGroups[0].Name] = &structs.DeploymentState{
 				Promoted:     false,
@@ -3313,7 +3320,7 @@ func TestReconciler_PausedOrFailedDeployment_NoMoreDestructiveUpdates(t *testing
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			// Create a deployment that is paused and has placed some canaries
-			d := structs.NewDeployment(job, 50)
+			d := structs.NewDeployment(job, 50, time.Now().UnixNano())
 			d.Status = c.deploymentStatus
 			d.TaskGroups[job.TaskGroups[0].Name] = &structs.DeploymentState{
 				Promoted:     false,
@@ -3373,7 +3380,7 @@ func TestReconciler_DrainNode_Canary(t *testing.T) {
 	job.TaskGroups[0].Update = canaryUpdate
 
 	// Create a deployment that is paused and has placed some canaries
-	d := structs.NewDeployment(job, 50)
+	d := structs.NewDeployment(job, 50, time.Now().UnixNano())
 	s := &structs.DeploymentState{
 		Promoted:        false,
 		DesiredTotal:    10,
@@ -3448,7 +3455,7 @@ func TestReconciler_LostNode_Canary(t *testing.T) {
 	job.TaskGroups[0].Update = canaryUpdate
 
 	// Create a deployment that is paused and has placed some canaries
-	d := structs.NewDeployment(job, 50)
+	d := structs.NewDeployment(job, 50, time.Now().UnixNano())
 	s := &structs.DeploymentState{
 		Promoted:        false,
 		DesiredTotal:    10,
@@ -3524,7 +3531,7 @@ func TestReconciler_StopOldCanaries(t *testing.T) {
 	job.TaskGroups[0].Update = canaryUpdate
 
 	// Create an old deployment that has placed some canaries
-	d := structs.NewDeployment(job, 50)
+	d := structs.NewDeployment(job, 50, time.Now().UnixNano())
 	s := &structs.DeploymentState{
 		Promoted:        false,
 		DesiredTotal:    10,
@@ -3566,7 +3573,9 @@ func TestReconciler_StopOldCanaries(t *testing.T) {
 		allocs, nil, "", 50, true)
 	r := reconciler.Compute()
 
-	newD := structs.NewDeployment(job, 50)
+	// reconciler sets the creation time automatically so we have to copy here,
+	// otherwise there will be a discrepancy
+	newD := structs.NewDeployment(job, 50, r.deployment.CreateTime)
 	newD.StatusDescription = structs.DeploymentStatusDescriptionRunningNeedsPromotion
 	newD.TaskGroups[job.TaskGroups[0].Name] = &structs.DeploymentState{
 		DesiredCanaries: 2,
@@ -3622,7 +3631,9 @@ func TestReconciler_NewCanaries(t *testing.T) {
 		nil, allocs, nil, "", 50, true)
 	r := reconciler.Compute()
 
-	newD := structs.NewDeployment(job, 50)
+	// reconciler sets the creation time automatically so we have to copy here,
+	// otherwise there will be a discrepancy
+	newD := structs.NewDeployment(job, 50, r.deployment.CreateTime)
 	newD.StatusDescription = structs.DeploymentStatusDescriptionRunningNeedsPromotion
 	newD.TaskGroups[job.TaskGroups[0].Name] = &structs.DeploymentState{
 		DesiredCanaries: 2,
@@ -3673,7 +3684,9 @@ func TestReconciler_NewCanaries_CountGreater(t *testing.T) {
 		nil, allocs, nil, "", 50, true)
 	r := reconciler.Compute()
 
-	newD := structs.NewDeployment(job, 50)
+	// reconciler sets the creation time automatically so we have to copy here,
+	// otherwise there will be a discrepancy
+	newD := structs.NewDeployment(job, 50, r.deployment.CreateTime)
 	newD.StatusDescription = structs.DeploymentStatusDescriptionRunningNeedsPromotion
 	state := &structs.DeploymentState{
 		DesiredCanaries: 7,
@@ -3727,7 +3740,9 @@ func TestReconciler_NewCanaries_MultiTG(t *testing.T) {
 		nil, allocs, nil, "", 50, true)
 	r := reconciler.Compute()
 
-	newD := structs.NewDeployment(job, 50)
+	// reconciler sets the creation time automatically so we have to copy here,
+	// otherwise there will be a discrepancy
+	newD := structs.NewDeployment(job, 50, r.deployment.CreateTime)
 	newD.StatusDescription = structs.DeploymentStatusDescriptionRunningNeedsPromotion
 	state := &structs.DeploymentState{
 		DesiredCanaries: 2,
@@ -3783,7 +3798,9 @@ func TestReconciler_NewCanaries_ScaleUp(t *testing.T) {
 		nil, allocs, nil, "", 50, true)
 	r := reconciler.Compute()
 
-	newD := structs.NewDeployment(job, 50)
+	// reconciler sets the creation time automatically so we have to copy here,
+	// otherwise there will be a discrepancy
+	newD := structs.NewDeployment(job, 50, r.deployment.CreateTime)
 	newD.StatusDescription = structs.DeploymentStatusDescriptionRunningNeedsPromotion
 	newD.TaskGroups[job.TaskGroups[0].Name] = &structs.DeploymentState{
 		DesiredCanaries: 2,
@@ -3834,7 +3851,9 @@ func TestReconciler_NewCanaries_ScaleDown(t *testing.T) {
 		nil, allocs, nil, "", 50, true)
 	r := reconciler.Compute()
 
-	newD := structs.NewDeployment(job, 50)
+	// reconciler sets the creation time automatically so we have to copy here,
+	// otherwise there will be a discrepancy
+	newD := structs.NewDeployment(job, 50, r.deployment.CreateTime)
 	newD.StatusDescription = structs.DeploymentStatusDescriptionRunningNeedsPromotion
 	newD.TaskGroups[job.TaskGroups[0].Name] = &structs.DeploymentState{
 		DesiredCanaries: 2,
@@ -3875,7 +3894,7 @@ func TestReconciler_NewCanaries_FillNames(t *testing.T) {
 	}
 
 	// Create an existing deployment that has placed some canaries
-	d := structs.NewDeployment(job, 50)
+	d := structs.NewDeployment(job, 50, time.Now().UnixNano())
 	s := &structs.DeploymentState{
 		Promoted:        false,
 		DesiredTotal:    10,
@@ -3941,7 +3960,7 @@ func TestReconciler_PromoteCanaries_Unblock(t *testing.T) {
 
 	// Create an existing deployment that has placed some canaries and mark them
 	// promoted
-	d := structs.NewDeployment(job, 50)
+	d := structs.NewDeployment(job, 50, time.Now().UnixNano())
 	s := &structs.DeploymentState{
 		Promoted:        true,
 		DesiredTotal:    10,
@@ -4017,7 +4036,7 @@ func TestReconciler_PromoteCanaries_CanariesEqualCount(t *testing.T) {
 
 	// Create an existing deployment that has placed some canaries and mark them
 	// promoted
-	d := structs.NewDeployment(job, 50)
+	d := structs.NewDeployment(job, 50, time.Now().UnixNano())
 	s := &structs.DeploymentState{
 		Promoted:        true,
 		DesiredTotal:    2,
@@ -4122,7 +4141,7 @@ func TestReconciler_DeploymentLimit_HealthAccounting(t *testing.T) {
 		t.Run(fmt.Sprintf("%d healthy", c.healthy), func(t *testing.T) {
 			// Create an existing deployment that has placed some canaries and mark them
 			// promoted
-			d := structs.NewDeployment(job, 50)
+			d := structs.NewDeployment(job, 50, time.Now().UnixNano())
 			d.TaskGroups[job.TaskGroups[0].Name] = &structs.DeploymentState{
 				Promoted:     true,
 				DesiredTotal: 10,
@@ -4194,7 +4213,7 @@ func TestReconciler_TaintedNode_RollingUpgrade(t *testing.T) {
 	job.TaskGroups[0].Update = noCanaryUpdate
 
 	// Create an existing deployment that has some placed allocs
-	d := structs.NewDeployment(job, 50)
+	d := structs.NewDeployment(job, 50, time.Now().UnixNano())
 	d.TaskGroups[job.TaskGroups[0].Name] = &structs.DeploymentState{
 		Promoted:     true,
 		DesiredTotal: 10,
@@ -4281,7 +4300,7 @@ func TestReconciler_FailedDeployment_TaintedNodes(t *testing.T) {
 	job.TaskGroups[0].Update = noCanaryUpdate
 
 	// Create an existing failed deployment that has some placed allocs
-	d := structs.NewDeployment(job, 50)
+	d := structs.NewDeployment(job, 50, time.Now().UnixNano())
 	d.Status = structs.DeploymentStatusFailed
 	d.TaskGroups[job.TaskGroups[0].Name] = &structs.DeploymentState{
 		Promoted:     true,
@@ -4366,7 +4385,7 @@ func TestReconciler_CompleteDeployment(t *testing.T) {
 	job := mock.Job()
 	job.TaskGroups[0].Update = canaryUpdate
 
-	d := structs.NewDeployment(job, 50)
+	d := structs.NewDeployment(job, 50, time.Now().UnixNano())
 	d.Status = structs.DeploymentStatusSuccessful
 	d.TaskGroups[job.TaskGroups[0].Name] = &structs.DeploymentState{
 		Promoted:        true,
@@ -4420,7 +4439,7 @@ func TestReconciler_MarkDeploymentComplete_FailedAllocations(t *testing.T) {
 	job := mock.Job()
 	job.TaskGroups[0].Update = noCanaryUpdate
 
-	d := structs.NewDeployment(job, 50)
+	d := structs.NewDeployment(job, 50, time.Now().UnixNano())
 	d.TaskGroups[job.TaskGroups[0].Name] = &structs.DeploymentState{
 		DesiredTotal:  10,
 		PlacedAllocs:  20,
@@ -4488,7 +4507,7 @@ func TestReconciler_FailedDeployment_CancelCanaries(t *testing.T) {
 	job.TaskGroups[1].Name = "two"
 
 	// Create an existing failed deployment that has promoted one task group
-	d := structs.NewDeployment(job, 50)
+	d := structs.NewDeployment(job, 50, time.Now().UnixNano())
 	d.Status = structs.DeploymentStatusFailed
 	s0 := &structs.DeploymentState{
 		Promoted:        true,
@@ -4581,7 +4600,7 @@ func TestReconciler_FailedDeployment_NewJob(t *testing.T) {
 	job.TaskGroups[0].Update = noCanaryUpdate
 
 	// Create an existing failed deployment that has some placed allocs
-	d := structs.NewDeployment(job, 50)
+	d := structs.NewDeployment(job, 50, time.Now().UnixNano())
 	d.Status = structs.DeploymentStatusFailed
 	d.TaskGroups[job.TaskGroups[0].Name] = &structs.DeploymentState{
 		Promoted:     true,
@@ -4624,7 +4643,9 @@ func TestReconciler_FailedDeployment_NewJob(t *testing.T) {
 		d, allocs, nil, "", 50, true)
 	r := reconciler.Compute()
 
-	dnew := structs.NewDeployment(jobNew, 50)
+	// reconciler sets the creation time automatically so we have to copy here,
+	// otherwise there will be a discrepancy
+	dnew := structs.NewDeployment(jobNew, 50, r.deployment.CreateTime)
 	dnew.TaskGroups[job.TaskGroups[0].Name] = &structs.DeploymentState{
 		DesiredTotal: 10,
 	}
@@ -4652,7 +4673,7 @@ func TestReconciler_MarkDeploymentComplete(t *testing.T) {
 	job := mock.Job()
 	job.TaskGroups[0].Update = noCanaryUpdate
 
-	d := structs.NewDeployment(job, 50)
+	d := structs.NewDeployment(job, 50, time.Now().UnixNano())
 	d.TaskGroups[job.TaskGroups[0].Name] = &structs.DeploymentState{
 		Promoted:      true,
 		DesiredTotal:  10,
@@ -4714,7 +4735,7 @@ func TestReconciler_JobChange_ScaleUp_SecondEval(t *testing.T) {
 	job.TaskGroups[0].Count = 30
 
 	// Create a deployment that is paused and has placed some canaries
-	d := structs.NewDeployment(job, 50)
+	d := structs.NewDeployment(job, 50, time.Now().UnixNano())
 	d.TaskGroups[job.TaskGroups[0].Name] = &structs.DeploymentState{
 		Promoted:     false,
 		DesiredTotal: 30,
@@ -4790,7 +4811,7 @@ func TestReconciler_RollingUpgrade_MissingAllocs(t *testing.T) {
 		nil, allocs, nil, "", 50, true)
 	r := reconciler.Compute()
 
-	d := structs.NewDeployment(job, 50)
+	d := structs.NewDeployment(job, 50, r.deployment.CreateTime)
 	d.TaskGroups[job.TaskGroups[0].Name] = &structs.DeploymentState{
 		DesiredTotal: 10,
 	}
@@ -4873,7 +4894,7 @@ func TestReconciler_FailedDeployment_DontReschedule(t *testing.T) {
 	tgName := job.TaskGroups[0].Name
 	now := time.Now()
 	// Create an existing failed deployment that has some placed allocs
-	d := structs.NewDeployment(job, 50)
+	d := structs.NewDeployment(job, 50, time.Now().UnixNano())
 	d.Status = structs.DeploymentStatusFailed
 	d.TaskGroups[job.TaskGroups[0].Name] = &structs.DeploymentState{
 		Promoted:     true,
@@ -4933,7 +4954,7 @@ func TestReconciler_DeploymentWithFailedAllocs_DontReschedule(t *testing.T) {
 	now := time.Now()
 
 	// Mock deployment with failed allocs, but deployment watcher hasn't marked it as failed yet
-	d := structs.NewDeployment(job, 50)
+	d := structs.NewDeployment(job, 50, time.Now().UnixNano())
 	d.Status = structs.DeploymentStatusRunning
 	d.TaskGroups[job.TaskGroups[0].Name] = &structs.DeploymentState{
 		Promoted:     false,
@@ -5009,7 +5030,7 @@ func TestReconciler_FailedDeployment_AutoRevert_CancelCanaries(t *testing.T) {
 	jobv2.Version = 2
 	jobv2.TaskGroups[0].Meta = map[string]string{"version": "2"}
 
-	d := structs.NewDeployment(jobv2, 50)
+	d := structs.NewDeployment(jobv2, 50, time.Now().UnixNano())
 	state := &structs.DeploymentState{
 		Promoted:      true,
 		DesiredTotal:  3,
@@ -5091,7 +5112,7 @@ func TestReconciler_SuccessfulDeploymentWithFailedAllocs_Reschedule(t *testing.T
 	now := time.Now()
 
 	// Mock deployment with failed allocs, but deployment watcher hasn't marked it as failed yet
-	d := structs.NewDeployment(job, 50)
+	d := structs.NewDeployment(job, 50, time.Now().UnixNano())
 	d.Status = structs.DeploymentStatusSuccessful
 	d.TaskGroups[job.TaskGroups[0].Name] = &structs.DeploymentState{
 		Promoted:     false,
@@ -5294,21 +5315,40 @@ func TestReconciler_RescheduleNot_Service(t *testing.T) {
 	assertPlacementsAreRescheduled(t, 0, r.place)
 }
 
+type mockPicker struct {
+	called   bool
+	strategy string
+	result   string
+}
+
+func (mp *mockPicker) PickReconnectingAlloc(disconnect *structs.DisconnectStrategy,
+	original *structs.Allocation, replacement *structs.Allocation) *structs.Allocation {
+	mp.strategy = disconnect.ReconcileStrategy()
+	mp.called = true
+
+	if mp.result == "original" {
+		return original
+
+	}
+
+	return replacement
+}
+
 // Tests that when a node disconnects/reconnects allocations for that node are
 // reconciled according to the business rules.
 func TestReconciler_Disconnected_Client(t *testing.T) {
-	disconnectAllocState := []*structs.AllocState{{
-		Field: structs.AllocStateFieldClientStatus,
-		Value: structs.AllocClientStatusUnknown,
-		Time:  time.Now(),
-	}}
+	disconnectAllocState := []*structs.AllocState{
+		{
+			Field: structs.AllocStateFieldClientStatus,
+			Value: structs.AllocClientStatusUnknown,
+			Time:  time.Now(),
+		},
+	}
 
 	type testCase struct {
 		name                         string
 		allocCount                   int
 		disconnectedAllocCount       int
-		jobVersionIncrement          uint64
-		nodeScoreIncrement           float64
 		disconnectedAllocStatus      string
 		disconnectedAllocStates      []*structs.AllocState
 		isBatch                      bool
@@ -5319,18 +5359,21 @@ func TestReconciler_Disconnected_Client(t *testing.T) {
 		disconnectReplacement        bool
 		replaceFailedReplacement     bool
 		shouldStopOnDisconnectedNode bool
+		shouldStopOnReconnect        bool
 		maxDisconnect                *time.Duration
 		expected                     *resultExpectation
+		pickResult                   string
+		reconcileStrategy            string
+		callPicker                   bool
 	}
 
 	testCases := []testCase{
 		{
-			name:                    "reconnect-original-no-replacement",
-			allocCount:              2,
-			replace:                 false,
-			disconnectedAllocCount:  2,
-			disconnectedAllocStatus: structs.AllocClientStatusRunning,
-
+			name:                         "reconnect-original-no-replacement",
+			allocCount:                   2,
+			replace:                      false,
+			disconnectedAllocCount:       2,
+			disconnectedAllocStatus:      structs.AllocClientStatusRunning,
 			disconnectedAllocStates:      disconnectAllocState,
 			shouldStopOnDisconnectedNode: false,
 			expected: &resultExpectation{
@@ -5341,14 +5384,14 @@ func TestReconciler_Disconnected_Client(t *testing.T) {
 					},
 				},
 			},
+			callPicker: false,
 		},
 		{
-			name:                    "resume-original-and-stop-replacement",
-			allocCount:              3,
-			replace:                 true,
-			disconnectedAllocCount:  1,
-			disconnectedAllocStatus: structs.AllocClientStatusRunning,
-
+			name:                         "resume-original-and-stop-replacement",
+			allocCount:                   3,
+			replace:                      true,
+			disconnectedAllocCount:       1,
+			disconnectedAllocStatus:      structs.AllocClientStatusRunning,
 			disconnectedAllocStates:      disconnectAllocState,
 			shouldStopOnDisconnectedNode: false,
 			expected: &resultExpectation{
@@ -5361,34 +5404,17 @@ func TestReconciler_Disconnected_Client(t *testing.T) {
 					},
 				},
 			},
+			maxDisconnect:     pointer.Of(5 * time.Minute),
+			callPicker:        true,
+			reconcileStrategy: structs.ReconcileOptionKeepOriginal,
+			pickResult:        "original",
 		},
 		{
-			name:                    "stop-original-with-lower-node-score",
-			allocCount:              4,
-			replace:                 true,
-			disconnectedAllocCount:  1,
-			disconnectedAllocStatus: structs.AllocClientStatusRunning,
-
-			disconnectedAllocStates:      disconnectAllocState,
-			shouldStopOnDisconnectedNode: true,
-			nodeScoreIncrement:           1,
-			expected: &resultExpectation{
-				stop: 1,
-				desiredTGUpdates: map[string]*structs.DesiredUpdates{
-					"web": {
-						Stop:   1,
-						Ignore: 4,
-					},
-				},
-			},
-		},
-		{
-			name:                    "stop-original-failed-on-reconnect",
-			allocCount:              4,
-			replace:                 true,
-			disconnectedAllocCount:  2,
-			disconnectedAllocStatus: structs.AllocClientStatusFailed,
-
+			name:                         "stop-original-failed-on-reconnect",
+			allocCount:                   4,
+			replace:                      true,
+			disconnectedAllocCount:       2,
+			disconnectedAllocStatus:      structs.AllocClientStatusFailed,
 			disconnectedAllocStates:      disconnectAllocState,
 			shouldStopOnDisconnectedNode: true,
 			expected: &resultExpectation{
@@ -5402,12 +5428,11 @@ func TestReconciler_Disconnected_Client(t *testing.T) {
 			},
 		},
 		{
-			name:                    "reschedule-original-failed-if-not-replaced",
-			allocCount:              4,
-			replace:                 false,
-			disconnectedAllocCount:  2,
-			disconnectedAllocStatus: structs.AllocClientStatusFailed,
-
+			name:                         "reschedule-original-failed-if-not-replaced",
+			allocCount:                   4,
+			replace:                      false,
+			disconnectedAllocCount:       2,
+			disconnectedAllocStatus:      structs.AllocClientStatusFailed,
 			disconnectedAllocStates:      disconnectAllocState,
 			shouldStopOnDisconnectedNode: true,
 			expected: &resultExpectation{
@@ -5423,125 +5448,25 @@ func TestReconciler_Disconnected_Client(t *testing.T) {
 			},
 		},
 		{
-			name:                    "ignore-reconnect-completed",
+			name:                    "update-reconnect-completed",
 			allocCount:              2,
 			replace:                 false,
 			disconnectedAllocCount:  2,
 			disconnectedAllocStatus: structs.AllocClientStatusComplete,
-
 			disconnectedAllocStates: disconnectAllocState,
 			isBatch:                 true,
 			expected: &resultExpectation{
-				place: 2,
+				place: 0,
 				desiredTGUpdates: map[string]*structs.DesiredUpdates{
 					"web": {
 						Ignore: 2,
-						Place:  2,
+						Place:  0,
 					},
 				},
 			},
 		},
 		{
-			name:                    "keep-original-alloc-and-stop-failed-replacement",
-			allocCount:              3,
-			replace:                 true,
-			failReplacement:         true,
-			disconnectedAllocCount:  2,
-			disconnectedAllocStatus: structs.AllocClientStatusRunning,
-
-			disconnectedAllocStates: disconnectAllocState,
-			expected: &resultExpectation{
-				reconnectUpdates: 2,
-				stop:             0,
-				desiredTGUpdates: map[string]*structs.DesiredUpdates{
-					"web": {
-						Ignore: 5,
-					},
-				},
-			},
-		},
-		{
-			name:                    "keep-original-and-stop-reconnecting-replacement",
-			allocCount:              2,
-			replace:                 true,
-			disconnectReplacement:   true,
-			disconnectedAllocCount:  1,
-			disconnectedAllocStatus: structs.AllocClientStatusRunning,
-
-			disconnectedAllocStates: disconnectAllocState,
-			expected: &resultExpectation{
-				reconnectUpdates: 1,
-				stop:             1,
-				desiredTGUpdates: map[string]*structs.DesiredUpdates{
-					"web": {
-						Ignore: 2,
-						Stop:   1,
-					},
-				},
-			},
-		},
-		{
-			name:                    "keep-original-and-stop-tainted-replacement",
-			allocCount:              3,
-			replace:                 true,
-			taintReplacement:        true,
-			disconnectedAllocCount:  2,
-			disconnectedAllocStatus: structs.AllocClientStatusRunning,
-
-			disconnectedAllocStates: disconnectAllocState,
-			expected: &resultExpectation{
-				reconnectUpdates: 2,
-				stop:             2,
-				desiredTGUpdates: map[string]*structs.DesiredUpdates{
-					"web": {
-						Ignore: 3,
-						Stop:   2,
-					},
-				},
-			},
-		},
-		{
-			name:                    "stop-original-alloc-with-old-job-version",
-			allocCount:              5,
-			replace:                 true,
-			disconnectedAllocCount:  2,
-			disconnectedAllocStatus: structs.AllocClientStatusRunning,
-
-			disconnectedAllocStates:      disconnectAllocState,
-			shouldStopOnDisconnectedNode: true,
-			jobVersionIncrement:          1,
-			expected: &resultExpectation{
-				stop: 2,
-				desiredTGUpdates: map[string]*structs.DesiredUpdates{
-					"web": {
-						Ignore: 5,
-						Stop:   2,
-					},
-				},
-			},
-		},
-		{
-			name:                    "stop-original-alloc-with-old-job-version-reconnect-eval",
-			allocCount:              5,
-			replace:                 true,
-			disconnectedAllocCount:  2,
-			disconnectedAllocStatus: structs.AllocClientStatusRunning,
-
-			disconnectedAllocStates:      disconnectAllocState,
-			shouldStopOnDisconnectedNode: true,
-			jobVersionIncrement:          1,
-			expected: &resultExpectation{
-				stop: 2,
-				desiredTGUpdates: map[string]*structs.DesiredUpdates{
-					"web": {
-						Stop:   2,
-						Ignore: 5,
-					},
-				},
-			},
-		},
-		{
-			name:                         "stop-original-alloc-with-old-job-version-and-failed-replacements-replaced",
+			name:                         "stop-original-alloc-failed-replacements-replaced",
 			allocCount:                   5,
 			replace:                      true,
 			failReplacement:              true,
@@ -5550,10 +5475,8 @@ func TestReconciler_Disconnected_Client(t *testing.T) {
 			disconnectedAllocStatus:      structs.AllocClientStatusRunning,
 			disconnectedAllocStates:      disconnectAllocState,
 			shouldStopOnDisconnectedNode: false,
-			jobVersionIncrement:          1,
 			expected: &resultExpectation{
-				stop:             2,
-				reconnectUpdates: 2,
+				stop: 2,
 				desiredTGUpdates: map[string]*structs.DesiredUpdates{
 					"web": {
 						Stop:   2,
@@ -5561,14 +5484,36 @@ func TestReconciler_Disconnected_Client(t *testing.T) {
 					},
 				},
 			},
+			reconcileStrategy: structs.ReconcileOptionBestScore,
+			callPicker:        true,
 		},
 		{
-			name:                    "stop-original-pending-alloc-for-disconnected-node",
-			allocCount:              2,
-			replace:                 true,
-			disconnectedAllocCount:  1,
-			disconnectedAllocStatus: structs.AllocClientStatusPending,
-
+			name:                         "stop-original-alloc-desired-status-stop",
+			allocCount:                   1,
+			replace:                      true,
+			failReplacement:              true,
+			replaceFailedReplacement:     true,
+			disconnectedAllocCount:       1,
+			disconnectedAllocStatus:      structs.AllocClientStatusRunning,
+			disconnectedAllocStates:      disconnectAllocState,
+			shouldStopOnDisconnectedNode: false,
+			shouldStopOnReconnect:        true,
+			expected: &resultExpectation{
+				stop: 1,
+				desiredTGUpdates: map[string]*structs.DesiredUpdates{
+					"web": {
+						Stop:   1,
+						Ignore: 2,
+					},
+				},
+			},
+		},
+		{
+			name:                         "stop-original-pending-alloc-for-disconnected-node",
+			allocCount:                   2,
+			replace:                      true,
+			disconnectedAllocCount:       1,
+			disconnectedAllocStatus:      structs.AllocClientStatusPending,
 			disconnectedAllocStates:      disconnectAllocState,
 			shouldStopOnDisconnectedNode: true,
 			nodeStatusDisconnected:       true,
@@ -5583,23 +5528,22 @@ func TestReconciler_Disconnected_Client(t *testing.T) {
 			},
 		},
 		{
-			name:                    "stop-failed-original-and-failed-replacements-and-place-new",
-			allocCount:              5,
-			replace:                 true,
-			failReplacement:         true,
-			disconnectedAllocCount:  2,
-			disconnectedAllocStatus: structs.AllocClientStatusFailed,
-
+			name:                         "stop-failed-original-and-failed-replacements-and-place-new",
+			allocCount:                   5,
+			replace:                      true,
+			failReplacement:              true,
+			disconnectedAllocCount:       2,
+			disconnectedAllocStatus:      structs.AllocClientStatusFailed,
 			disconnectedAllocStates:      disconnectAllocState,
 			shouldStopOnDisconnectedNode: true,
 			expected: &resultExpectation{
-				stop:  2,
+				stop:  4,
 				place: 2,
 				desiredTGUpdates: map[string]*structs.DesiredUpdates{
 					"web": {
-						Stop:   2,
+						Stop:   4,
 						Place:  2,
-						Ignore: 5,
+						Ignore: 3,
 					},
 				},
 			},
@@ -5668,10 +5612,18 @@ func TestReconciler_Disconnected_Client(t *testing.T) {
 			// Set alloc state
 			disconnectedAllocCount := tc.disconnectedAllocCount
 			for _, alloc := range allocs {
-				alloc.DesiredStatus = structs.AllocDesiredStatusRun
+				if tc.shouldStopOnReconnect {
+					alloc.DesiredStatus = structs.AllocDesiredStatusStop
+				} else {
+					alloc.DesiredStatus = structs.AllocDesiredStatusRun
+				}
 
 				if tc.maxDisconnect != nil {
 					alloc.Job.TaskGroups[0].MaxClientDisconnect = tc.maxDisconnect
+					alloc.Job.TaskGroups[0].Disconnect = &structs.DisconnectStrategy{
+						LostAfter: *tc.maxDisconnect,
+						Reconcile: tc.reconcileStrategy,
+					}
 				}
 
 				if disconnectedAllocCount > 0 {
@@ -5701,12 +5653,6 @@ func TestReconciler_Disconnected_Client(t *testing.T) {
 					replacement.CreateIndex += 1
 					alloc.NextAllocation = replacement.ID
 
-					if tc.jobVersionIncrement != 0 {
-						replacement.Job.Version = replacement.Job.Version + tc.jobVersionIncrement
-					}
-					if tc.nodeScoreIncrement != 0 {
-						replacement.Metrics.ScoreMetaData[0].NormScore = replacement.Metrics.ScoreMetaData[0].NormScore + tc.nodeScoreIncrement
-					}
 					if tc.taintReplacement {
 						replacement.DesiredTransition.Migrate = pointer.Of(true)
 					}
@@ -5724,8 +5670,6 @@ func TestReconciler_Disconnected_Client(t *testing.T) {
 							nextReplacement.ClientStatus = structs.AllocClientStatusRunning
 							nextReplacement.DesiredStatus = structs.AllocDesiredStatusRun
 							nextReplacement.PreviousAllocation = replacement.ID
-							nextReplacement.CreateIndex += 1
-
 							replacement.NextAllocation = nextReplacement.ID
 							replacement.DesiredStatus = structs.AllocDesiredStatusStop
 
@@ -5747,8 +5691,17 @@ func TestReconciler_Disconnected_Client(t *testing.T) {
 				reconciler.now = time.Now().Add(*tc.maxDisconnect * 20)
 			}
 
+			mpc := &mockPicker{
+				result: tc.pickResult,
+			}
+
+			reconciler.reconnectingPicker = mpc
+
 			results := reconciler.Compute()
 			assertResults(t, results, tc.expected)
+
+			must.Eq(t, tc.reconcileStrategy, mpc.strategy)
+			must.Eq(t, tc.callPicker, mpc.called)
 
 			for _, stopResult := range results.stop {
 				// Skip replacement allocs.
@@ -5758,8 +5711,6 @@ func TestReconciler_Disconnected_Client(t *testing.T) {
 
 				if tc.shouldStopOnDisconnectedNode {
 					must.Eq(t, testNode.ID, stopResult.alloc.NodeID)
-				} else {
-					must.NotEq(t, testNode.ID, stopResult.alloc.NodeID)
 				}
 
 				must.Eq(t, job.Version, stopResult.alloc.Job.Version)
@@ -6250,7 +6201,7 @@ func TestReconciler_Client_Disconnect_Canaries(t *testing.T) {
 			// Validate tc.canaryAllocs against tc.deploymentState
 			must.Eq(t, tc.deploymentState.PlacedAllocs, canariesConfigured, must.Sprintf("invalid canary configuration: expect %d got %d", tc.deploymentState.PlacedAllocs, canariesConfigured))
 
-			deployment := structs.NewDeployment(updatedJob, 50)
+			deployment := structs.NewDeployment(updatedJob, 50, time.Now().UnixNano())
 			deployment.TaskGroups[updatedJob.TaskGroups[0].Name] = tc.deploymentState
 
 			// Build a map of tainted nodes that contains the last canary
@@ -6400,7 +6351,7 @@ func TestReconciler_ComputeDeploymentPaused(t *testing.T) {
 				// fetched by the scheduler before handing it to the
 				// reconciler.
 				if job.UsesDeployments() {
-					deployment = structs.NewDeployment(job, 100)
+					deployment = structs.NewDeployment(job, 100, time.Now().UnixNano())
 					deployment.Status = structs.DeploymentStatusInitializing
 					deployment.StatusDescription = structs.DeploymentStatusDescriptionPendingForPeer
 				}

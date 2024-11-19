@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hashicorp/go-set/v2"
+	"github.com/hashicorp/go-set/v3"
 	nomadapi "github.com/hashicorp/nomad/api"
 	"github.com/hashicorp/nomad/e2e/v3/util3"
 	"github.com/hashicorp/nomad/helper/pointer"
@@ -37,16 +37,19 @@ type Submission struct {
 	timeout       time.Duration
 	verbose       bool
 	detach        bool
+	dispatcher    bool
 
 	// jobspec mutator funcs
 	mutators []func(string) string
 	// preCleanup funcs to run before deregistering the job
 	preCleanup []func(*Submission)
 
-	vars         *set.Set[string] // key=value
+	vars         Vars
 	waitComplete *set.Set[string] // groups to wait until complete
 	inNamespace  string
 	authToken    string
+
+	legacyConsulToken string
 }
 
 func (sub *Submission) queryOptions() *nomadapi.QueryOptions {
@@ -299,7 +302,16 @@ func (sub *Submission) run() {
 	if job.Type == nil {
 		job.Type = pointer.Of("service")
 	}
+	if sub.legacyConsulToken != "" {
+		job.ConsulToken = pointer.Of(sub.legacyConsulToken)
+	}
 
+	registerOpts := &nomadapi.RegisterOptions{
+		Submission: &nomadapi.JobSubmission{
+			Source:    sub.jobSpec,
+			Variables: sub.vars.String(),
+		},
+	}
 	writeOpts := &nomadapi.WriteOptions{
 		Namespace: sub.inNamespace,
 		AuthToken: sub.authToken,
@@ -307,7 +319,7 @@ func (sub *Submission) run() {
 
 	jobsAPI := sub.nomadClient.Jobs()
 	sub.logf("register (%s) job: %q", *job.Type, sub.jobID)
-	regResp, _, err := jobsAPI.Register(job, writeOpts)
+	regResp, _, err := jobsAPI.RegisterOpts(job, registerOpts, writeOpts)
 	must.NoError(sub.t, err)
 
 	if !sub.noCleanup {
@@ -320,6 +332,10 @@ func (sub *Submission) run() {
 		sub.t.Cleanup(func() {
 			f(sub)
 		})
+	}
+
+	if sub.dispatcher {
+		return
 	}
 
 	evalID := regResp.EvalID
@@ -517,7 +533,7 @@ func initialize(t *testing.T, filename string) *Submission {
 		jobID:        jobID,
 		origJobID:    jobID,
 		timeout:      20 * time.Second,
-		vars:         set.New[string](0),
+		vars:         Vars{},
 		waitComplete: set.New[string](0),
 		preCleanup:   []func(*Submission){defaultPreCleanup},
 	}
@@ -569,8 +585,26 @@ func Verbose(on bool) Option {
 // Set an HCL variable.
 func Var(key, value string) Option {
 	return func(sub *Submission) {
-		sub.vars.Insert(fmt.Sprintf("%s=%s", key, value))
+		sub.vars[key] = value
 	}
+}
+
+type Vars map[string]string
+
+func (v Vars) Slice() []string {
+	s := make([]string, 0, len(v))
+	for k, v := range v {
+		s = append(s, fmt.Sprintf("%s=%s", k, v))
+	}
+	return s
+}
+
+func (v Vars) String() string {
+	s := ""
+	for k, v := range v {
+		s = s + fmt.Sprintf("%s=%q\n", k, v)
+	}
+	return s
 }
 
 // WaitComplete will wait until all allocations of the given group are
@@ -585,6 +619,14 @@ func WaitComplete(group string) Option {
 func PreCleanup(cb func(*Submission)) Option {
 	return func(sub *Submission) {
 		sub.preCleanup = append(sub.preCleanup, cb)
+	}
+}
+
+// Dispatcher indicates the job is the parent for dispatched jobs, so we
+// shouldn't wait for evals or deployments
+func Dispatcher() Option {
+	return func(sub *Submission) {
+		sub.dispatcher = true
 	}
 }
 
@@ -626,4 +668,10 @@ func SkipEvalComplete() Option {
 // healthy.
 func SkipDeploymentHealthy() Option {
 	panic("not yet implemented")
+}
+
+func LegacyConsulToken(token string) Option {
+	return func(c *Submission) {
+		c.legacyConsulToken = token
+	}
 }

@@ -801,6 +801,8 @@ type Task struct {
 	Identities []*WorkloadIdentity `hcl:"identity,block"`
 
 	Actions []*Action `hcl:"action,block"`
+
+	Schedule *TaskSchedule `hcl:"schedule,block"`
 }
 
 func (t *Task) Canonicalize(tg *TaskGroup, job *Job) {
@@ -856,16 +858,21 @@ func (t *Task) Canonicalize(tg *TaskGroup, job *Job) {
 
 // TaskArtifact is used to download artifacts before running a task.
 type TaskArtifact struct {
-	GetterSource  *string           `mapstructure:"source" hcl:"source,optional"`
-	GetterOptions map[string]string `mapstructure:"options" hcl:"options,block"`
-	GetterHeaders map[string]string `mapstructure:"headers" hcl:"headers,block"`
-	GetterMode    *string           `mapstructure:"mode" hcl:"mode,optional"`
-	RelativeDest  *string           `mapstructure:"destination" hcl:"destination,optional"`
+	GetterSource   *string           `mapstructure:"source" hcl:"source,optional"`
+	GetterOptions  map[string]string `mapstructure:"options" hcl:"options,block"`
+	GetterHeaders  map[string]string `mapstructure:"headers" hcl:"headers,block"`
+	GetterMode     *string           `mapstructure:"mode" hcl:"mode,optional"`
+	GetterInsecure *bool             `mapstructure:"insecure" hcl:"insecure,optional"`
+	RelativeDest   *string           `mapstructure:"destination" hcl:"destination,optional"`
+	Chown          bool              `mapstructure:"chown" hcl:"chown,optional"`
 }
 
 func (a *TaskArtifact) Canonicalize() {
 	if a.GetterMode == nil {
 		a.GetterMode = pointerOf("any")
+	}
+	if a.GetterInsecure == nil {
+		a.GetterInsecure = pointerOf(false)
 	}
 	if a.GetterSource == nil {
 		// Shouldn't be possible, but we don't want to panic
@@ -1240,6 +1247,7 @@ type WorkloadIdentity struct {
 	ChangeSignal string        `mapstructure:"change_signal" hcl:"change_signal,optional"`
 	Env          bool          `hcl:"env,optional"`
 	File         bool          `hcl:"file,optional"`
+	Filepath     string        `hcl:"filepath,optional"`
 	ServiceName  string        `hcl:"service_name,optional"`
 	TTL          time.Duration `mapstructure:"ttl" hcl:"ttl,optional"`
 }

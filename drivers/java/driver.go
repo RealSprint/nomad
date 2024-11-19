@@ -22,6 +22,7 @@ import (
 	"github.com/hashicorp/nomad/helper/pluginutils/loader"
 	"github.com/hashicorp/nomad/plugins/base"
 	"github.com/hashicorp/nomad/plugins/drivers"
+	"github.com/hashicorp/nomad/plugins/drivers/fsisolation"
 	"github.com/hashicorp/nomad/plugins/drivers/utils"
 	"github.com/hashicorp/nomad/plugins/shared/hclspec"
 	pstructs "github.com/hashicorp/nomad/plugins/shared/structs"
@@ -97,6 +98,7 @@ var (
 		"ipc_mode":    hclspec.NewAttr("ipc_mode", "string", false),
 		"cap_add":     hclspec.NewAttr("cap_add", "list(string)", false),
 		"cap_drop":    hclspec.NewAttr("cap_drop", "list(string)", false),
+		"work_dir":    hclspec.NewAttr("work_dir", "string", false),
 	})
 
 	// driverCapabilities is returned by the Capabilities RPC and indicates what
@@ -104,7 +106,7 @@ var (
 	driverCapabilities = &drivers.Capabilities{
 		SendSignals: false,
 		Exec:        false,
-		FSIsolation: drivers.FSIsolationNone,
+		FSIsolation: fsisolation.None,
 		NetIsolationModes: []drivers.NetIsolationMode{
 			drivers.NetIsolationModeHost,
 			drivers.NetIsolationModeGroup,
@@ -117,7 +119,7 @@ var (
 
 func init() {
 	if runtime.GOOS == "linux" {
-		driverCapabilities.FSIsolation = drivers.FSIsolationChroot
+		driverCapabilities.FSIsolation = fsisolation.Chroot
 		driverCapabilities.MountConfigs = drivers.MountConfigSupportAll
 	}
 }
@@ -188,6 +190,9 @@ type TaskConfig struct {
 
 	// CapDrop is a set of linux capabilities to disable.
 	CapDrop []string `codec:"cap_drop"`
+
+	// WorkDir is the working directory for the task
+	WorkDir string `coded:"work_dir"`
 }
 
 func (tc *TaskConfig) validate() error {
@@ -214,6 +219,9 @@ func (tc *TaskConfig) validate() error {
 		return fmt.Errorf("cap_drop configured with capabilities not supported by system: %s", badDrops)
 	}
 
+	if tc.WorkDir != "" && !filepath.IsAbs(tc.WorkDir) {
+		return fmt.Errorf("work_dir must be an absolute path: %s", tc.WorkDir)
+	}
 	return nil
 }
 
@@ -455,7 +463,7 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 	executorConfig := &executor.ExecutorConfig{
 		LogFile:     pluginLogFile,
 		LogLevel:    "debug",
-		FSIsolation: driverCapabilities.FSIsolation == drivers.FSIsolationChroot,
+		FSIsolation: driverCapabilities.FSIsolation == fsisolation.Chroot,
 		Compute:     d.nomadConfig.Topology.Compute(),
 	}
 
@@ -495,6 +503,7 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 		ResourceLimits:   true,
 		Resources:        cfg.Resources,
 		TaskDir:          cfg.TaskDir().Dir,
+		WorkDir:          driverConfig.WorkDir,
 		StdoutPath:       cfg.StdoutPath,
 		StderrPath:       cfg.StderrPath,
 		Mounts:           cfg.Mounts,

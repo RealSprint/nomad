@@ -258,6 +258,12 @@ type TaskRunner struct {
 	networkIsolationLock sync.Mutex
 	networkIsolationSpec *drivers.NetworkIsolationSpec
 
+	// allocNetworkStatus is provided from the allocrunner and allows us to
+	// include this information as env vars for the task. When manipulating
+	// this the allocNetworkStatusLock should be used.
+	allocNetworkStatusLock sync.Mutex
+	allocNetworkStatus     *structs.AllocNetworkStatus
+
 	// serviceRegWrapper is the handler wrapper that is used by service hooks
 	// to perform service and check registration and deregistration.
 	serviceRegWrapper *wrapper.HandlerWrapper
@@ -274,6 +280,10 @@ type TaskRunner struct {
 
 	// users manages the pool of dynamic workload users
 	users dynamic.Pool
+
+	// pauser controls whether the task should be run or stopped based on a
+	// schedule. (Enterprise)
+	pauser *pauseGate
 }
 
 type Config struct {
@@ -414,10 +424,14 @@ func NewTaskRunner(config *Config) (*TaskRunner, error) {
 		getter:                  config.Getter,
 		wranglers:               config.Wranglers,
 		widmgr:                  config.WIDMgr,
+		users:                   config.Users,
 	}
 
 	// Create the logger based on the allocation ID
 	tr.logger = config.Logger.Named("task_runner").With("task", config.Task.Name)
+
+	// Create the pauser
+	tr.pauser = newPauseGate(tr)
 
 	// Pull out the task's resources
 	ares := tr.alloc.AllocatedResources
@@ -429,6 +443,11 @@ func NewTaskRunner(config *Config) (*TaskRunner, error) {
 	if !ok {
 		return nil, fmt.Errorf("no task resources found on allocation")
 	}
+
+	// we had to allocate the tmpfs with the memory to get correct scheduling
+	// and tracking on the node, but now that we're creating the task driver
+	// config we only care about the memory without the secrets.
+	tres.Memory.MemoryMB -= int64(tr.task.Resources.SecretsMB)
 	tr.taskResources = tres
 
 	// Build the restart tracker.
@@ -489,6 +508,20 @@ func (tr *TaskRunner) initLabels() {
 			Name:  "namespace",
 			Value: tr.alloc.Namespace,
 		},
+	}
+
+	if tr.clientConfig.IncludeAllocMetadataInMetrics {
+		combined := alloc.Job.CombinedTaskMeta(alloc.TaskGroup, tr.taskName)
+		for meta, metaValue := range combined {
+			if len(tr.clientConfig.AllowedMetadataKeysInMetrics) > 0 && !slices.Contains(tr.clientConfig.AllowedMetadataKeysInMetrics, meta) {
+				continue
+			}
+
+			tr.baseLabels = append(tr.baseLabels, metrics.Label{
+				Name:  strings.ReplaceAll(meta, "-", "_"),
+				Value: metaValue,
+			})
+		}
 	}
 
 	if tr.alloc.Job.ParentID != "" {
@@ -604,6 +637,13 @@ MAIN:
 			tr.logger.Error("prestart failed", "error", err)
 			tr.restartTracker.SetStartError(err)
 			goto RESTART
+		}
+
+		// Unblocks when the task runner is allowed to continue. (Enterprise)
+		if err := tr.pauser.Wait(); err != nil {
+			tr.logger.Error("pause scheduled failed", "error", err)
+			tr.restartTracker.SetStartError(err)
+			break MAIN
 		}
 
 		// Check for a terminal allocation once more before proceeding as the
@@ -1453,6 +1493,19 @@ func (tr *TaskRunner) SetNetworkIsolation(n *drivers.NetworkIsolationSpec) {
 	tr.networkIsolationLock.Lock()
 	tr.networkIsolationSpec = n
 	tr.networkIsolationLock.Unlock()
+}
+
+// SetNetworkStatus is called from the allocrunner to propagate the
+// network status of an allocation. This call occurs once the network hook has
+// run and allows this information to be exported as env vars within the
+// taskenv.
+func (tr *TaskRunner) SetNetworkStatus(s *structs.AllocNetworkStatus) {
+	tr.allocNetworkStatusLock.Lock()
+	tr.allocNetworkStatus = s
+	tr.allocNetworkStatusLock.Unlock()
+
+	// Update the taskenv builder.
+	tr.envBuilder = tr.envBuilder.SetNetworkStatus(s)
 }
 
 // triggerUpdate if there isn't already an update pending. Should be called
