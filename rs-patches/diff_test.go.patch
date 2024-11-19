@@ -1,0 +1,239 @@
+--- a/nomad/structs/diff_test.go
++++ a/nomad/structs/diff_test.go
+@@ -833,32 +833,36 @@ func TestJobDiff(t *testing.T) {
+ 			Old: &Job{
+ 				Affinities: []*Affinity{
+ 					{
+-						LTarget: "foo",
+-						RTarget: "foo",
+-						Operand: "foo",
+-						Weight:  20,
++						LTarget:               "foo",
++						RTarget:               "foo",
++						Operand:               "foo",
++						Weight:                20,
++						NormalizeNodeAffinity: true,
+ 					},
+ 					{
+-						LTarget: "bar",
+-						RTarget: "bar",
+-						Operand: "bar",
+-						Weight:  20,
++						LTarget:               "bar",
++						RTarget:               "bar",
++						Operand:               "bar",
++						Weight:                20,
++						NormalizeNodeAffinity: true,
+ 					},
+ 				},
+ 			},
+ 			New: &Job{
+ 				Affinities: []*Affinity{
+ 					{
+-						LTarget: "foo",
+-						RTarget: "foo",
+-						Operand: "foo",
+-						Weight:  20,
++						LTarget:               "foo",
++						RTarget:               "foo",
++						Operand:               "foo",
++						Weight:                20,
++						NormalizeNodeAffinity: true,
+ 					},
+ 					{
+-						LTarget: "baz",
+-						RTarget: "baz",
+-						Operand: "baz",
+-						Weight:  20,
++						LTarget:               "baz",
++						RTarget:               "baz",
++						Operand:               "baz",
++						Weight:                20,
++						NormalizeNodeAffinity: true,
+ 					},
+ 				},
+ 			},
+@@ -875,6 +879,12 @@ func TestJobDiff(t *testing.T) {
+ 								Old:  "",
+ 								New:  "baz",
+ 							},
++							{
++								Type: DiffTypeAdded,
++								Name: "NormalizeNodeAffinity",
++								Old:  "",
++								New:  "true",
++							},
+ 							{
+ 								Type: DiffTypeAdded,
+ 								Name: "Operand",
+@@ -905,6 +915,12 @@ func TestJobDiff(t *testing.T) {
+ 								Old:  "bar",
+ 								New:  "",
+ 							},
++							{
++								Type: DiffTypeDeleted,
++								Name: "NormalizeNodeAffinity",
++								Old:  "true",
++								New:  "",
++							},
+ 							{
+ 								Type: DiffTypeDeleted,
+ 								Name: "Operand",
+@@ -1642,32 +1658,36 @@ func TestTaskGroupDiff(t *testing.T) {
+ 			Old: &TaskGroup{
+ 				Affinities: []*Affinity{
+ 					{
+-						LTarget: "foo",
+-						RTarget: "foo",
+-						Operand: "foo",
+-						Weight:  20,
++						LTarget:               "foo",
++						RTarget:               "foo",
++						Operand:               "foo",
++						Weight:                20,
++						NormalizeNodeAffinity: true,
+ 					},
+ 					{
+-						LTarget: "bar",
+-						RTarget: "bar",
+-						Operand: "bar",
+-						Weight:  20,
++						LTarget:               "bar",
++						RTarget:               "bar",
++						Operand:               "bar",
++						Weight:                20,
++						NormalizeNodeAffinity: true,
+ 					},
+ 				},
+ 			},
+ 			New: &TaskGroup{
+ 				Affinities: []*Affinity{
+ 					{
+-						LTarget: "foo",
+-						RTarget: "foo",
+-						Operand: "foo",
+-						Weight:  20,
++						LTarget:               "foo",
++						RTarget:               "foo",
++						Operand:               "foo",
++						Weight:                20,
++						NormalizeNodeAffinity: true,
+ 					},
+ 					{
+-						LTarget: "baz",
+-						RTarget: "baz",
+-						Operand: "baz",
+-						Weight:  20,
++						LTarget:               "baz",
++						RTarget:               "baz",
++						Operand:               "baz",
++						Weight:                20,
++						NormalizeNodeAffinity: true,
+ 					},
+ 				},
+ 			},
+@@ -1684,6 +1704,12 @@ func TestTaskGroupDiff(t *testing.T) {
+ 								Old:  "",
+ 								New:  "baz",
+ 							},
++							{
++								Type: DiffTypeAdded,
++								Name: "NormalizeNodeAffinity",
++								Old:  "",
++								New:  "true",
++							},
+ 							{
+ 								Type: DiffTypeAdded,
+ 								Name: "Operand",
+@@ -1714,6 +1740,12 @@ func TestTaskGroupDiff(t *testing.T) {
+ 								Old:  "bar",
+ 								New:  "",
+ 							},
++							{
++								Type: DiffTypeDeleted,
++								Name: "NormalizeNodeAffinity",
++								Old:  "true",
++								New:  "",
++							},
+ 							{
+ 								Type: DiffTypeDeleted,
+ 								Name: "Operand",
+@@ -4394,32 +4426,36 @@ func TestTaskDiff(t *testing.T) {
+ 			Old: &Task{
+ 				Affinities: []*Affinity{
+ 					{
+-						LTarget: "foo",
+-						RTarget: "foo",
+-						Operand: "foo",
+-						Weight:  20,
++						LTarget:               "foo",
++						RTarget:               "foo",
++						Operand:               "foo",
++						Weight:                20,
++						NormalizeNodeAffinity: true,
+ 					},
+ 					{
+-						LTarget: "bar",
+-						RTarget: "bar",
+-						Operand: "bar",
+-						Weight:  20,
++						LTarget:               "bar",
++						RTarget:               "bar",
++						Operand:               "bar",
++						Weight:                20,
++						NormalizeNodeAffinity: true,
+ 					},
+ 				},
+ 			},
+ 			New: &Task{
+ 				Affinities: []*Affinity{
+ 					{
+-						LTarget: "foo",
+-						RTarget: "foo",
+-						Operand: "foo",
+-						Weight:  20,
++						LTarget:               "foo",
++						RTarget:               "foo",
++						Operand:               "foo",
++						Weight:                20,
++						NormalizeNodeAffinity: true,
+ 					},
+ 					{
+-						LTarget: "baz",
+-						RTarget: "baz",
+-						Operand: "baz",
+-						Weight:  20,
++						LTarget:               "baz",
++						RTarget:               "baz",
++						Operand:               "baz",
++						Weight:                20,
++						NormalizeNodeAffinity: true,
+ 					},
+ 				},
+ 			},
+@@ -4436,6 +4472,12 @@ func TestTaskDiff(t *testing.T) {
+ 								Old:  "",
+ 								New:  "baz",
+ 							},
++							{
++								Type: DiffTypeAdded,
++								Name: "NormalizeNodeAffinity",
++								Old:  "",
++								New:  "true",
++							},
+ 							{
+ 								Type: DiffTypeAdded,
+ 								Name: "Operand",
+@@ -4466,6 +4508,12 @@ func TestTaskDiff(t *testing.T) {
+ 								Old:  "bar",
+ 								New:  "",
+ 							},
++							{
++								Type: DiffTypeDeleted,
++								Name: "NormalizeNodeAffinity",
++								Old:  "true",
++								New:  "",
++							},
+ 							{
+ 								Type: DiffTypeDeleted,
+ 								Name: "Operand",

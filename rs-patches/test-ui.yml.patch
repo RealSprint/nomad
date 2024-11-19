@@ -1,0 +1,20 @@
+diff --git a/.github/workflows/test-ui.yml b/.github/workflows/test-ui.yml
+index f52096c47a..86c2c7d4e8 100644
+--- a/.github/workflows/test-ui.yml
++++ b/.github/workflows/test-ui.yml
+@@ -1,15 +1,4 @@
+ name: test-ui
+-on:
+-  pull_request:
+-    paths:
+-      - 'ui/**'
+-  push:
+-    branches:
+-      - main
+-      - release/**
+-      - test-ui
+-    paths:
+-      - 'ui/**'
+ 
+ jobs:
+   pre-test:

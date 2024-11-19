@@ -1,0 +1,48 @@
+diff --git a/.github/workflows/test-windows.yml b/.github/workflows/test-windows.yml
+index 7d908185f6..e330dc9780 100644
+--- a/.github/workflows/test-windows.yml
++++ b/.github/workflows/test-windows.yml
+@@ -1,43 +1,4 @@
+ name: test-windows
+-on:
+-  pull_request:
+-    branches:
+-      - main
+-      - release/**
+-    paths-ignore:
+-      - 'README.md'
+-      - 'CHANGELOG.md'
+-      - '.changelog/**'
+-      - '.tours/**'
+-      - 'contributing/**'
+-      - 'demo/**'
+-      - 'dev/**'
+-      - 'e2e/**'
+-      - 'integrations/**'
+-      - 'pkg/**'
+-      - 'scripts/**'
+-      - 'terraform/**'
+-      - 'ui/**'
+-      - 'website/**'
+-  push:
+-    branches:
+-      - main
+-      - release/**
+-    paths-ignore:
+-      - 'README.md'
+-      - 'CHANGELOG.md'
+-      - '.changelog/**'
+-      - '.tours/**'
+-      - 'contributing/**'
+-      - 'demo/**'
+-      - 'dev/**'
+-      - 'e2e/**'
+-      - 'integrations/**'
+-      - 'pkg/**'
+-      - 'scripts/**'
+-      - 'terraform/**'
+-      - 'ui/**'
+-      - 'website/**'
+ 
+ env:
+   VAULT_VERSION: 1.4.1

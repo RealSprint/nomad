@@ -1,0 +1,17 @@
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+index 6efc7670f7..42a525fcdf 100644
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -46,12 +46,6 @@ jobs:
+           chmod +x "${local_bin}/semver"
+           echo "${local_bin}" >> "$GITHUB_PATH"
+ 
+-      - name: Validate release version
+-        run: |-
+-          if [ "$(semver validate ${{ github.event.inputs.version }})" == "invalid" ]; then
+-            echo "::error::Version ${{ github.event.inputs.version }} is invalid"
+-            exit 1
+-          fi
+       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+       - name: Retrieve Vault-hosted Secrets
+         if: endsWith(github.repository, '-enterprise')

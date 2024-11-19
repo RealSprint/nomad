@@ -2,7 +2,10 @@
 
 ## Creating a release
 
-- Apply the rs-nomad-patch.patch
+- Check which patches can be applied: `for patch in rs-patches/*.patch; do git apply --check "$patch"; done`
+- Update patches that fail until the command above returns nothing
+- Apply the patches: `for patch in rs-patches/*.patch; do git apply "$patch"; done`
+  - Old patch for all files at: `rs-patches/23-08-18/rs-nomad-patch.patch`
 - Trigger the release-workflow appropriate release branch (`release/1.3.1-rs-1` for example)
 - Download the zipped amd64 binary from the build workflow
 - Unzip it (it's double zipped for some reason)

@@ -1,0 +1,51 @@
+--- a/scheduler/rank_test.go
++++ a/scheduler/rank_test.go
+@@ -2157,28 +2157,32 @@ func TestNodeAffinityIterator(t *testing.T) {
+ 
+ 	affinities := []*structs.Affinity{
+ 		{
+-			Operand: "=",
+-			LTarget: "${node.datacenter}",
+-			RTarget: "dc1",
+-			Weight:  100,
++			Operand:               "=",
++			LTarget:               "${node.datacenter}",
++			RTarget:               "dc1",
++			Weight:                100,
++			NormalizeNodeAffinity: true,
+ 		},
+ 		{
+-			Operand: "=",
+-			LTarget: "${node.datacenter}",
+-			RTarget: "dc2",
+-			Weight:  -100,
++			Operand:               "=",
++			LTarget:               "${node.datacenter}",
++			RTarget:               "dc2",
++			Weight:                -100,
++			NormalizeNodeAffinity: true,
+ 		},
+ 		{
+-			Operand: "version",
+-			LTarget: "${attr.kernel.version}",
+-			RTarget: ">4.0",
+-			Weight:  50,
++			Operand:               "version",
++			LTarget:               "${attr.kernel.version}",
++			RTarget:               ">4.0",
++			Weight:                50,
++			NormalizeNodeAffinity: true,
+ 		},
+ 		{
+-			Operand: "is",
+-			LTarget: "${node.class}",
+-			RTarget: "large",
+-			Weight:  50,
++			Operand:               "is",
++			LTarget:               "${node.class}",
++			RTarget:               "large",
++			Weight:                50,
++			NormalizeNodeAffinity: true,
+ 		},
+ 	}
+ 
