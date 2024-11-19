@@ -1,43 +1,4 @@
 name: test-windows
-on:
-  pull_request:
-    branches:
-      - main
-      - release/**
-    paths-ignore:
-      - 'README.md'
-      - 'CHANGELOG.md'
-      - '.changelog/**'
-      - '.tours/**'
-      - 'contributing/**'
-      - 'demo/**'
-      - 'dev/**'
-      - 'e2e/**'
-      - 'integrations/**'
-      - 'pkg/**'
-      - 'scripts/**'
-      - 'terraform/**'
-      - 'ui/**'
-      - 'website/**'
-  push:
-    branches:
-      - main
-      - release/**
-    paths-ignore:
-      - 'README.md'
-      - 'CHANGELOG.md'
-      - '.changelog/**'
-      - '.tours/**'
-      - 'contributing/**'
-      - 'demo/**'
-      - 'dev/**'
-      - 'e2e/**'
-      - 'integrations/**'
-      - 'pkg/**'
-      - 'scripts/**'
-      - 'terraform/**'
-      - 'ui/**'
-      - 'website/**'
 
 env:
   VAULT_VERSION: 1.4.1

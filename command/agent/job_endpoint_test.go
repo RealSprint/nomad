@@ -3054,6 +3054,7 @@ func TestJobs_ApiJobToStructsJob(t *testing.T) {
 				RTarget: "b",
 				Operand: "c",
 				Weight:  50,
+				NormalizeNodeAffinity: true,
 			},
 		},
 		Spreads: []*structs.Spread{
@@ -3121,6 +3122,7 @@ func TestJobs_ApiJobToStructsJob(t *testing.T) {
 						RTarget: "y",
 						Operand: "z",
 						Weight:  100,
+						NormalizeNodeAffinity: true,
 					},
 				},
 				RestartPolicy: &structs.RestartPolicy{
@@ -3272,6 +3274,7 @@ func TestJobs_ApiJobToStructsJob(t *testing.T) {
 								RTarget: "b",
 								Operand: "c",
 								Weight:  50,
+								NormalizeNodeAffinity: true,
 							},
 						},
 						Identities: []*structs.WorkloadIdentity{
@@ -3401,6 +3404,7 @@ func TestJobs_ApiJobToStructsJob(t *testing.T) {
 											RTarget: "b",
 											Operand: "c",
 											Weight:  50,
+											NormalizeNodeAffinity: true,
 										},
 									},
 								},

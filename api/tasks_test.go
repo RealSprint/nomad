@@ -58,26 +58,30 @@ func TestTaskGroup_AddAffinity(t *testing.T) {
 	grp := NewTaskGroup("grp1", 1)
 
 	// Add an affinity to the group
-	out := grp.AddAffinity(NewAffinity("kernel.version", "=", "4.6", 100))
-	must.Len(t, 1, grp.Affinities)
+	out := grp.AddAffinity(NewAffinity("kernel.version", "=", "4.6", 100, true))
+	if n := len(grp.Affinities); n != 1 {
+		t.Fatalf("expected 1 affinity, got: %d", n)
+	}
 
 	// Check that the group was returned
 	must.Eq(t, grp, out)
 
 	// Add a second affinity
-	grp.AddAffinity(NewAffinity("${node.affinity}", "=", "dc2", 50))
+	grp.AddAffinity(NewAffinity("${node.affinity}", "=", "dc2", 50, true))
 	expect := []*Affinity{
 		{
-			LTarget: "kernel.version",
-			RTarget: "4.6",
-			Operand: "=",
-			Weight:  pointerOf(int8(100)),
+			LTarget:               "kernel.version",
+			RTarget:               "4.6",
+			Operand:               "=",
+			Weight:                pointerOf(int8(100)),
+			NormalizeNodeAffinity: pointerOf(bool(true)),
 		},
 		{
-			LTarget: "${node.affinity}",
-			RTarget: "dc2",
-			Operand: "=",
-			Weight:  pointerOf(int8(50)),
+			LTarget:               "${node.affinity}",
+			RTarget:               "dc2",
+			Operand:               "=",
+			Weight:                pointerOf(int8(50)),
+			NormalizeNodeAffinity: pointerOf(bool(true)),
 		},
 	}
 	must.Eq(t, expect, grp.Affinities)
@@ -281,26 +285,28 @@ func TestTask_AddAffinity(t *testing.T) {
 	task := NewTask("task1", "exec")
 
 	// Add an affinity to the task
-	out := task.AddAffinity(NewAffinity("kernel.version", "=", "4.6", 100))
-	must.Len(t, 1, out.Affinities)
+	out := task.AddAffinity(NewAffinity("kernel.version", "=", "4.6", 100, true))
+	must.Len(t, 1, out.Affinities);
 
 	// Check that the task was returned
 	must.Eq(t, task, out)
 
 	// Add a second affinity
-	task.AddAffinity(NewAffinity("${node.datacenter}", "=", "dc2", 50))
+	task.AddAffinity(NewAffinity("${node.datacenter}", "=", "dc2", 50, true))
 	expect := []*Affinity{
 		{
-			LTarget: "kernel.version",
-			RTarget: "4.6",
-			Operand: "=",
-			Weight:  pointerOf(int8(100)),
+			LTarget:               "kernel.version",
+			RTarget:               "4.6",
+			Operand:               "=",
+			Weight:                pointerOf(int8(100)),
+			NormalizeNodeAffinity: pointerOf(bool(true)),
 		},
 		{
-			LTarget: "${node.datacenter}",
-			RTarget: "dc2",
-			Operand: "=",
-			Weight:  pointerOf(int8(50)),
+			LTarget:               "${node.datacenter}",
+			RTarget:               "dc2",
+			Operand:               "=",
+			Weight:                pointerOf(int8(50)),
+			NormalizeNodeAffinity: pointerOf(bool(true)),
 		},
 	}
 	must.Eq(t, expect, task.Affinities)
