@@ -9,7 +9,7 @@
 - Trigger the release-workflow appropriate release branch (`release/1.3.1-rs-1` for example)
 - Download the zipped amd64 binary from the build workflow
 - Unzip it (it's double zipped for some reason)
-- Generate a checksum file (relase the relase name with the name of your release) `sha256sum nomad_1.3.1-rs-1_linux_amd64.zip > nomad_1.3.1-rs-1_SHA256SUMS`
+- Generate a checksum file (release the release name with the name of your release) `sha256sum nomad_1.3.1-rs-1_linux_amd64.zip > nomad_1.3.1-rs-1_SHA256SUMS`
 - Create a new github-release and upload both the zip and the checksum file
 
 
