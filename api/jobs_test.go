@@ -2290,14 +2290,14 @@ func TestJobs_AddAffinity(t *testing.T) {
 			RTarget:               "4.6",
 			Operand:               "=",
 			Weight:                pointerOf(int8(100)),
-			NormalizeNodeAffinity: pointerOf(bool(true)),
+			NormalizeNodeAffinity: pointerOf(true),
 		},
 		{
 			LTarget:               "${node.datacenter}",
 			RTarget:               "dc2",
 			Operand:               "=",
 			Weight:                pointerOf(int8(50)),
-			NormalizeNodeAffinity: pointerOf(bool(true)),
+			NormalizeNodeAffinity: pointerOf(true),
 		},
 	}
 	must.Eq(t, expect, job.Affinities)

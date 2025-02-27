@@ -85,7 +85,7 @@ func TestCompose(t *testing.T) {
 						RTarget:               "large",
 						Operand:               "=",
 						Weight:                pointerOf(int8(50)),
-						NormalizeNodeAffinity: pointerOf(bool(true)),
+						NormalizeNodeAffinity: pointerOf(true),
 					},
 				},
 				Spreads: []*Spread{

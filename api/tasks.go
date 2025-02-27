@@ -238,7 +238,7 @@ func NewAffinity(lTarget string, operand string, rTarget string, weight int8, no
 		RTarget: rTarget,
 		Operand: operand,
 		Weight:  pointerOf(weight),
-		NormalizeNodeAffinity: pointerOf(bool(normalizeNodeAffinity)),
+		NormalizeNodeAffinity: pointerOf(normalizeNodeAffinity),
 	}
 }
 
@@ -247,7 +247,7 @@ func (a *Affinity) Canonicalize() {
 		a.Weight = pointerOf(int8(50))
 	}
 	if a.NormalizeNodeAffinity == nil {
-		a.NormalizeNodeAffinity = pointerOf(bool(true))
+		a.NormalizeNodeAffinity = pointerOf(true)
 	}
 }
 
