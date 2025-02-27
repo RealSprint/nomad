@@ -225,19 +225,19 @@ func (r *ReschedulePolicy) Canonicalize(jobType string) {
 
 // Affinity is used to serialize task group affinities
 type Affinity struct {
-	LTarget string `hcl:"attribute,optional"` // Left-hand target
-	RTarget string `hcl:"value,optional"`     // Right-hand target
-	Operand string `hcl:"operator,optional"`  // Constraint operand (<=, <, =, !=, >, >=), set_contains_all, set_contains_any
-	Weight  *int8  `hcl:"weight,optional"`    // Weight applied to nodes that match the affinity. Can be negative
+	LTarget               string `hcl:"attribute,optional"` // Left-hand target
+	RTarget               string `hcl:"value,optional"`     // Right-hand target
+	Operand               string `hcl:"operator,optional"`  // Constraint operand (<=, <, =, !=, >, >=), set_contains_all, set_contains_any
+	Weight                *int8  `hcl:"weight,optional"`    // Weight applied to nodes that match the affinity. Can be negative
 	NormalizeNodeAffinity *bool  `hcl:"normalize_node_affinity,optional"`
 }
 
 func NewAffinity(lTarget string, operand string, rTarget string, weight int8, normalizeNodeAffinity bool) *Affinity {
 	return &Affinity{
-		LTarget: lTarget,
-		RTarget: rTarget,
-		Operand: operand,
-		Weight:  pointerOf(weight),
+		LTarget:               lTarget,
+		RTarget:               rTarget,
+		Operand:               operand,
+		Weight:                pointerOf(weight),
 		NormalizeNodeAffinity: pointerOf(normalizeNodeAffinity),
 	}
 }
