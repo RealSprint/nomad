@@ -422,7 +422,7 @@ func (j *Job) Register(args *structs.JobRegisterRequest, reply *structs.JobRegis
 		return nil
 	}
 
-	if eval != nil && !submittedEval {
+	if !submittedEval {
 		eval.JobModifyIndex = reply.JobModifyIndex
 		update := &structs.EvalUpdateRequest{
 			Evals:        []*structs.Evaluation{eval},
@@ -658,6 +658,10 @@ func (j *Job) Revert(args *structs.JobRevertRequest, reply *structs.JobRegisterR
 
 	// Clear out the VersionTag to prevent tag duplication
 	revJob.VersionTag = nil
+
+	// Set the stable flag to false as this is functionally a new registration
+	// and should handle deployment updates
+	revJob.Stable = false
 
 	reg := &structs.JobRegisterRequest{
 		Job:          revJob,
@@ -1027,8 +1031,9 @@ func (j *Job) Scale(args *structs.JobScaleRequest, reply *structs.JobRegisterRes
 	if job == nil {
 		return structs.NewErrRPCCoded(404, fmt.Sprintf("job %q not found", args.JobID))
 	}
-	if job.Type == structs.JobTypeSystem {
-		return structs.NewErrRPCCoded(http.StatusBadRequest, `cannot scale jobs of type "system"`)
+
+	if job.Type == structs.JobTypeSystem && *args.Count > 1 {
+		return structs.NewErrRPCCoded(http.StatusBadRequest, `jobs of type "system" can only be scaled between 0 and 1`)
 	}
 
 	// Since job is going to be mutated we must copy it since state store methods

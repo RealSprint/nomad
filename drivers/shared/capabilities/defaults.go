@@ -6,8 +6,9 @@ package capabilities
 import (
 	"fmt"
 	"regexp"
+	"runtime"
 
-	"github.com/syndtr/gocapability/capability"
+	"github.com/moby/sys/capability"
 )
 
 const (
@@ -40,18 +41,19 @@ func NomadDefaults() *Set {
 func Supported() *Set {
 	s := New(nil)
 
-	last := capability.CAP_LAST_CAP
+	var list []capability.Cap
 
-	// workaround for RHEL6 which has no /proc/sys/kernel/cap_last_cap
-	if last == capability.Cap(63) {
-		last = capability.CAP_BLOCK_SUSPEND
+	switch runtime.GOOS {
+	case "linux":
+		list, _ = capability.ListSupported()
+	default:
+		// capability.ListSupported() will always return an empty list on
+		// non-linux systems
+		list = capability.ListKnown()
 	}
 
 	// accumulate every capability supported by this system
-	for _, c := range capability.List() {
-		if c > last {
-			continue
-		}
+	for _, c := range list {
 		s.Add(c.String())
 	}
 

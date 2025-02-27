@@ -2,13 +2,14 @@
 layout: docs
 page_title: Job
 description: |-
-  Learn about Nomad's job feature, which is how you deploy your apps, maintenance scripts, cron jobs, and similar tasks.
+  Learn how a Nomad workload, called a job, deploys your apps, maintenance scripts, cron jobs, and similar tasks. Review job statuses and how Nomad versions your jobs.
 ---
 
 # Job
 
-This page explains jobs, which are the main Nomad constructs for workloads that
-run your apps, maintenance scripts, cron jobs, and other tasks.
+This page contains conceptual information about jobs, which are the main Nomad
+constructs for workloads that run your apps, maintenance scripts, cron jobs, and
+other tasks. Review job statuses and how Nomad versions your jobs.
 
 ## Background
 
@@ -128,10 +129,23 @@ versions guide for examples.
 ### Revert to a previous version
 
 You can revert the current running job to a previous version. Nomad stops the
-running job and deploys the chosen version.
+running job and deploys the chosen version with a new version number.
 
 Refer to the [Revert to a version section][revert-version-section] of
 the Job versions guide for examples using the CLI, API, and web UI.
+
+### Clone and edit
+
+Using the web UI, you may clone a version as a new version of the same job or as
+a new job. After you select the version to clone, you may edit, plan, and run
+the new version.
+
+Because Nomad passes job version attributes using query parameters, you can copy
+the browser address bar URL on the **Jobs/Run** screen to send a link to an
+editable job spec.
+
+Refer to the [Clone a version section][clone-version-section] of
+the Job versions guide for cloning examples.
 
 ## Related resources
 
@@ -164,3 +178,4 @@ configure them:
 [job-versions-guide]: /nomad/tutorials/manage-jobs/jobs-version
 [compare-versions-section]: /nomad/tutorials/manage-jobs/jobs-version#compare-versions
 [revert-version-section]: /nomad/tutorials/manage-jobs/jobs-version#revert-to-a-version
+[clone-version-section]: /nomad/tutorials/manage-jobs/jobs-version#clone-a-version

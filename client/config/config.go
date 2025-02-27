@@ -73,7 +73,7 @@ var (
 
 	DefaultTemplateMaxStale = 87600 * time.Hour
 
-	DefaultTemplateFunctionDenylist = []string{"plugin", "writeToFile"}
+	DefaultTemplateFunctionDenylist = []string{"executeTemplate", "plugin", "writeToFile"}
 )
 
 // RPCHandler can be provided to the Client if there is a local server
@@ -206,6 +206,10 @@ type Config struct {
 	// IncludeAllocMetadataInMetrics determines whether nomad should include the
 	// allocation metadata as labels in the metrics to remote Telemetry sinks
 	IncludeAllocMetadataInMetrics bool
+
+	// DisableAllocationHookMetrics allows operators to disable emitting hook
+	// metrics.
+	DisableAllocationHookMetrics bool
 
 	// AllowedMetadataKeysInMetrics when provided nomad will only include the
 	// configured metadata keys as part of the metrics to remote Telemetry sinks

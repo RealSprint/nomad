@@ -73,6 +73,7 @@ func TestConfig_Merge(t *testing.T) {
 			DataDogTags:                        []string{"cat1:tag1", "cat2:tag2"},
 			PrometheusMetrics:                  true,
 			DisableHostname:                    false,
+			DisableAllocationHookMetrics:       pointer.Of(false),
 			CirconusAPIToken:                   "0",
 			CirconusAPIApp:                     "nomadic",
 			CirconusAPIURL:                     "http://api.circonus.com/v2",
@@ -279,6 +280,7 @@ func TestConfig_Merge(t *testing.T) {
 			DataDogTags:                        []string{"cat1:tag1", "cat2:tag2"},
 			PrometheusMetrics:                  true,
 			DisableHostname:                    true,
+			DisableAllocationHookMetrics:       pointer.Of(true),
 			PublishNodeMetrics:                 true,
 			PublishAllocationMetrics:           true,
 			CirconusAPIToken:                   "1",
@@ -1535,7 +1537,7 @@ func TestConfig_LoadConsulTemplateConfig(t *testing.T) {
 		agentConfig = defaultConfig.Merge(agentConfig)
 
 		templateConfig := agentConfig.Client.TemplateConfig
-		must.Len(t, 2, templateConfig.FunctionDenylist)
+		must.Len(t, 3, templateConfig.FunctionDenylist)
 	})
 
 	t.Run("client config with basic template", func(t *testing.T) {

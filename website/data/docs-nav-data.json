@@ -53,27 +53,27 @@
   {
     "title": "Release Notes",
     "routes": [
-       {
-         "title": "Overview",
-         "path": "release-notes"
-       },
-       {
-         "title": "Nomad",
-         "routes": [
-           {
-             "title": "Upcoming",
-             "path": "release-notes/nomad/upcoming"
-           },
-           {
-             "title": "v1.8.x",
-             "path": "release-notes/nomad/v1_8_x"
-           },
-           {
+      {
+        "title": "Overview",
+        "path": "release-notes"
+      },
+      {
+        "title": "Nomad",
+        "routes": [
+          {
+            "title": "Upcoming",
+            "path": "release-notes/nomad/upcoming"
+          },
+          {
+            "title": "v1.8.x",
+            "path": "release-notes/nomad/v1_8_x"
+          },
+          {
             "title": "v1.9.x",
             "path": "release-notes/nomad/v1_9_x"
           }
-         ]
-       }
+        ]
+      }
     ]
   },
   {
@@ -131,7 +131,16 @@
       },
       {
         "title": "Architecture",
-        "path": "concepts/architecture"
+        "routes": [
+          {
+            "title": "Overview",
+            "path": "concepts/architecture"
+          },
+          {
+            "title": "Federation",
+            "path": "concepts/architecture/federation"
+          }
+        ]
       },
       {
         "title": "CPU",
@@ -282,12 +291,12 @@
         "path": "configuration/reporting"
       },
       {
-        "title": "sentinel",
-        "path": "configuration/sentinel"
-      },
-      {
         "title": "search",
         "path": "configuration/search"
+      },
+      {
+        "title": "sentinel",
+        "path": "configuration/sentinel"
       },
       {
         "title": "server",
@@ -1755,6 +1764,10 @@
         "path": "job-specification/device"
       },
       {
+        "title": "disconnect",
+        "path": "job-specification/disconnect"
+      },
+      {
         "title": "dispatch_payload",
         "path": "job-specification/dispatch_payload"
       },
@@ -1769,10 +1782,6 @@
       {
         "title": "expose",
         "path": "job-specification/expose"
-      },
-      {
-        "title": "disconnect",
-        "path": "job-specification/disconnect"
       },
       {
         "title": "gateway",
@@ -1966,20 +1975,12 @@
         "path": "drivers/docker"
       },
       {
-        "title": "Exec2",
-        "href": "/plugins/drivers/exec2"
-      },
-      {
         "title": "Isolated Fork/Exec",
         "path": "drivers/exec"
       },
       {
         "title": "Java",
         "path": "drivers/java"
-      },
-      {
-        "title": "Podman",
-        "href": "/plugins/drivers/podman"
       },
       {
         "title": "QEMU",
@@ -1990,76 +1991,23 @@
         "path": "drivers/raw_exec"
       },
       {
-        "title": "Virt <sup>Beta</sup>",
+        "title": "Plugins",
         "routes": [
           {
-            "title": "Overview",
+            "title": "Exec2",
+            "href": "/plugins/drivers/exec2"
+          },
+          {
+            "title": "Podman",
+            "href": "/plugins/drivers/podman"
+          },
+          {
+            "title": "Virt <sup>Beta</sup>",
             "href": "/plugins/drivers/virt"
           },
           {
-            "title": "Installation",
-            "href": "/plugins/drivers/virt/installation"
-          },
-          {
-            "title": "Client",
-            "href": "/plugins/drivers/virt/client"
-          },
-          {
-            "title": "Task Config",
-            "href": "/plugins/drivers/virt/task-config"
-          }
-        ]
-      },
-      {
-        "title": "Community",
-        "routes": [
-          {
-            "title": "Overview",
+            "title": "Community",
             "href": "/plugins/drivers/community"
-          },
-          {
-            "title": "containerd",
-            "href": "/plugins/drivers/community/containerd"
-          },
-          {
-            "title": "Pledge",
-            "href": "/plugins/drivers/community/pledge"
-          },
-          {
-            "title": "Firecracker driver",
-            "href": "/plugins/drivers/community/firecracker-task-driver"
-          },
-          {
-            "title": "Jailtask driver",
-            "href": "/plugins/drivers/community/jail-task-driver"
-          },
-          {
-            "title": "Lightrun",
-            "href": "/plugins/drivers/community/lightrun"
-          },
-          {
-            "title": "Pot",
-            "href": "/plugins/drivers/community/pot"
-          },
-          {
-            "title": "Rookout",
-            "href": "/plugins/drivers/community/rookout"
-          },
-          {
-            "title": "Singularity",
-            "href": "/plugins/drivers/community/singularity"
-          },
-          {
-            "title": "systemd-nspawn",
-            "href": "/plugins/drivers/community/nspawn"
-          },
-          {
-            "title": "Windows IIS",
-            "href": "/plugins/drivers/community/iis"
-          },
-          {
-            "title": "Windows IIS",
-            "href": "/plugins/drivers/community/nomad-iis"
           }
         ]
       }
@@ -2067,34 +2015,7 @@
   },
   {
     "title": "Device Plugins",
-    "routes": [
-      {
-        "title": "Overview",
-        "path": "devices"
-      },
-      {
-        "title": "External",
-        "routes": [
-          {
-            "title": "Overview",
-            "href": "/plugins/devices"
-          },
-          {
-            "title": "Nvidia",
-            "href": "/plugins/devices/nvidia"
-          },
-          {
-            "title": "USB",
-            "badge": {
-              "text": "Beta",
-              "type": "outlined",
-              "color": "neutral"
-            },
-            "href": "/plugins/devices/community/usb"
-          }
-        ]
-      }
-    ]
+    "href": "/plugins/devices"
   },
   {
     "title": "Schedulers",
@@ -2384,6 +2305,19 @@
       {
         "title": "Key Management",
         "path": "operations/key-management"
+      },
+      {
+        "title": "Federation",
+        "routes": [
+          {
+            "title": "Overview",
+            "path": "operations/federation"
+          },
+          {
+            "title": "Failure",
+            "path": "operations/federation/failure"
+          }
+        ]
       },
       {
         "title": "Considerations for Stateful Workloads",
