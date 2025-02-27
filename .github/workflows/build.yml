@@ -332,7 +332,6 @@ jobs:
       - get-go-version
       - get-product-version
       - generate-metadata-file
-      - build-other
       - build-linux
       - build-darwin
       - build-docker
