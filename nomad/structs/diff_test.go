@@ -1107,12 +1107,6 @@ func TestJobDiff(t *testing.T) {
 							},
 							{
 								Type: DiffTypeAdded,
-								Name: "NormalizeNodeAffinity",
-								Old:  "",
-								New:  "true",
-							},
-							{
-								Type: DiffTypeAdded,
 								Name: "Operand",
 								Old:  "",
 								New:  "baz",
@@ -1133,12 +1127,6 @@ func TestJobDiff(t *testing.T) {
 								Type: DiffTypeDeleted,
 								Name: "LTarget",
 								Old:  "bar",
-								New:  "",
-							},
-							{
-								Type: DiffTypeDeleted,
-								Name: "NormalizeNodeAffinity",
-								Old:  "true",
 								New:  "",
 							},
 							{
@@ -1211,6 +1199,12 @@ func TestJobDiff(t *testing.T) {
 							},
 							{
 								Type: DiffTypeAdded,
+								Name: "NormalizeNodeAffinity",
+								Old:  "",
+								New:  "true",
+							},
+							{
+								Type: DiffTypeAdded,
 								Name: "Operand",
 								Old:  "",
 								New:  "baz",
@@ -1237,6 +1231,12 @@ func TestJobDiff(t *testing.T) {
 								Type: DiffTypeDeleted,
 								Name: "LTarget",
 								Old:  "bar",
+								New:  "",
+							},
+							{
+								Type: DiffTypeDeleted,
+								Name: "NormalizeNodeAffinity",
+								Old:  "true",
 								New:  "",
 							},
 							{
@@ -2111,12 +2111,6 @@ func TestTaskGroupDiff(t *testing.T) {
 							},
 							{
 								Type: DiffTypeAdded,
-								Name: "NormalizeNodeAffinity",
-								Old:  "",
-								New:  "true",
-							},
-							{
-								Type: DiffTypeAdded,
 								Name: "Operand",
 								Old:  "",
 								New:  "baz",
@@ -2137,12 +2131,6 @@ func TestTaskGroupDiff(t *testing.T) {
 								Type: DiffTypeDeleted,
 								Name: "LTarget",
 								Old:  "bar",
-								New:  "",
-							},
-							{
-								Type: DiffTypeDeleted,
-								Name: "NormalizeNodeAffinity",
-								Old:  "true",
 								New:  "",
 							},
 							{
@@ -2215,6 +2203,12 @@ func TestTaskGroupDiff(t *testing.T) {
 							},
 							{
 								Type: DiffTypeAdded,
+								Name: "NormalizeNodeAffinity",
+								Old:  "",
+								New:  "true",
+							},
+							{
+								Type: DiffTypeAdded,
 								Name: "Operand",
 								Old:  "",
 								New:  "baz",
@@ -2241,6 +2235,12 @@ func TestTaskGroupDiff(t *testing.T) {
 								Type: DiffTypeDeleted,
 								Name: "LTarget",
 								Old:  "bar",
+								New:  "",
+							},
+							{
+								Type: DiffTypeDeleted,
+								Name: "NormalizeNodeAffinity",
+								Old:  "true",
 								New:  "",
 							},
 							{
@@ -5758,12 +5758,6 @@ func TestTaskDiff(t *testing.T) {
 							},
 							{
 								Type: DiffTypeAdded,
-								Name: "NormalizeNodeAffinity",
-								Old:  "",
-								New:  "true",
-							},
-							{
-								Type: DiffTypeAdded,
 								Name: "Operand",
 								Old:  "",
 								New:  "baz",
@@ -5784,12 +5778,6 @@ func TestTaskDiff(t *testing.T) {
 								Type: DiffTypeDeleted,
 								Name: "LTarget",
 								Old:  "bar",
-								New:  "",
-							},
-							{
-								Type: DiffTypeDeleted,
-								Name: "NormalizeNodeAffinity",
-								Old:  "true",
 								New:  "",
 							},
 							{
@@ -5862,6 +5850,12 @@ func TestTaskDiff(t *testing.T) {
 							},
 							{
 								Type: DiffTypeAdded,
+								Name: "NormalizeNodeAffinity",
+								Old:  "",
+								New:  "true",
+							},
+							{
+								Type: DiffTypeAdded,
 								Name: "Operand",
 								Old:  "",
 								New:  "baz",
@@ -5888,6 +5882,12 @@ func TestTaskDiff(t *testing.T) {
 								Type: DiffTypeDeleted,
 								Name: "LTarget",
 								Old:  "bar",
+								New:  "",
+							},
+							{
+								Type: DiffTypeDeleted,
+								Name: "NormalizeNodeAffinity",
+								Old:  "true",
 								New:  "",
 							},
 							{
