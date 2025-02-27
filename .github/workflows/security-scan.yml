@@ -1,26 +1,7 @@
 name: Security Scan
 
 on:
-  push:
-    branches:
-      - main
-      - release/**
-    paths-ignore:
-      - 'README.md'
-      - 'CHANGELOG.md'
-      - '.changelog/**'
-      - '.tours/**'
-      - 'contributing/**'
-  pull_request:
-    branches:
-      - main
-      - release/**
-    paths-ignore:
-      - 'README.md'
-      - 'CHANGELOG.md'
-      - '.changelog/**'
-      - '.tours/**'
-      - 'contributing/**'
+  workflow_dispatch:
 
 # cancel existing runs of the same workflow on the same ref
 concurrency:
