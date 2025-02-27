@@ -10155,6 +10155,8 @@ func (a *Affinity) Equal(o *Affinity) bool {
 		return false
 	case a.Weight != o.Weight:
 		return false
+	case a.NormalizeNodeAffinity != o.NormalizeNodeAffinity:
+		return false
 	}
 	return true
 }
