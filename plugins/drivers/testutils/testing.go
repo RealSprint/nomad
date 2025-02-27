@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"testing"
 	"time"
 
 	hclog "github.com/hashicorp/go-hclog"
@@ -23,8 +24,8 @@ import (
 	"github.com/hashicorp/nomad/nomad/structs"
 	"github.com/hashicorp/nomad/plugins/base"
 	"github.com/hashicorp/nomad/plugins/drivers"
+	"github.com/hashicorp/nomad/plugins/drivers/fsisolation"
 	"github.com/hashicorp/nomad/plugins/shared/hclspec"
-	testing "github.com/mitchellh/go-testing-interface"
 	"github.com/shoenig/test/must"
 )
 
@@ -32,7 +33,7 @@ type DriverHarness struct {
 	drivers.DriverPlugin
 	client *plugin.GRPCClient
 	server *plugin.GRPCServer
-	t      testing.T
+	t      *testing.T
 	logger hclog.Logger
 	impl   drivers.DriverPlugin
 	cgroup string
@@ -41,7 +42,7 @@ type DriverHarness struct {
 func (h *DriverHarness) Impl() drivers.DriverPlugin {
 	return h.impl
 }
-func NewDriverHarness(t testing.T, d drivers.DriverPlugin) *DriverHarness {
+func NewDriverHarness(t *testing.T, d drivers.DriverPlugin) *DriverHarness {
 	logger := testlog.HCLogger(t).Named("driver_harness")
 	pd := drivers.NewDriverPlugin(d, logger)
 
@@ -82,24 +83,28 @@ func (h *DriverHarness) MkAllocDir(t *drivers.TaskConfig, enableLogs bool) func(
 	dir, err := os.MkdirTemp("", "nomad_driver_harness-")
 	must.NoError(h.t, err)
 
-	allocDir := allocdir.NewAllocDir(h.logger, dir, t.AllocID)
+	mountsDir, err := os.MkdirTemp("", "nomad_driver_harness-mounts-")
+	must.NoError(h.t, err)
+	must.NoError(h.t, os.Chmod(mountsDir, 0755))
+
+	allocDir := allocdir.NewAllocDir(h.logger, dir, mountsDir, t.AllocID)
 	must.NoError(h.t, allocDir.Build())
 
 	t.AllocDir = allocDir.AllocDir
 
-	taskDir := allocDir.NewTaskDir(t.Name)
+	task := &structs.Task{
+		Name: t.Name,
+		Env:  t.Env,
+	}
+
+	taskDir := allocDir.NewTaskDir(task)
 
 	caps, err := h.Capabilities()
 	must.NoError(h.t, err)
 
 	fsi := caps.FSIsolation
 	h.logger.Trace("FS isolation", "fsi", fsi)
-	must.NoError(h.t, taskDir.Build(fsi == drivers.FSIsolationChroot, ci.TinyChroot))
-
-	task := &structs.Task{
-		Name: t.Name,
-		Env:  t.Env,
-	}
+	must.NoError(h.t, taskDir.Build(fsi, ci.TinyChroot, t.User))
 
 	// Create the mock allocation
 	alloc := mock.Alloc()
@@ -251,7 +256,7 @@ func (d *MockDriver) ExecTaskStreaming(ctx context.Context, taskID string, execO
 }
 
 // SetEnvvars sets path and host env vars depending on the FS isolation used.
-func SetEnvvars(envBuilder *taskenv.Builder, fsi drivers.FSIsolation, taskDir *allocdir.TaskDir) {
+func SetEnvvars(envBuilder *taskenv.Builder, fsmode fsisolation.Mode, taskDir *allocdir.TaskDir) {
 
 	envBuilder.SetClientTaskRoot(taskDir.Dir)
 	envBuilder.SetClientSharedAllocDir(taskDir.SharedAllocDir)
@@ -259,8 +264,13 @@ func SetEnvvars(envBuilder *taskenv.Builder, fsi drivers.FSIsolation, taskDir *a
 	envBuilder.SetClientTaskSecretsDir(taskDir.SecretsDir)
 
 	// Set driver-specific environment variables
-	switch fsi {
-	case drivers.FSIsolationNone:
+	switch fsmode {
+	case fsisolation.Unveil:
+		// Use mounts host paths
+		envBuilder.SetAllocDir(taskDir.MountsAllocDir)
+		envBuilder.SetTaskLocalDir(filepath.Join(taskDir.MountsTaskDir, "local"))
+		envBuilder.SetSecretsDir(taskDir.MountsSecretsDir)
+	case fsisolation.None:
 		// Use host paths
 		envBuilder.SetAllocDir(taskDir.SharedAllocDir)
 		envBuilder.SetTaskLocalDir(taskDir.LocalDir)
@@ -273,7 +283,7 @@ func SetEnvvars(envBuilder *taskenv.Builder, fsi drivers.FSIsolation, taskDir *a
 	}
 
 	// Set the host environment variables for non-image based drivers
-	if fsi != drivers.FSIsolationImage {
+	if fsmode != fsisolation.Image {
 		envBuilder.SetHostEnvvars([]string{"env.denylist"})
 	}
 }

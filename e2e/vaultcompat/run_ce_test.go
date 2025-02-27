@@ -17,8 +17,6 @@ import (
 // versions of Vault CE
 func usable(v, minimum *version.Version) bool {
 	switch {
-	case v.Prerelease() != "":
-		return false
 	case v.Metadata() != "":
 		return false
 	case v.LessThan(minimum):
@@ -26,16 +24,6 @@ func usable(v, minimum *version.Version) bool {
 	default:
 		return true
 	}
-}
-
-func testVaultLegacy(t *testing.T, b build) {
-	vStop, vc := startVault(t, b)
-	defer vStop()
-	setupVaultLegacy(t, vc)
-
-	nStop, nc := startNomad(t, configureNomadVaultLegacy(vc))
-	defer nStop()
-	runJob(t, nc, "input/cat.hcl", "default", validateLegacyAllocs)
 }
 
 func testVaultJWT(t *testing.T, b build) {
@@ -65,4 +53,5 @@ func testVaultJWT(t *testing.T, b build) {
 
 	// Run test job.
 	runJob(t, nc, "input/cat_jwt.hcl", "default", validateJWTAllocs)
+	runJob(t, nc, "input/restricted_jwt.hcl", "default", validateJWTAllocs)
 }

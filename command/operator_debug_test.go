@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hashicorp/cli"
 	consulapi "github.com/hashicorp/consul/api"
 	consultest "github.com/hashicorp/consul/sdk/testutil"
 	"github.com/hashicorp/nomad/api"
@@ -25,7 +26,6 @@ import (
 	"github.com/hashicorp/nomad/helper/pointer"
 	"github.com/hashicorp/nomad/nomad/state"
 	"github.com/hashicorp/nomad/testutil"
-	"github.com/mitchellh/cli"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -452,14 +452,13 @@ func TestDebug_CapturedFiles(t *testing.T) {
 	}
 
 	pprofFiles := []string{
-		"allocs.prof",
-		"goroutine-debug1.txt",
-		"goroutine-debug2.txt",
-		"goroutine.prof",
-		"heap.prof",
+		"goroutine-debug1_0000.txt",
+		"goroutine-debug2_0000.txt",
+		"goroutine_0000.prof",
+		"heap_0000.prof",
 		"profile_0000.prof",
-		"threadcreate.prof",
-		"trace.prof",
+		"threadcreate_0000.prof",
+		"trace_0000.prof",
 	}
 
 	clientFiles := []string{
@@ -1054,7 +1053,6 @@ func TestDebug_EventStream(t *testing.T) {
 
 	archive := extractArchiveName(testOut.output)
 	require.NotEmpty(t, archive)
-	fmt.Println(archive)
 
 	// TODO dmay: verify evenstream.json output file contains expected content
 }

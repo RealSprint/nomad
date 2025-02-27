@@ -249,7 +249,7 @@ func (p *localPrevAlloc) Wait(ctx context.Context) error {
 	}
 
 	// Block until previous alloc exits
-	p.logger.Debug("waiting for previous alloc to terminate")
+	p.logger.Info("waiting for previous alloc to terminate")
 	for {
 		select {
 		case prevAlloc, ok := <-p.prevListener.Ch():
@@ -350,7 +350,7 @@ func (p *remotePrevAlloc) Wait(ctx context.Context) error {
 		p.waitingLock.Unlock()
 	}()
 
-	p.logger.Debug("waiting for remote previous alloc to terminate")
+	p.logger.Info("waiting for remote previous alloc to terminate")
 	req := structs.AllocSpecificRequest{
 		AllocID: p.prevAllocID,
 		QueryOptions: structs.QueryOptions{
@@ -514,7 +514,7 @@ func (p *remotePrevAlloc) getNodeAddr(ctx context.Context, nodeID string) (strin
 // Destroy on the returned allocdir if no error occurs.
 func (p *remotePrevAlloc) migrateAllocDir(ctx context.Context, nodeAddr string) (*allocdir.AllocDir, error) {
 	// Create the previous alloc dir
-	prevAllocDir := allocdir.NewAllocDir(p.logger, p.config.AllocDir, p.prevAllocID)
+	prevAllocDir := allocdir.NewAllocDir(p.logger, p.config.AllocDir, p.config.AllocMountsDir, p.prevAllocID)
 	if err := prevAllocDir.Build(); err != nil {
 		return nil, fmt.Errorf("error building alloc dir for previous alloc %q: %w", p.prevAllocID, err)
 	}
@@ -587,6 +587,12 @@ func (p *remotePrevAlloc) streamAllocDir(ctx context.Context, resp io.ReadCloser
 				p.prevAllocID, p.allocID, err)
 		}
 
+		if escapes, err := escapingfs.PathEscapesAllocDir(dest, "", hdr.Name); err != nil {
+			return fmt.Errorf("error evaluating object: %w", err)
+		} else if escapes {
+			return fmt.Errorf("archive contains object that escapes alloc dir")
+		}
+
 		if hdr.Name == errorFilename {
 			// Error snapshotting on the remote side, try to read
 			// the message out of the file and return it.
@@ -618,19 +624,25 @@ func (p *remotePrevAlloc) streamAllocDir(ctx context.Context, resp io.ReadCloser
 				return fmt.Errorf("error creating symlink: %w", err)
 			}
 
-			escapes, err := escapingfs.PathEscapesAllocDir(dest, "", hdr.Name)
-			if err != nil {
-				return fmt.Errorf("error evaluating symlink: %w", err)
-			}
-			if escapes {
-				return fmt.Errorf("archive contains symlink that escapes alloc dir")
+			for _, path := range []string{hdr.Name, hdr.Linkname} {
+				if escapes, err := escapingfs.PathEscapesAllocDir(dest, "", path); err != nil {
+					return fmt.Errorf("error evaluating symlink: %w", err)
+				} else if escapes {
+					return fmt.Errorf("archive contains symlink that escapes alloc dir")
+				}
 			}
 
 			continue
 		}
 		// If the header is a file, we write to a file
 		if hdr.Typeflag == tar.TypeReg {
-			f, err := os.Create(filepath.Join(dest, hdr.Name))
+			fPath := filepath.Join(dest, hdr.Name)
+			if _, err := os.Lstat(fPath); err == nil {
+				if err := os.Remove(fPath); err != nil {
+					return fmt.Errorf("error removing existing file: %w", err)
+				}
+			}
+			f, err := os.Create(fPath)
 			if err != nil {
 				return fmt.Errorf("error creating file: %w", err)
 			}

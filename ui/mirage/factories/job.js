@@ -175,6 +175,9 @@ export default Factory.extend({
   // When true, the job will have no versions or deployments (and in turn no latest deployment)
   noDeployments: false,
 
+  // When true, the job will have a previous stable version. Useful for testing "start job" loop.
+  withPreviousStableVersion: false,
+
   // When true, an evaluation with a high modify index and placement failures is created
   failedPlacements: false,
 
@@ -201,6 +204,11 @@ export default Factory.extend({
 
   // When true, the job's groups' tasks will have actions blocks
   withActions: false,
+
+  // When true, the job will simulate a "scheduled" block's paused state
+  withPausedTasks: false,
+
+  latestDeployment: null,
 
   afterCreate(job, server) {
     Ember.assert(
@@ -238,13 +246,14 @@ export default Factory.extend({
       createRecommendations: job.createRecommendations,
       shallow: job.shallow,
       allocStatusDistribution: job.allocStatusDistribution,
+      withPausedTasks: job.withPausedTasks,
     };
 
     if (job.groupTaskCount) {
       groupProps.taskCount = job.groupTaskCount;
     }
 
-    if (job.groupAllocCount) {
+    if (job.groupAllocCount !== undefined) {
       groupProps.count = job.groupAllocCount;
     }
 
@@ -311,8 +320,32 @@ export default Factory.extend({
             version: index,
             noActiveDeployment: job.noActiveDeployment,
             activeDeployment: job.activeDeployment,
+            stable: true,
           });
         });
+
+      if (job.withPreviousStableVersion) {
+        server.create('job-version', {
+          job,
+          namespace: job.namespace,
+          version: 1,
+          noActiveDeployment: job.noActiveDeployment,
+          activeDeployment: job.activeDeployment,
+          stable: true,
+        });
+      }
+    }
+
+    if (job.activeDeployment) {
+      job.latestDeployment = {
+        IsActive: true,
+        Status: 'running',
+        StatusDescription: 'Deployment is running',
+        RequiresPromotion: false,
+        AllAutoPromote: true,
+        JobVersion: 1,
+        ID: faker.random.uuid(),
+      };
     }
 
     if (!job.shallow) {

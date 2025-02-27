@@ -9,6 +9,7 @@ import (
 	"maps"
 	"math"
 	"net/http"
+	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -18,7 +19,7 @@ import (
 	"time"
 
 	multierror "github.com/hashicorp/go-multierror"
-	"github.com/hashicorp/go-set/v2"
+	"github.com/hashicorp/go-set/v3"
 	"github.com/hashicorp/hcl/hcl/ast"
 )
 
@@ -387,6 +388,28 @@ func NewSafeTimer(duration time.Duration) (*time.Timer, StopFunc) {
 	return t, cancel
 }
 
+// NewSafeTicker creates a time.Ticker but does not panic if duration is <= 0.
+//
+// Returns the time.Ticker and also a StopFunc, forcing the caller to deal
+// with stopping the time.Ticker to avoid leaking a goroutine.
+
+func NewSafeTicker(duration time.Duration) (*time.Ticker, StopFunc) {
+	if duration <= 0 {
+		// Avoid panic by using the smallest positive value. This is close enough
+		// to the behavior of time.After(0), which this helper is intended to
+		// replace.
+		// https://go.dev/play/p/EIkm9MsPbHY
+		duration = 1
+	}
+
+	t := time.NewTicker(duration)
+	cancel := func() {
+		t.Stop()
+	}
+
+	return t, cancel
+}
+
 // NewStoppedTimer creates a time.Timer in a stopped state. This is useful when
 // the actual wait time will computed and set later via Reset.
 func NewStoppedTimer() (*time.Timer, StopFunc) {
@@ -502,4 +525,51 @@ func Merge[T comparable](a, b T) T {
 		return b
 	}
 	return a
+}
+
+// FlattenMultierror takes a multierror and unwraps it if there's only one error
+// in the output, otherwise returning the multierror or nil.
+func FlattenMultierror(err error) error {
+	mErr, ok := err.(*multierror.Error)
+	if !ok {
+		return err
+	}
+	// note: mErr is a pointer so we still need to nil-check even after the cast
+	if mErr == nil {
+		return nil
+	}
+	if mErr.Len() == 1 {
+		return mErr.Errors[0]
+	}
+	return mErr.ErrorOrNil()
+}
+
+// FindExecutableFiles looks in the provided path for executables and returns
+// a map where keys are filenames and values are the absolute path.
+func FindExecutableFiles(path string) (map[string]string, error) {
+	executables := make(map[string]string)
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return executables, err
+	}
+	for _, e := range entries {
+		i, err := e.Info()
+		if err != nil {
+			return executables, err
+		}
+		if !IsExecutable(i) {
+			continue
+		}
+		p := filepath.Join(path, i.Name())
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			return executables, err
+		}
+		executables[i.Name()] = abs
+	}
+	return executables, nil
+}
+
+func IsExecutable(i os.FileInfo) bool {
+	return !i.IsDir() && i.Mode()&0o111 != 0
 }

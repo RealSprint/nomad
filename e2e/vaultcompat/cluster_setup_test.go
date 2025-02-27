@@ -11,16 +11,6 @@ const (
 	jwtPath = "nomad_jwt"
 )
 
-// roleLegacy is the legacy recommendation for nomad cluster role.
-var roleLegacy = map[string]interface{}{
-	"disallowed_policies": "nomad-server",
-	"explicit_max_ttl":    0, // use old name for vault compatibility
-	"name":                "nomad-cluster",
-	"orphan":              false,
-	"period":              259200, // use old name for vault compatibility
-	"renewable":           true,
-}
-
 // authConfigJWT is the configuration for the JWT auth method used by Nomad.
 func authConfigJWT(jwksURL string) map[string]any {
 	return map[string]any{
@@ -36,7 +26,7 @@ func roleWID(policies []string) map[string]any {
 	return map[string]any{
 		"role_type":               "jwt",
 		"bound_audiences":         "vault.io",
-		"user_claim":              "/nomad_job_id",
+		"user_claim":              "/extra_claims/nomad_workload_id",
 		"user_claim_json_pointer": true,
 		"claim_mappings": map[string]any{
 			"nomad_namespace": "nomad_namespace",

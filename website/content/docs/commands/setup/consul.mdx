@@ -14,13 +14,6 @@ This command requires `acl:write` permissions for Consul and respects
 `CONSUL_HTTP_TOKEN`, `CONSUL_HTTP_ADDR`, and other [Consul-related environment
 variables][consulenv].
 
-<Warning>
-
-This command is an experimental feature and may change its behavior in future
-versions of Nomad.
-
-</Warning>
-
 ## Usage
 
 ```plaintext
@@ -31,6 +24,9 @@ nomad setup consul [options]
 
 - `-jwks-url`: URL of Nomad's JWKS endpoint contacted by Consul to verify JWT
   signatures. Defaults to `http://localhost:4646/.well-known/jwks.json`.
+
+- `-jwks-ca-file`: Path to a CA certificate file that will be used to validate
+  the JWKS URL if it uses TLS.
 
 - `-destroy`: Removes all configuration components this command created from the
   Consul cluster.

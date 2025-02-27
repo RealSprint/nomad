@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	metrics "github.com/armon/go-metrics"
 	log "github.com/hashicorp/go-hclog"
 	memdb "github.com/hashicorp/go-memdb"
+	metrics "github.com/hashicorp/go-metrics/compat"
 
 	"github.com/hashicorp/nomad/helper"
 	"github.com/hashicorp/nomad/nomad/structs"
@@ -163,7 +163,8 @@ func (h *nodeHeartbeater) invalidateHeartbeat(id string) {
 		Status:    structs.NodeStatusDown,
 		NodeEvent: structs.NewNodeEvent().SetSubsystem(structs.NodeEventSubsystemCluster).SetMessage(NodeHeartbeatEventMissed),
 		WriteRequest: structs.WriteRequest{
-			Region: h.srv.config.Region,
+			Region:    h.srv.config.Region,
+			AuthToken: h.srv.getLeaderAcl(),
 		},
 	}
 
@@ -181,6 +182,10 @@ func (h *nodeHeartbeater) disconnectState(id string) (bool, bool) {
 	node, err := h.srv.State().NodeByID(nil, id)
 	if err != nil {
 		h.logger.Error("error retrieving node by id", "error", err)
+		return false, false
+	}
+	if node == nil {
+		h.logger.Error("node not found", "node_id", id)
 		return false, false
 	}
 
@@ -246,19 +251,26 @@ func (h *nodeHeartbeater) clearAllHeartbeatTimers() error {
 	return nil
 }
 
-// heartbeatStats is a long running routine used to capture
-// the number of active heartbeats being tracked
+// heartbeatStats is a long-running routine used to capture the number of
+// active heartbeats being tracked.
 func (h *nodeHeartbeater) heartbeatStats() {
 	for {
 		select {
 		case <-time.After(5 * time.Second):
-			h.heartbeatTimersLock.Lock()
-			num := len(h.heartbeatTimers)
-			h.heartbeatTimersLock.Unlock()
+			num := h.getHeartbeatTimerNum()
 			metrics.SetGauge([]string{"nomad", "heartbeat", "active"}, float32(num))
 
 		case <-h.srv.shutdownCh:
 			return
 		}
 	}
+}
+
+// getHeartbeatTimerNum is a helper function that returns the current number of
+// active heartbeat timers. The caller should not hold the lock; this function
+// handles that.
+func (h *nodeHeartbeater) getHeartbeatTimerNum() int {
+	h.heartbeatTimersLock.Lock()
+	defer h.heartbeatTimersLock.Unlock()
+	return len(h.heartbeatTimers)
 }

@@ -12,9 +12,9 @@ import (
 	"strconv"
 	"syscall"
 
-	"github.com/containernetworking/plugins/pkg/ns"
-	"github.com/hashicorp/go-set/v2"
+	"github.com/hashicorp/go-set/v3"
 	"github.com/hashicorp/nomad/client/lib/cgroupslib"
+	"github.com/hashicorp/nomad/client/lib/nsutil"
 	"github.com/hashicorp/nomad/drivers/shared/executor/procstats"
 	"github.com/hashicorp/nomad/helper/users"
 	"github.com/hashicorp/nomad/plugins/drivers"
@@ -102,7 +102,7 @@ func (e *UniversalExecutor) setSubCmdCgroup(cmd *exec.Cmd, cgroup string) (func(
 	}
 }
 
-func (e *UniversalExecutor) ListProcesses() *set.Set[procstats.ProcessID] {
+func (e *UniversalExecutor) ListProcesses() set.Collection[procstats.ProcessID] {
 	return procstats.List(e.command)
 }
 
@@ -114,51 +114,72 @@ func (e *UniversalExecutor) statCG(cgroup string) (int, func(), error) {
 	return fd, cleanup, err
 }
 
+// runningFunc is called after task startup and is running.
+//
+// its use case is for moving the executor process out of the task cgroup once
+// the child task process has been started (cgroups v1 only)
+type runningFunc func() error
+
+// cleanupFunc is called after task shutdown
+//
+// its use case is for removing the cgroup from the system once it is no longer
+// being used for running the task
+type cleanupFunc func()
+
 // configureResourceContainer on Linux configures the cgroups to be used to track
 // pids created by the executor
 //
 // pid: pid of the executor (i.e. ourself)
-func (e *UniversalExecutor) configureResourceContainer(command *ExecCommand, pid int) (func(), error) {
+func (e *UniversalExecutor) configureResourceContainer(
+	command *ExecCommand,
+	pid int,
+) (runningFunc, cleanupFunc, error) {
 	cgroup := command.StatsCgroup()
 
-	// ensure tasks do not inherit Nomad agent oom_score_adj value
-	if err := e.setOomAdj(); err != nil {
-		return nil, err
+	// ensure tasks get the desired oom_score_adj value set
+	if err := e.setOomAdj(command.OOMScoreAdj); err != nil {
+		return nil, nil, err
 	}
 
-	// cgCleanup will be called after the task has been launched
+	// deleteCgroup will be called after the task has been launched
 	// v1: remove the executor process from the task's cgroups
 	// v2: let go of the file descriptor of the task's cgroup
-	var cgCleanup func()
+	var (
+		deleteCgroup = func() {}
+		moveProcess  = func() error { return nil }
+	)
 
 	// manually configure cgroup for cpu / memory constraints
 	switch cgroupslib.GetMode() {
 	case cgroupslib.CG1:
-		e.configureCG1(cgroup, command)
-		cgCleanup = e.enterCG1(cgroup, command.CpusetCgroup())
+		if err := e.configureCG1(cgroup, command); err != nil {
+			return moveProcess, deleteCgroup, err
+		}
+		moveProcess, deleteCgroup = e.enterCG1(cgroup, command.CpusetCgroup())
 	default:
 		e.configureCG2(cgroup, command)
 		// configure child process to spawn in the cgroup
 		// get file descriptor of the cgroup made for this task
 		fd, cleanup, err := e.statCG(cgroup)
 		if err != nil {
-			return nil, err
+			return moveProcess, deleteCgroup, err
 		}
 		e.childCmd.SysProcAttr.UseCgroupFD = true
 		e.childCmd.SysProcAttr.CgroupFD = fd
-		cgCleanup = cleanup
+		deleteCgroup = cleanup
 	}
 
 	e.logger.Info("configured cgroup for executor", "pid", pid)
 
-	return cgCleanup, nil
+	return moveProcess, deleteCgroup, nil
 }
 
 // enterCG1 will write the executor PID (i.e. itself) into the cgroups we
 // created for the task - so that the task and its children will spawn in
 // those cgroups. The cleanup function moves the executor out of the task's
 // cgroups and into the nomad/ parent cgroups.
-func (e *UniversalExecutor) enterCG1(statsCgroup, cpusetCgroup string) func() {
+func (e *UniversalExecutor) enterCG1(statsCgroup, cpusetCgroup string) (runningFunc, cleanupFunc) {
+	ed := cgroupslib.OpenPath(cpusetCgroup)
 	pid := strconv.Itoa(unix.Getpid())
 
 	// write pid to all the normal interfaces
@@ -172,28 +193,49 @@ func (e *UniversalExecutor) enterCG1(statsCgroup, cpusetCgroup string) func() {
 	}
 
 	// write pid to the cpuset interface, which varies between reserve/share
-	ed := cgroupslib.OpenPath(cpusetCgroup)
 	err := ed.Write("cgroup.procs", pid)
 	if err != nil {
 		e.logger.Warn("failed to write cpuset cgroup", "error", err)
 	}
 
-	// cleanup func that moves executor back up to nomad cgroup
-	return func() {
-		for _, iface := range ifaces {
+	move := func() error {
+		// move the executor back out
+		for _, iface := range append(ifaces, "cpuset") {
 			err := cgroupslib.WriteNomadCG1(iface, "cgroup.procs", pid)
 			if err != nil {
 				e.logger.Warn("failed to move executor cgroup", "interface", iface, "error", err)
+				return err
 			}
 		}
+		return nil
 	}
+
+	// cleanup func does nothing in cgroups v1
+	cleanup := func() {}
+
+	return move, cleanup
 }
 
-func (e *UniversalExecutor) configureCG1(cgroup string, command *ExecCommand) {
-
+func (e *UniversalExecutor) configureCG1(cgroup string, command *ExecCommand) error {
 	// some drivers like qemu entirely own resource management
 	if command.Resources == nil || command.Resources.LinuxResources == nil {
-		return
+		return nil
+	}
+
+	// if custom cgroups are set join those instead of configuring the /nomad
+	// cgroups we are not going to use
+	if len(e.command.OverrideCgroupV1) > 0 {
+		pid := unix.Getpid()
+		for controller, path := range e.command.OverrideCgroupV1 {
+			absPath := cgroupslib.CustomPathCG1(controller, path)
+			ed := cgroupslib.OpenPath(absPath)
+			err := ed.Write("cgroup.procs", strconv.Itoa(pid))
+			if err != nil {
+				e.logger.Error("unable to write to custom cgroup", "error", err)
+				return fmt.Errorf("unable to write to custom cgroup: %v", err)
+			}
+		}
+		return nil
 	}
 
 	// write memory limits
@@ -222,10 +264,11 @@ func (e *UniversalExecutor) configureCG1(cgroup string, command *ExecCommand) {
 		ed = cgroupslib.OpenPath(cpusetPath)
 		_ = ed.Write("cpuset.cpus", cpuSet)
 	}
+
+	return nil
 }
 
 func (e *UniversalExecutor) configureCG2(cgroup string, command *ExecCommand) {
-
 	// some drivers like qemu entirely own resource management
 	if command.Resources == nil || command.Resources.LinuxResources == nil {
 		return
@@ -262,12 +305,10 @@ func (e *UniversalExecutor) configureCG2(cgroup string, command *ExecCommand) {
 	_ = ed.Write("cpuset.cpus", cpusetCpus)
 }
 
-func (e *UniversalExecutor) setOomAdj() error {
-	// children should not inherit Nomad agent oom_score_adj value
-	//
+func (e *UniversalExecutor) setOomAdj(oomScore int32) error {
 	// /proc/self/oom_score_adj should work on both cgroups v1 and v2 systems
 	// range is -1000 to 1000; 0 is the default
-	return os.WriteFile("/proc/self/oom_score_adj", []byte("0"), 0644)
+	return os.WriteFile("/proc/self/oom_score_adj", []byte(strconv.Itoa(int(oomScore))), 0644)
 }
 
 func (*UniversalExecutor) computeCPU(command *ExecCommand) uint64 {
@@ -305,13 +346,13 @@ func (*UniversalExecutor) computeMemory(command *ExecCommand) (int64, int64) {
 func withNetworkIsolation(f func() error, spec *drivers.NetworkIsolationSpec) error {
 	if spec != nil && spec.Path != "" {
 		// Get a handle to the target network namespace
-		netNS, err := ns.GetNS(spec.Path)
+		netNS, err := nsutil.GetNS(spec.Path)
 		if err != nil {
 			return err
 		}
 
 		// Start the container in the network namespace
-		return netNS.Do(func(ns.NetNS) error {
+		return netNS.Do(func(nsutil.NetNS) error {
 			return f()
 		})
 	}

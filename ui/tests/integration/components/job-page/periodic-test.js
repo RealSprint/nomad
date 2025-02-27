@@ -54,6 +54,7 @@ module('Integration | Component | job-page/periodic', function (hooks) {
       @sortProperty={{sortProperty}}
       @sortDescending={{sortDescending}}
       @currentPage={{currentPage}}
+      @childJobs={{job.children}}
     />
   `;
 
@@ -176,7 +177,7 @@ module('Integration | Component | job-page/periodic', function (hooks) {
     this.server.pretender.delete('/v1/job/:id', () => [403, {}, '']);
 
     const mirageJob = this.server.create('job', 'periodic', {
-      childrenCount: 0,
+      childrenCount: 2,
       createAllocations: false,
       status: 'running',
     });
@@ -201,6 +202,8 @@ module('Integration | Component | job-page/periodic', function (hooks) {
       childrenCount: 0,
       createAllocations: false,
       status: 'dead',
+      withPreviousStableVersion: true,
+      stopped: true,
     });
     await this.store.findAll('job');
 
@@ -222,6 +225,8 @@ module('Integration | Component | job-page/periodic', function (hooks) {
       childrenCount: 0,
       createAllocations: false,
       status: 'dead',
+      withPreviousStableVersion: true,
+      stopped: true,
     });
     await this.store.findAll('job');
 
@@ -242,6 +247,8 @@ module('Integration | Component | job-page/periodic', function (hooks) {
       childrenCount: 0,
       createAllocations: false,
       status: 'dead',
+      withPreviousStableVersion: true,
+      stopped: true,
     });
     await this.store.findAll('job');
 

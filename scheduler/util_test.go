@@ -233,140 +233,6 @@ func TestShuffleNodes(t *testing.T) {
 
 }
 
-func TestTaskUpdatedAffinity(t *testing.T) {
-	ci.Parallel(t)
-
-	j1 := mock.Job()
-	j2 := mock.Job()
-	name := j1.TaskGroups[0].Name
-	must.False(t, tasksUpdated(j1, j2, name).modified)
-
-	// TaskGroup Affinity
-	j2.TaskGroups[0].Affinities = []*structs.Affinity{
-		{
-			LTarget: "node.datacenter",
-			RTarget: "dc1",
-			Operand: "=",
-			Weight:  100,
-		},
-	}
-	must.True(t, tasksUpdated(j1, j2, name).modified)
-
-	// TaskGroup Task Affinity
-	j3 := mock.Job()
-	j3.TaskGroups[0].Tasks[0].Affinities = []*structs.Affinity{
-		{
-			LTarget: "node.datacenter",
-			RTarget: "dc1",
-			Operand: "=",
-			Weight:  100,
-		},
-	}
-	must.True(t, tasksUpdated(j1, j3, name).modified)
-
-	j4 := mock.Job()
-	j4.TaskGroups[0].Tasks[0].Affinities = []*structs.Affinity{
-		{
-			LTarget: "node.datacenter",
-			RTarget: "dc1",
-			Operand: "=",
-			Weight:  100,
-		},
-	}
-	must.True(t, tasksUpdated(j1, j4, name).modified)
-
-	// check different level of same affinity
-	j5 := mock.Job()
-	j5.Affinities = []*structs.Affinity{
-		{
-			LTarget: "node.datacenter",
-			RTarget: "dc1",
-			Operand: "=",
-			Weight:  100,
-		},
-	}
-
-	j6 := mock.Job()
-	j6.Affinities = make([]*structs.Affinity, 0)
-	j6.TaskGroups[0].Affinities = []*structs.Affinity{
-		{
-			LTarget: "node.datacenter",
-			RTarget: "dc1",
-			Operand: "=",
-			Weight:  100,
-		},
-	}
-	must.False(t, tasksUpdated(j5, j6, name).modified)
-}
-
-func TestTaskUpdatedSpread(t *testing.T) {
-	ci.Parallel(t)
-
-	j1 := mock.Job()
-	j2 := mock.Job()
-	name := j1.TaskGroups[0].Name
-
-	must.False(t, tasksUpdated(j1, j2, name).modified)
-
-	// TaskGroup Spread
-	j2.TaskGroups[0].Spreads = []*structs.Spread{
-		{
-			Attribute: "node.datacenter",
-			Weight:    100,
-			SpreadTarget: []*structs.SpreadTarget{
-				{
-					Value:   "r1",
-					Percent: 50,
-				},
-				{
-					Value:   "r2",
-					Percent: 50,
-				},
-			},
-		},
-	}
-	must.True(t, tasksUpdated(j1, j2, name).modified)
-
-	// check different level of same constraint
-	j5 := mock.Job()
-	j5.Spreads = []*structs.Spread{
-		{
-			Attribute: "node.datacenter",
-			Weight:    100,
-			SpreadTarget: []*structs.SpreadTarget{
-				{
-					Value:   "r1",
-					Percent: 50,
-				},
-				{
-					Value:   "r2",
-					Percent: 50,
-				},
-			},
-		},
-	}
-
-	j6 := mock.Job()
-	j6.TaskGroups[0].Spreads = []*structs.Spread{
-		{
-			Attribute: "node.datacenter",
-			Weight:    100,
-			SpreadTarget: []*structs.SpreadTarget{
-				{
-					Value:   "r1",
-					Percent: 50,
-				},
-				{
-					Value:   "r2",
-					Percent: 50,
-				},
-			},
-		},
-	}
-
-	must.False(t, tasksUpdated(j5, j6, name).modified)
-}
-
 func TestTasksUpdated(t *testing.T) {
 	ci.Parallel(t)
 
@@ -547,6 +413,42 @@ func TestTasksUpdated(t *testing.T) {
 	// Compare changed Template ErrMissingKey
 	j30.TaskGroups[0].Tasks[0].Templates[0].ErrMissingKey = true
 	must.True(t, tasksUpdated(j29, j30, name).modified)
+
+	// Compare identical volume mounts
+	j31 := mock.Job()
+	j32 := j31.Copy()
+
+	must.False(t, tasksUpdated(j31, j32, name).modified)
+
+	// Modify volume mounts
+	j31.TaskGroups[0].Tasks[0].VolumeMounts = []*structs.VolumeMount{
+		{
+			Volume:       "myvolume",
+			SELinuxLabel: "z",
+		},
+	}
+
+	j32.TaskGroups[0].Tasks[0].VolumeMounts = []*structs.VolumeMount{
+		{
+			Volume:       "myvolume",
+			SELinuxLabel: "",
+		},
+	}
+
+	must.True(t, tasksUpdated(j31, j32, name).modified)
+
+	// Add volume mount
+	j32.TaskGroups[0].Tasks[0].VolumeMounts = append(j32.TaskGroups[0].Tasks[0].VolumeMounts,
+		&structs.VolumeMount{
+			Volume:       "myvolume2",
+			SELinuxLabel: "Z",
+		})
+
+	// Remove volume mount
+	j32 = j31.Copy()
+	j32.TaskGroups[0].Tasks[0].VolumeMounts = nil
+
+	must.True(t, tasksUpdated(j31, j32, name).modified)
 }
 
 func TestTasksUpdated_connectServiceUpdated(t *testing.T) {

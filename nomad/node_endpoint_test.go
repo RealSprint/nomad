@@ -15,7 +15,7 @@ import (
 	"time"
 
 	memdb "github.com/hashicorp/go-memdb"
-	msgpackrpc "github.com/hashicorp/net-rpc-msgpackrpc"
+	msgpackrpc "github.com/hashicorp/net-rpc-msgpackrpc/v2"
 	"github.com/hashicorp/nomad/acl"
 	"github.com/hashicorp/nomad/ci"
 	"github.com/hashicorp/nomad/command/agent/consul"
@@ -365,7 +365,7 @@ func TestClientEndpoint_Register_NodePool_Multiregion(t *testing.T) {
 	go heartbeat(ctx, rpcClient(t, s1), &structs.NodeUpdateStatusRequest{
 		NodeID:       node1.ID,
 		Status:       structs.NodeStatusReady,
-		WriteRequest: structs.WriteRequest{Region: "region-1"},
+		WriteRequest: structs.WriteRequest{Region: "region-1", AuthToken: node1.SecretID},
 	})
 
 	// Verify client becomes ready.
@@ -403,7 +403,7 @@ func TestClientEndpoint_Register_NodePool_Multiregion(t *testing.T) {
 	go heartbeat(ctx, rpcClient(t, s2), &structs.NodeUpdateStatusRequest{
 		NodeID:       node2.ID,
 		Status:       structs.NodeStatusReady,
-		WriteRequest: structs.WriteRequest{Region: "region-2"},
+		WriteRequest: structs.WriteRequest{Region: "region-2", AuthToken: node2.SecretID},
 	})
 
 	// Verify client is kept at the initializing status and has a node pool
@@ -526,7 +526,7 @@ func TestClientEndpoint_DeregisterOne(t *testing.T) {
 	// Deregister
 	dereg := &structs.NodeDeregisterRequest{
 		NodeID:       node.ID,
-		WriteRequest: structs.WriteRequest{Region: "global"},
+		WriteRequest: structs.WriteRequest{Region: "global", AuthToken: node.SecretID},
 	}
 	var resp2 structs.GenericResponse
 	if err := msgpackrpc.CallWithCodec(codec, "Node.Deregister", dereg, &resp2); err != nil {
@@ -574,7 +574,7 @@ func TestClientEndpoint_Deregister_ACL(t *testing.T) {
 	// Deregister without any token and expect it to fail
 	dereg := &structs.NodeBatchDeregisterRequest{
 		NodeIDs:      []string{node.ID},
-		WriteRequest: structs.WriteRequest{Region: "global"},
+		WriteRequest: structs.WriteRequest{Region: "global", AuthToken: node.SecretID},
 	}
 	var resp structs.GenericResponse
 	if err := msgpackrpc.CallWithCodec(codec, "Node.BatchDeregister", dereg, &resp); err == nil {
@@ -600,7 +600,7 @@ func TestClientEndpoint_Deregister_ACL(t *testing.T) {
 	// Deregister with an invalid token.
 	dereg1 := &structs.NodeBatchDeregisterRequest{
 		NodeIDs:      []string{node1.ID},
-		WriteRequest: structs.WriteRequest{Region: "global"},
+		WriteRequest: structs.WriteRequest{Region: "global", AuthToken: node1.SecretID},
 	}
 	dereg1.AuthToken = invalidToken.SecretID
 	if err := msgpackrpc.CallWithCodec(codec, "Node.BatchDeregister", dereg1, &resp); err == nil {
@@ -650,7 +650,7 @@ func TestClientEndpoint_Deregister_Vault(t *testing.T) {
 	// Deregister
 	dereg := &structs.NodeBatchDeregisterRequest{
 		NodeIDs:      []string{node.ID},
-		WriteRequest: structs.WriteRequest{Region: "global"},
+		WriteRequest: structs.WriteRequest{Region: "global", AuthToken: node.SecretID},
 	}
 	var resp2 structs.GenericResponse
 	if err := msgpackrpc.CallWithCodec(codec, "Node.BatchDeregister", dereg, &resp2); err != nil {
@@ -712,7 +712,7 @@ func TestClientEndpoint_Deregister_Vault_WorkloadIdentity(t *testing.T) {
 	// are revoked.
 	dereg := &structs.NodeDeregisterRequest{
 		NodeID:       node.ID,
-		WriteRequest: structs.WriteRequest{Region: "global"},
+		WriteRequest: structs.WriteRequest{Region: "global", AuthToken: node.SecretID},
 	}
 	var resp2 structs.GenericResponse
 	err = msgpackrpc.CallWithCodec(codec, "Node.Deregister", dereg, &resp2)
@@ -761,7 +761,7 @@ func TestClientEndpoint_UpdateStatus(t *testing.T) {
 	dereg := &structs.NodeUpdateStatusRequest{
 		NodeID:       node.ID,
 		Status:       structs.NodeStatusInit,
-		WriteRequest: structs.WriteRequest{Region: "global"},
+		WriteRequest: structs.WriteRequest{Region: "global", AuthToken: node.SecretID},
 	}
 	var resp2 structs.NodeUpdateResponse
 	if err := msgpackrpc.CallWithCodec(codec, "Node.UpdateStatus", dereg, &resp2); err != nil {
@@ -849,7 +849,7 @@ func TestClientEndpoint_UpdateStatus_Vault(t *testing.T) {
 	dereg := &structs.NodeUpdateStatusRequest{
 		NodeID:       node.ID,
 		Status:       structs.NodeStatusDown,
-		WriteRequest: structs.WriteRequest{Region: "global"},
+		WriteRequest: structs.WriteRequest{Region: "global", AuthToken: node.SecretID},
 	}
 	var resp2 structs.NodeUpdateResponse
 	if err := msgpackrpc.CallWithCodec(codec, "Node.UpdateStatus", dereg, &resp2); err != nil {
@@ -902,7 +902,7 @@ func TestClientEndpoint_UpdateStatus_Vault_WorkloadIdentity(t *testing.T) {
 	updateReq := &structs.NodeUpdateStatusRequest{
 		NodeID:       node.ID,
 		Status:       structs.NodeStatusDown,
-		WriteRequest: structs.WriteRequest{Region: "global"},
+		WriteRequest: structs.WriteRequest{Region: "global", AuthToken: node.SecretID},
 	}
 	var resp2 structs.NodeUpdateResponse
 	err = msgpackrpc.CallWithCodec(codec, "Node.UpdateStatus", updateReq, &resp2)
@@ -952,7 +952,7 @@ func TestClientEndpoint_UpdateStatus_Reconnect(t *testing.T) {
 			// Setup server with tighter heartbeat so we don't have to wait so long
 			// for nodes to go down.
 			heartbeatTTL := time.Duration(500*testutil.TestMultiplier()) * time.Millisecond
-			s, cleanupS := TestServer(t, func(c *Config) {
+			s, rootToken, cleanupS := TestACLServer(t, func(c *Config) {
 				c.MinHeartbeatTTL = heartbeatTTL
 				c.HeartbeatGrace = 2 * heartbeatTTL
 			})
@@ -974,7 +974,6 @@ func TestClientEndpoint_UpdateStatus_Reconnect(t *testing.T) {
 			heartbeat := func(ctx context.Context) {
 				ticker := time.NewTicker(heartbeatTTL / 2)
 				defer ticker.Stop()
-
 				for {
 					select {
 					case <-ctx.Done():
@@ -983,11 +982,12 @@ func TestClientEndpoint_UpdateStatus_Reconnect(t *testing.T) {
 						if t.Failed() {
 							return
 						}
-
 						req := &structs.NodeUpdateStatusRequest{
-							NodeID:       node.ID,
-							Status:       structs.NodeStatusReady,
-							WriteRequest: structs.WriteRequest{Region: "global"},
+							NodeID: node.ID,
+							Status: structs.NodeStatusReady,
+							WriteRequest: structs.WriteRequest{
+								Region:    "global",
+								AuthToken: node.SecretID},
 						}
 						var resp structs.NodeUpdateResponse
 						// Ignore errors since an unexpected failed heartbeat will cause
@@ -1001,7 +1001,8 @@ func TestClientEndpoint_UpdateStatus_Reconnect(t *testing.T) {
 			go heartbeat(heartbeatCtx)
 
 			// Wait for node to be ready.
-			testutil.WaitForClientStatus(t, s.RPC, node.ID, "global", structs.NodeStatusReady)
+			testutil.WaitForClientStatusWithToken(t, s.RPC, node.ID, "global",
+				structs.NodeStatusReady, rootToken.SecretID)
 
 			// Register job with Disconnect.LostAfter
 			job := version.jobSpec(time.Hour)
@@ -1018,6 +1019,7 @@ func TestClientEndpoint_UpdateStatus_Reconnect(t *testing.T) {
 				WriteRequest: structs.WriteRequest{
 					Region:    "global",
 					Namespace: job.Namespace,
+					AuthToken: rootToken.SecretID,
 				},
 			}
 			var jobResp structs.JobRegisterResponse
@@ -1025,15 +1027,16 @@ func TestClientEndpoint_UpdateStatus_Reconnect(t *testing.T) {
 			must.NoError(t, err)
 
 			// Wait for alloc to be pending in the server.
-			testutil.WaitForJobAllocStatus(t, s.RPC, job, map[string]int{
+			testutil.WaitForJobAllocStatusWithToken(t, s.RPC, job, map[string]int{
 				structs.AllocClientStatusPending: 1,
-			})
+			}, rootToken.SecretID)
 
 			// Get allocs that node should run.
 			allocsReq := &structs.NodeSpecificRequest{
 				NodeID: node.ID,
 				QueryOptions: structs.QueryOptions{
-					Region: "global",
+					Region:    "global",
+					AuthToken: rootToken.SecretID,
 				},
 			}
 			var allocsResp structs.NodeAllocsResponse
@@ -1049,7 +1052,8 @@ func TestClientEndpoint_UpdateStatus_Reconnect(t *testing.T) {
 			allocUpdateReq := &structs.AllocUpdateRequest{
 				Alloc: []*structs.Allocation{alloc},
 				WriteRequest: structs.WriteRequest{
-					Region: "global",
+					Region:    "global",
+					AuthToken: node.SecretID,
 				},
 			}
 			var resp structs.GenericResponse
@@ -1057,17 +1061,18 @@ func TestClientEndpoint_UpdateStatus_Reconnect(t *testing.T) {
 			must.NoError(t, err)
 
 			// Wait for alloc to be running in the server.
-			testutil.WaitForJobAllocStatus(t, s.RPC, job, map[string]int{
+			testutil.WaitForJobAllocStatusWithToken(t, s.RPC, job, map[string]int{
 				structs.AllocClientStatusRunning: 1,
-			})
+			}, rootToken.SecretID)
 
 			// Stop heartbeat and wait for the client to be disconnected and the alloc
 			// to be unknown.
 			cancelHeartbeat()
-			testutil.WaitForClientStatus(t, s.RPC, node.ID, "global", structs.NodeStatusDisconnected)
-			testutil.WaitForJobAllocStatus(t, s.RPC, job, map[string]int{
+			testutil.WaitForClientStatusWithToken(t, s.RPC, node.ID, "global",
+				structs.NodeStatusDisconnected, rootToken.SecretID)
+			testutil.WaitForJobAllocStatusWithToken(t, s.RPC, job, map[string]int{
 				structs.AllocClientStatusUnknown: 1,
-			})
+			}, rootToken.SecretID)
 
 			// Restart heartbeat to reconnect node.
 			heartbeatCtx, cancelHeartbeat = context.WithCancel(context.Background())
@@ -1080,7 +1085,8 @@ func TestClientEndpoint_UpdateStatus_Reconnect(t *testing.T) {
 			// allocs status with the server so the scheduler have the necessary
 			// information to avoid unnecessary placements.
 			time.Sleep(3 * heartbeatTTL)
-			testutil.WaitForClientStatus(t, s.RPC, node.ID, "global", structs.NodeStatusInit)
+			testutil.WaitForClientStatusWithToken(t, s.RPC, node.ID, "global",
+				structs.NodeStatusInit, rootToken.SecretID)
 
 			// Get allocs that node should run.
 			// The node should only have one alloc assigned until it updates its allocs
@@ -1088,7 +1094,8 @@ func TestClientEndpoint_UpdateStatus_Reconnect(t *testing.T) {
 			allocsReq = &structs.NodeSpecificRequest{
 				NodeID: node.ID,
 				QueryOptions: structs.QueryOptions{
-					Region: "global",
+					Region:    "global",
+					AuthToken: rootToken.SecretID,
 				},
 			}
 			err = msgpackrpc.CallWithCodec(codec, "Node.GetAllocs", allocsReq, &allocsResp)
@@ -1103,10 +1110,12 @@ func TestClientEndpoint_UpdateStatus_Reconnect(t *testing.T) {
 			// - client status is ready.
 			// - only 1 alloc and the alloc is running.
 			// - all evals are terminal, so cluster is in a stable state.
-			testutil.WaitForClientStatus(t, s.RPC, node.ID, "global", structs.NodeStatusReady)
-			testutil.WaitForJobAllocStatus(t, s.RPC, job, map[string]int{
+			testutil.WaitForClientStatusWithToken(t, s.RPC, node.ID, "global",
+				structs.NodeStatusReady, rootToken.SecretID)
+			testutil.WaitForJobAllocStatusWithToken(t, s.RPC, job, map[string]int{
 				structs.AllocClientStatusRunning: 1,
-			})
+			}, rootToken.SecretID)
+
 			testutil.WaitForResult(func() (bool, error) {
 				state := s.fsm.State()
 				ws := memdb.NewWatchSet()
@@ -1163,7 +1172,7 @@ func TestClientEndpoint_UpdateStatus_HeartbeatRecovery(t *testing.T) {
 	dereg := &structs.NodeUpdateStatusRequest{
 		NodeID:       node.ID,
 		Status:       structs.NodeStatusInit,
-		WriteRequest: structs.WriteRequest{Region: "global"},
+		WriteRequest: structs.WriteRequest{Region: "global", AuthToken: node.SecretID},
 	}
 	var resp2 structs.NodeUpdateResponse
 	require.NoError(msgpackrpc.CallWithCodec(codec, "Node.UpdateStatus", dereg, &resp2))
@@ -1253,7 +1262,7 @@ func TestClientEndpoint_Register_GetEvals(t *testing.T) {
 	req := &structs.NodeUpdateStatusRequest{
 		NodeID:       node.ID,
 		Status:       structs.NodeStatusDown,
-		WriteRequest: structs.WriteRequest{Region: "global"},
+		WriteRequest: structs.WriteRequest{Region: "global", AuthToken: node.SecretID},
 	}
 	if err := msgpackrpc.CallWithCodec(codec, "Node.UpdateStatus", req, &resp); err != nil {
 		t.Fatalf("err: %v", err)
@@ -1266,7 +1275,7 @@ func TestClientEndpoint_Register_GetEvals(t *testing.T) {
 	req = &structs.NodeUpdateStatusRequest{
 		NodeID:       node.ID,
 		Status:       structs.NodeStatusReady,
-		WriteRequest: structs.WriteRequest{Region: "global"},
+		WriteRequest: structs.WriteRequest{Region: "global", AuthToken: node.SecretID},
 	}
 	if err := msgpackrpc.CallWithCodec(codec, "Node.UpdateStatus", req, &resp); err != nil {
 		t.Fatalf("err: %v", err)
@@ -1316,7 +1325,7 @@ func TestClientEndpoint_UpdateStatus_GetEvals(t *testing.T) {
 	update := &structs.NodeUpdateStatusRequest{
 		NodeID:       node.ID,
 		Status:       structs.NodeStatusReady,
-		WriteRequest: structs.WriteRequest{Region: "global"},
+		WriteRequest: structs.WriteRequest{Region: "global", AuthToken: node.SecretID},
 	}
 	var resp2 structs.NodeUpdateResponse
 	if err := msgpackrpc.CallWithCodec(codec, "Node.UpdateStatus", update, &resp2); err != nil {
@@ -1422,7 +1431,7 @@ func TestClientEndpoint_UpdateStatus_HeartbeatOnly(t *testing.T) {
 	dereg := &structs.NodeUpdateStatusRequest{
 		NodeID:       node.ID,
 		Status:       node.Status,
-		WriteRequest: structs.WriteRequest{Region: "global"},
+		WriteRequest: structs.WriteRequest{Region: "global", AuthToken: node.SecretID},
 	}
 	var resp2 structs.NodeUpdateResponse
 	if err := msgpackrpc.CallWithCodec(codec, "Node.UpdateStatus", dereg, &resp2); err != nil {
@@ -1487,7 +1496,7 @@ func TestNode_UpdateStatus_ServiceRegistrations(t *testing.T) {
 
 	// Create a node and upsert this into state.
 	node := mock.Node()
-	require.NoError(t, testServer.State().UpsertNode(structs.MsgTypeTestSetup, 10, node))
+	must.NoError(t, testServer.State().UpsertNode(structs.MsgTypeTestSetup, 10, node))
 
 	// Generate service registrations, ensuring the nodeID is set to the
 	// generated node from above.
@@ -1498,35 +1507,39 @@ func TestNode_UpdateStatus_ServiceRegistrations(t *testing.T) {
 	}
 
 	// Upsert the service registrations into state.
-	require.NoError(t, testServer.State().UpsertServiceRegistrations(structs.MsgTypeTestSetup, 20, services))
+	must.NoError(t, testServer.State().UpsertServiceRegistrations(structs.MsgTypeTestSetup, 20, services))
 
 	// Check the service registrations are in state as we expect, so we can
 	// have confidence in the rest of the test.
 	ws := memdb.NewWatchSet()
 	nodeRegs, err := testServer.State().GetServiceRegistrationsByNodeID(ws, node.ID)
-	require.NoError(t, err)
-	require.Len(t, nodeRegs, 2)
-	require.Equal(t, nodeRegs[0].NodeID, node.ID)
-	require.Equal(t, nodeRegs[1].NodeID, node.ID)
+	must.NoError(t, err)
+	must.Len(t, 2, nodeRegs)
+	must.Eq(t, nodeRegs[0].NodeID, node.ID)
+	must.Eq(t, nodeRegs[1].NodeID, node.ID)
 
 	// Generate and trigger a node down status update. This mimics what happens
 	// when the node fails its heart-beating.
 	args := structs.NodeUpdateStatusRequest{
 		NodeID:       node.ID,
 		Status:       structs.NodeStatusDown,
-		WriteRequest: structs.WriteRequest{Region: "global"},
+		WriteRequest: structs.WriteRequest{Region: "global", AuthToken: node.SecretID},
 	}
 
 	var reply structs.NodeUpdateResponse
 
 	nodeEndpoint := NewNodeEndpoint(testServer, nil)
-	require.NoError(t, nodeEndpoint.UpdateStatus(&args, &reply))
+	must.NoError(t, nodeEndpoint.UpdateStatus(&args, &reply))
 
 	// Query our state, to ensure the node service registrations have been
 	// removed.
 	nodeRegs, err = testServer.State().GetServiceRegistrationsByNodeID(ws, node.ID)
-	require.NoError(t, err)
-	require.Len(t, nodeRegs, 0)
+	must.NoError(t, err)
+	must.Len(t, 0, nodeRegs)
+
+	// Re-send the status update, to ensure we get no error if service
+	// registrations have already been removed
+	must.NoError(t, nodeEndpoint.UpdateStatus(&args, &reply))
 }
 
 // TestClientEndpoint_UpdateDrain asserts the ability to initiate drain
@@ -1585,10 +1598,11 @@ func TestClientEndpoint_UpdateDrain(t *testing.T) {
 	require.Equal(NodeDrainEventDrainSet, out.Events[1].Message)
 	require.NotNil(out.LastDrain)
 	require.Equal(structs.DrainMetadata{
-		StartedAt: out.LastDrain.UpdatedAt,
-		UpdatedAt: out.LastDrain.StartedAt,
-		Status:    structs.DrainStatusDraining,
-		Meta:      map[string]string{"message": "this node is not needed"},
+		StartedAt:  out.LastDrain.UpdatedAt,
+		UpdatedAt:  out.LastDrain.StartedAt,
+		Status:     structs.DrainStatusDraining,
+		Meta:       map[string]string{"message": "this node is not needed"},
+		AccessorID: "token:acls-disabled",
 	}, *out.LastDrain)
 
 	// before+deadline should be before the forced deadline
@@ -1632,10 +1646,11 @@ func TestClientEndpoint_UpdateDrain(t *testing.T) {
 	require.NotNil(out.LastDrain)
 	require.False(out.LastDrain.UpdatedAt.Before(out.LastDrain.StartedAt))
 	require.Equal(structs.DrainMetadata{
-		StartedAt: out.LastDrain.StartedAt,
-		UpdatedAt: out.LastDrain.UpdatedAt,
-		Status:    structs.DrainStatusCanceled,
-		Meta:      map[string]string{"cancelled": "yes"},
+		StartedAt:  out.LastDrain.StartedAt,
+		UpdatedAt:  out.LastDrain.UpdatedAt,
+		Status:     structs.DrainStatusCanceled,
+		Meta:       map[string]string{"cancelled": "yes"},
+		AccessorID: "token:acls-disabled",
 	}, *out.LastDrain)
 
 	// Check that calling UpdateDrain with the same DrainStrategy does not emit
@@ -1700,10 +1715,11 @@ func TestClientEndpoint_UpdatedDrainAndCompleted(t *testing.T) {
 	require.NotNil(out.LastDrain)
 	firstDrainUpdate := out.LastDrain.UpdatedAt
 	require.Equal(structs.DrainMetadata{
-		StartedAt: firstDrainUpdate,
-		UpdatedAt: firstDrainUpdate,
-		Status:    structs.DrainStatusDraining,
-		Meta:      map[string]string{"message": "first drain"},
+		StartedAt:  firstDrainUpdate,
+		UpdatedAt:  firstDrainUpdate,
+		Status:     structs.DrainStatusDraining,
+		Meta:       map[string]string{"message": "first drain"},
+		AccessorID: "token:acls-disabled",
 	}, *out.LastDrain)
 
 	time.Sleep(1 * time.Second)
@@ -1721,10 +1737,11 @@ func TestClientEndpoint_UpdatedDrainAndCompleted(t *testing.T) {
 	secondDrainUpdate := out.LastDrain.UpdatedAt
 	require.True(secondDrainUpdate.After(firstDrainUpdate))
 	require.Equal(structs.DrainMetadata{
-		StartedAt: firstDrainUpdate,
-		UpdatedAt: secondDrainUpdate,
-		Status:    structs.DrainStatusDraining,
-		Meta:      map[string]string{"message": "second drain"},
+		StartedAt:  firstDrainUpdate,
+		UpdatedAt:  secondDrainUpdate,
+		Status:     structs.DrainStatusDraining,
+		Meta:       map[string]string{"message": "second drain"},
+		AccessorID: "token:acls-disabled",
 	}, *out.LastDrain)
 
 	time.Sleep(1 * time.Second)
@@ -1747,10 +1764,11 @@ func TestClientEndpoint_UpdatedDrainAndCompleted(t *testing.T) {
 
 	require.True(out.LastDrain.UpdatedAt.After(secondDrainUpdate))
 	require.Equal(structs.DrainMetadata{
-		StartedAt: firstDrainUpdate,
-		UpdatedAt: out.LastDrain.UpdatedAt,
-		Status:    structs.DrainStatusComplete,
-		Meta:      map[string]string{"message": "second drain"},
+		StartedAt:  firstDrainUpdate,
+		UpdatedAt:  out.LastDrain.UpdatedAt,
+		Status:     structs.DrainStatusComplete,
+		Meta:       map[string]string{"message": "second drain"},
+		AccessorID: "token:acls-disabled",
 	}, *out.LastDrain)
 }
 
@@ -1875,7 +1893,7 @@ func TestClientEndpoint_UpdateDrain_ACL(t *testing.T) {
 		require.Nil(msgpackrpc.CallWithCodec(codec, "Node.UpdateDrain", dereg, &resp), "RPC")
 		out, err := state.NodeByID(nil, node.ID)
 		require.NoError(err)
-		require.Equal(validToken.AccessorID, out.LastDrain.AccessorID)
+		require.Equal("token:"+validToken.AccessorID, out.LastDrain.AccessorID)
 	}
 
 	// Try with a invalid token
@@ -1895,7 +1913,7 @@ func TestClientEndpoint_UpdateDrain_ACL(t *testing.T) {
 		require.Nil(msgpackrpc.CallWithCodec(codec, "Node.UpdateDrain", dereg, &resp), "RPC")
 		out, err := state.NodeByID(nil, node.ID)
 		require.NoError(err)
-		require.Equal(root.AccessorID, out.LastDrain.AccessorID)
+		require.Equal("token:"+root.AccessorID, out.LastDrain.AccessorID)
 	}
 }
 
@@ -1979,7 +1997,7 @@ func TestClientEndpoint_Drain_Down(t *testing.T) {
 	req := &structs.NodeUpdateStatusRequest{
 		NodeID:       node.ID,
 		Status:       structs.NodeStatusDown,
-		WriteRequest: structs.WriteRequest{Region: "global"},
+		WriteRequest: structs.WriteRequest{Region: "global", AuthToken: node.SecretID},
 	}
 	require.Nil(msgpackrpc.CallWithCodec(codec, "Node.UpdateStatus", req, &resp))
 
@@ -3039,7 +3057,7 @@ func TestClientEndpoint_GetAllocs_Blocking(t *testing.T) {
 	}
 }
 
-func TestClientEndpoint_UpdateAlloc(t *testing.T) {
+func TestNode_UpdateAlloc(t *testing.T) {
 	ci.Parallel(t)
 
 	s1, cleanupS1 := TestServer(t, func(c *Config) {
@@ -3052,7 +3070,6 @@ func TestClientEndpoint_UpdateAlloc(t *testing.T) {
 	defer cleanupS1()
 	codec := rpcClient(t, s1)
 	testutil.WaitForLeader(t, s1.RPC)
-	require := require.New(t)
 
 	// Create the register request
 	node := mock.Node()
@@ -3063,34 +3080,28 @@ func TestClientEndpoint_UpdateAlloc(t *testing.T) {
 
 	// Fetch the response
 	var resp structs.GenericResponse
-	if err := msgpackrpc.CallWithCodec(codec, "Node.Register", reg, &resp); err != nil {
-		t.Fatalf("err: %v", err)
-	}
+	must.NoError(t, msgpackrpc.CallWithCodec(codec, "Node.Register", reg, &resp))
 
-	state := s1.fsm.State()
+	store := s1.fsm.State()
 	// Inject mock job
 	job := mock.Job()
 	job.ID = "mytestjob"
-	err := state.UpsertJob(structs.MsgTypeTestSetup, 101, nil, job)
-	require.Nil(err)
+	must.NoError(t, store.UpsertJob(structs.MsgTypeTestSetup, 101, nil, job))
 
 	// Inject fake allocations
 	alloc := mock.Alloc()
 	alloc.JobID = job.ID
 	alloc.NodeID = node.ID
-	err = state.UpsertJobSummary(99, mock.JobSummary(alloc.JobID))
-	require.Nil(err)
+	must.NoError(t, store.UpsertJobSummary(99, mock.JobSummary(alloc.JobID)))
 	alloc.TaskGroup = job.TaskGroups[0].Name
 
 	alloc2 := mock.Alloc()
 	alloc2.JobID = job.ID
 	alloc2.NodeID = node.ID
-	err = state.UpsertJobSummary(99, mock.JobSummary(alloc2.JobID))
-	require.Nil(err)
+	must.NoError(t, store.UpsertJobSummary(99, mock.JobSummary(alloc2.JobID)))
 	alloc2.TaskGroup = job.TaskGroups[0].Name
 
-	err = state.UpsertAllocs(structs.MsgTypeTestSetup, 100, []*structs.Allocation{alloc, alloc2})
-	require.Nil(err)
+	must.NoError(t, store.UpsertAllocs(structs.MsgTypeTestSetup, 100, []*structs.Allocation{alloc, alloc2}))
 
 	// Attempt updates of more than one alloc for the same job
 	clientAlloc1 := new(structs.Allocation)
@@ -3104,40 +3115,35 @@ func TestClientEndpoint_UpdateAlloc(t *testing.T) {
 	// Update the alloc
 	update := &structs.AllocUpdateRequest{
 		Alloc:        []*structs.Allocation{clientAlloc1, clientAlloc2},
-		WriteRequest: structs.WriteRequest{Region: "global"},
+		WriteRequest: structs.WriteRequest{Region: "global", AuthToken: node.SecretID},
 	}
 	var resp2 structs.NodeAllocsResponse
 	start := time.Now()
-	err = msgpackrpc.CallWithCodec(codec, "Node.UpdateAlloc", update, &resp2)
-	require.Nil(err)
-	require.NotEqual(uint64(0), resp2.Index)
-
-	if diff := time.Since(start); diff < batchUpdateInterval {
-		t.Fatalf("too fast: %v", diff)
-	}
+	must.NoError(t, msgpackrpc.CallWithCodec(codec, "Node.UpdateAlloc", update, &resp2))
+	must.Greater(t, 0, resp2.Index)
+	must.GreaterEq(t, batchUpdateInterval, time.Since(start))
 
 	// Lookup the alloc
 	ws := memdb.NewWatchSet()
-	out, err := state.AllocByID(ws, alloc.ID)
-	require.Nil(err)
-	require.Equal(structs.AllocClientStatusFailed, out.ClientStatus)
-	require.True(out.ModifyTime > 0)
+	out, err := store.AllocByID(ws, alloc.ID)
+	must.NoError(t, err)
+	must.Eq(t, structs.AllocClientStatusFailed, out.ClientStatus)
+	must.Greater(t, 0, out.ModifyTime)
 
 	// Assert that exactly one eval with TriggeredBy EvalTriggerRetryFailedAlloc exists
-	evaluations, err := state.EvalsByJob(ws, job.Namespace, job.ID)
-	require.Nil(err)
-	require.True(len(evaluations) != 0)
+	evaluations, err := store.EvalsByJob(ws, job.Namespace, job.ID)
+	must.NoError(t, err)
+	must.Greater(t, 0, len(evaluations))
 	foundCount := 0
 	for _, resultEval := range evaluations {
 		if resultEval.TriggeredBy == structs.EvalTriggerRetryFailedAlloc && resultEval.WaitUntil.IsZero() {
 			foundCount++
 		}
 	}
-	require.Equal(1, foundCount, "Should create exactly one eval for failed allocs")
-
+	must.Eq(t, 1, foundCount, must.Sprint("Should create exactly one eval for failed allocs"))
 }
 
-func TestClientEndpoint_UpdateAlloc_NodeNotReady(t *testing.T) {
+func TestNode_UpdateAlloc_NodeNotReady(t *testing.T) {
 	ci.Parallel(t)
 
 	s1, cleanupS1 := TestServer(t, nil)
@@ -3152,15 +3158,13 @@ func TestClientEndpoint_UpdateAlloc_NodeNotReady(t *testing.T) {
 		WriteRequest: structs.WriteRequest{Region: "global"},
 	}
 	var resp structs.GenericResponse
-	err := msgpackrpc.CallWithCodec(codec, "Node.Register", reg, &resp)
-	require.NoError(t, err)
+	must.NoError(t, msgpackrpc.CallWithCodec(codec, "Node.Register", reg, &resp))
 
 	// Inject mock job and allocation.
-	state := s1.fsm.State()
+	store := s1.fsm.State()
 
 	job := mock.Job()
-	err = state.UpsertJob(structs.MsgTypeTestSetup, 101, nil, job)
-	require.NoError(t, err)
+	must.NoError(t, store.UpsertJob(structs.MsgTypeTestSetup, 101, nil, job))
 
 	alloc := mock.Alloc()
 	alloc.JobID = job.ID
@@ -3168,14 +3172,12 @@ func TestClientEndpoint_UpdateAlloc_NodeNotReady(t *testing.T) {
 	alloc.TaskGroup = job.TaskGroups[0].Name
 	alloc.ClientStatus = structs.AllocClientStatusRunning
 
-	err = state.UpsertJobSummary(99, mock.JobSummary(alloc.JobID))
-	require.NoError(t, err)
-	err = state.UpsertAllocs(structs.MsgTypeTestSetup, 100, []*structs.Allocation{alloc})
-	require.NoError(t, err)
+	must.NoError(t, store.UpsertJobSummary(99, mock.JobSummary(alloc.JobID)))
+	must.NoError(t, store.UpsertAllocs(structs.MsgTypeTestSetup, 100, []*structs.Allocation{alloc}))
 
 	// Mark node as down.
-	err = state.UpdateNodeStatus(structs.MsgTypeTestSetup, 101, node.ID, structs.NodeStatusDown, time.Now().UnixNano(), nil)
-	require.NoError(t, err)
+	must.NoError(t, store.UpdateNodeStatus(
+		structs.MsgTypeTestSetup, 101, node.ID, structs.NodeStatusDown, time.Now().UnixNano(), nil))
 
 	// Try to update alloc.
 	updatedAlloc := new(structs.Allocation)
@@ -3184,34 +3186,130 @@ func TestClientEndpoint_UpdateAlloc_NodeNotReady(t *testing.T) {
 
 	allocUpdateReq := &structs.AllocUpdateRequest{
 		Alloc:        []*structs.Allocation{updatedAlloc},
-		WriteRequest: structs.WriteRequest{Region: "global"},
+		WriteRequest: structs.WriteRequest{Region: "global", AuthToken: node.SecretID},
 	}
 	var allocUpdateResp structs.NodeAllocsResponse
-	err = msgpackrpc.CallWithCodec(codec, "Node.UpdateAlloc", allocUpdateReq, &allocUpdateResp)
-	require.ErrorContains(t, err, "not allowed to update allocs")
+	err := msgpackrpc.CallWithCodec(codec, "Node.UpdateAlloc", allocUpdateReq, &allocUpdateResp)
+	must.ErrorContains(t, err, "not allowed to update allocs")
 
 	// Send request without an explicit node ID.
 	updatedAlloc.NodeID = ""
 	err = msgpackrpc.CallWithCodec(codec, "Node.UpdateAlloc", allocUpdateReq, &allocUpdateResp)
-	require.ErrorContains(t, err, "missing node ID")
+	must.ErrorContains(t, err, "missing node ID")
 
 	// Send request with invalid node ID.
 	updatedAlloc.NodeID = "not-valid"
 	err = msgpackrpc.CallWithCodec(codec, "Node.UpdateAlloc", allocUpdateReq, &allocUpdateResp)
-	require.ErrorContains(t, err, "node lookup failed")
+	must.ErrorContains(t, err, "node lookup failed")
 
 	// Send request with non-existing node ID.
 	updatedAlloc.NodeID = uuid.Generate()
 	err = msgpackrpc.CallWithCodec(codec, "Node.UpdateAlloc", allocUpdateReq, &allocUpdateResp)
-	require.ErrorContains(t, err, "not found")
+	must.ErrorContains(t, err, "not found")
 
 	// Mark node as ready and try again.
-	err = state.UpdateNodeStatus(structs.MsgTypeTestSetup, 102, node.ID, structs.NodeStatusReady, time.Now().UnixNano(), nil)
-	require.NoError(t, err)
+	must.NoError(t, store.UpdateNodeStatus(
+		structs.MsgTypeTestSetup, 102, node.ID, structs.NodeStatusReady, time.Now().UnixNano(), nil))
 
 	updatedAlloc.NodeID = node.ID
-	err = msgpackrpc.CallWithCodec(codec, "Node.UpdateAlloc", allocUpdateReq, &allocUpdateResp)
-	require.NoError(t, err)
+	must.NoError(t, msgpackrpc.CallWithCodec(codec, "Node.UpdateAlloc", allocUpdateReq, &allocUpdateResp))
+}
+
+func TestNode_UpdateAllocServiceRegistrations(t *testing.T) {
+	ci.Parallel(t)
+
+	srv, cleanup := TestServer(t, func(c *Config) {
+		c.NumSchedulers = 0
+	})
+
+	defer cleanup()
+	codec := rpcClient(t, srv)
+	testutil.WaitForLeader(t, srv.RPC)
+
+	store := srv.fsm.State()
+	index := uint64(100)
+
+	// Inject mock node, job, allocations for that job, and service
+	// registrations for those allocs
+	node := mock.Node()
+	index++
+	must.NoError(t, store.UpsertNode(structs.MsgTypeTestSetup, index, node))
+
+	job := mock.Job()
+	job.ID = "mytestjob"
+	index++
+	must.NoError(t, store.UpsertJob(structs.MsgTypeTestSetup, index, nil, job))
+
+	alloc0 := mock.Alloc()
+	alloc0.JobID = job.ID
+	alloc0.NodeID = node.ID
+	index++
+	must.NoError(t, store.UpsertJobSummary(index, mock.JobSummary(alloc0.JobID)))
+	alloc0.TaskGroup = job.TaskGroups[0].Name
+
+	alloc1 := mock.Alloc()
+	alloc1.JobID = job.ID
+	alloc1.NodeID = node.ID
+	index++
+	must.NoError(t, store.UpsertJobSummary(index, mock.JobSummary(alloc1.JobID)))
+	alloc1.TaskGroup = job.TaskGroups[0].Name
+
+	alloc2 := mock.Alloc() // will have no service registration
+	alloc2.JobID = job.ID
+	alloc2.NodeID = node.ID
+	index++
+	must.NoError(t, store.UpsertJobSummary(index, mock.JobSummary(alloc2.JobID)))
+	alloc2.TaskGroup = job.TaskGroups[0].Name
+
+	index++
+	must.NoError(t, store.UpsertAllocs(structs.MsgTypeTestSetup, index, []*structs.Allocation{alloc0, alloc1, alloc2}))
+
+	serviceFor := func(allocID string, port int) *structs.ServiceRegistration {
+		return &structs.ServiceRegistration{
+			ID:          fmt.Sprintf("_nomad-task-%s-group-api-countdash-api-http", allocID),
+			ServiceName: "countdash-api",
+			Namespace:   job.Namespace,
+			NodeID:      node.ID,
+			Datacenter:  node.Datacenter,
+			JobID:       job.ID,
+			AllocID:     allocID,
+			Tags:        []string{"bar"},
+			Address:     "192.168.200.200",
+			Port:        port,
+		}
+	}
+
+	service0 := serviceFor(alloc0.ID, 29001)
+	service1 := serviceFor(alloc1.ID, 29002)
+	index++
+	must.NoError(t, store.UpsertServiceRegistrations(
+		structs.MsgTypeTestSetup, index, []*structs.ServiceRegistration{service0, service1}))
+
+	// no-op
+	update := &structs.AllocUpdateRequest{
+		Alloc:        []*structs.Allocation{alloc0, alloc1, alloc2},
+		WriteRequest: structs.WriteRequest{Region: "global", AuthToken: node.SecretID},
+	}
+	var resp structs.NodeAllocsResponse
+	must.NoError(t, msgpackrpc.CallWithCodec(codec, "Node.UpdateAlloc", update, &resp))
+
+	services, err := store.GetServiceRegistrationsByNodeID(nil, node.ID)
+	must.NoError(t, err)
+	must.Len(t, 2, services, must.Sprint("no-op update should not have deleted services"))
+
+	// fail one allocation
+	alloc0 = alloc0.Copy()
+	alloc0.ClientStatus = structs.AllocClientStatusFailed
+	update = &structs.AllocUpdateRequest{
+		Alloc:        []*structs.Allocation{alloc0, alloc1, alloc2},
+		WriteRequest: structs.WriteRequest{Region: "global", AuthToken: node.SecretID},
+	}
+	must.NoError(t, msgpackrpc.CallWithCodec(codec, "Node.UpdateAlloc", update, &resp))
+
+	services, err = store.GetServiceRegistrationsByNodeID(nil, node.ID)
+	must.NoError(t, err)
+	must.Eq(t, []*structs.ServiceRegistration{service1}, services,
+		must.Sprint("failing an allocation should result in its service being deleted"))
 }
 
 func TestClientEndpoint_BatchUpdate(t *testing.T) {
@@ -3329,7 +3427,7 @@ func TestClientEndpoint_UpdateAlloc_Vault(t *testing.T) {
 	// Update the alloc
 	update := &structs.AllocUpdateRequest{
 		Alloc:        []*structs.Allocation{clientAlloc},
-		WriteRequest: structs.WriteRequest{Region: "global"},
+		WriteRequest: structs.WriteRequest{Region: "global", AuthToken: node.SecretID},
 	}
 	var resp2 structs.NodeAllocsResponse
 	start := time.Now()
@@ -3412,7 +3510,7 @@ func TestClientEndpoint_UpdateAlloc_VaultWorkloadIdentity(t *testing.T) {
 
 	update := &structs.AllocUpdateRequest{
 		Alloc:        []*structs.Allocation{clientAlloc},
-		WriteRequest: structs.WriteRequest{Region: "global"},
+		WriteRequest: structs.WriteRequest{Region: "global", AuthToken: node.SecretID},
 	}
 	var resp2 structs.NodeAllocsResponse
 	err = msgpackrpc.CallWithCodec(codec, "Node.UpdateAlloc", update, &resp2)
@@ -3435,25 +3533,29 @@ func TestClientEndpoint_CreateNodeEvals(t *testing.T) {
 	state := s1.fsm.State()
 
 	idx, err := state.LatestIndex()
-	require.NoError(t, err)
+	must.NoError(t, err)
 
 	node := mock.Node()
 	err = state.UpsertNode(structs.MsgTypeTestSetup, idx, node)
-	require.NoError(t, err)
+	must.NoError(t, err)
 	idx++
 
 	// Inject fake evaluations
 	alloc := mock.Alloc()
 	alloc.NodeID = node.ID
 	state.UpsertJobSummary(1, mock.JobSummary(alloc.JobID))
-	require.NoError(t, state.UpsertAllocs(structs.MsgTypeTestSetup, idx, []*structs.Allocation{alloc}))
+	must.NoError(t, state.UpsertAllocs(structs.MsgTypeTestSetup, idx, []*structs.Allocation{alloc}))
+	idx++
+
+	sysBatchAlloc := mock.SysBatchAlloc()
+	sysBatchAlloc.NodeID = node.ID
+	state.UpsertJobSummary(1, mock.JobSummary(sysBatchAlloc.JobID))
+	must.NoError(t, state.UpsertAllocs(structs.MsgTypeTestSetup, idx, []*structs.Allocation{sysBatchAlloc}))
 	idx++
 
 	// Inject a fake system job.
 	job := mock.SystemJob()
-	if err := state.UpsertJob(structs.MsgTypeTestSetup, idx, nil, job); err != nil {
-		t.Fatalf("err: %v", err)
-	}
+	must.NoError(t, state.UpsertJob(structs.MsgTypeTestSetup, idx, nil, job))
 	idx++
 
 	// Create some evaluations
@@ -3501,21 +3603,24 @@ func TestClientEndpoint_CreateNodeEvals(t *testing.T) {
 			expJobID = job.ID
 		}
 
+		// we do not expect a sysbatch eval
+		must.NotEq(t, structs.JobTypeSysBatch, eval.Type)
+
 		t.Logf("checking eval: %v", pretty.Sprint(eval))
-		require.Equal(t, index, eval.CreateIndex)
-		require.Equal(t, structs.EvalTriggerNodeUpdate, eval.TriggeredBy)
-		require.Equal(t, alloc.NodeID, eval.NodeID)
-		require.Equal(t, uint64(1), eval.NodeModifyIndex)
+		must.Eq(t, index, eval.CreateIndex)
+		must.Eq(t, structs.EvalTriggerNodeUpdate, eval.TriggeredBy)
+		must.Eq(t, alloc.NodeID, eval.NodeID)
+		must.Eq(t, uint64(1), eval.NodeModifyIndex)
 		switch eval.Status {
 		case structs.EvalStatusPending, structs.EvalStatusComplete:
 			// success
 		default:
 			t.Fatalf("expected pending or complete, found %v", eval.Status)
 		}
-		require.Equal(t, expPriority, eval.Priority)
-		require.Equal(t, expJobID, eval.JobID)
-		require.NotZero(t, eval.CreateTime)
-		require.NotZero(t, eval.ModifyTime)
+		must.Eq(t, expPriority, eval.Priority)
+		must.Eq(t, expJobID, eval.JobID)
+		must.NonZero(t, eval.CreateTime)
+		must.NonZero(t, eval.ModifyTime)
 	}
 }
 
@@ -4093,13 +4198,15 @@ func TestClientEndpoint_DeriveVaultToken_Bad(t *testing.T) {
 		t.Fatalf("err: %v", err)
 	}
 
+	badSecret := uuid.Generate()
 	req := &structs.DeriveVaultTokenRequest{
 		NodeID:   node.ID,
-		SecretID: uuid.Generate(),
+		SecretID: badSecret,
 		AllocID:  alloc.ID,
 		Tasks:    tasks,
 		QueryOptions: structs.QueryOptions{
-			Region: "global",
+			Region:    "global",
+			AuthToken: badSecret,
 		},
 	}
 
@@ -4206,7 +4313,8 @@ func TestClientEndpoint_DeriveVaultToken(t *testing.T) {
 		AllocID:  alloc.ID,
 		Tasks:    tasks,
 		QueryOptions: structs.QueryOptions{
-			Region: "global",
+			Region:    "global",
+			AuthToken: node.SecretID,
 		},
 	}
 
@@ -4290,7 +4398,8 @@ func TestClientEndpoint_DeriveVaultToken_VaultError(t *testing.T) {
 		AllocID:  alloc.ID,
 		Tasks:    tasks,
 		QueryOptions: structs.QueryOptions{
-			Region: "global",
+			Region:    "global",
+			AuthToken: node.SecretID,
 		},
 	}
 
@@ -4413,11 +4522,14 @@ func TestClientEndpoint_DeriveSIToken(t *testing.T) {
 	r.NoError(err)
 
 	request := &structs.DeriveSITokenRequest{
-		NodeID:       node.ID,
-		SecretID:     node.SecretID,
-		AllocID:      alloc.ID,
-		Tasks:        []string{sidecarTask.Name},
-		QueryOptions: structs.QueryOptions{Region: "global"},
+		NodeID:   node.ID,
+		SecretID: node.SecretID,
+		AllocID:  alloc.ID,
+		Tasks:    []string{sidecarTask.Name},
+		QueryOptions: structs.QueryOptions{
+			Region:    "global",
+			AuthToken: node.SecretID,
+		},
 	}
 
 	var response structs.DeriveSITokenResponse
@@ -4471,11 +4583,14 @@ func TestClientEndpoint_DeriveSIToken_ConsulError(t *testing.T) {
 	r.NoError(err)
 
 	request := &structs.DeriveSITokenRequest{
-		NodeID:       node.ID,
-		SecretID:     node.SecretID,
-		AllocID:      alloc.ID,
-		Tasks:        []string{sidecarTask.Name},
-		QueryOptions: structs.QueryOptions{Region: "global"},
+		NodeID:   node.ID,
+		SecretID: node.SecretID,
+		AllocID:  alloc.ID,
+		Tasks:    []string{sidecarTask.Name},
+		QueryOptions: structs.QueryOptions{
+			Region:    "global",
+			AuthToken: node.SecretID,
+		},
 	}
 
 	var response structs.DeriveSITokenResponse
@@ -4509,7 +4624,7 @@ func TestClientEndpoint_EmitEvents(t *testing.T) {
 	nodeEvents := map[string][]*structs.NodeEvent{node.ID: {nodeEvent}}
 	req := structs.EmitNodeEventsRequest{
 		NodeEvents:   nodeEvents,
-		WriteRequest: structs.WriteRequest{Region: "global"},
+		WriteRequest: structs.WriteRequest{Region: "global", AuthToken: node.SecretID},
 	}
 
 	var resp structs.GenericResponse

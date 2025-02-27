@@ -11,115 +11,83 @@ import (
 	"strings"
 
 	"github.com/dustin/go-humanize"
+	multierror "github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/nomad/api"
 )
 
-func (c *VolumeStatusCommand) csiBanner() {
-	if !(c.json || len(c.template) > 0) {
-		c.Ui.Output(c.Colorize().Color("[bold]Container Storage Interface[reset]"))
-	}
-}
-
-func (c *VolumeStatusCommand) csiStatus(client *api.Client, id string) int {
-	// Invoke list mode if no volume id
+func (c *VolumeStatusCommand) csiVolumeStatus(client *api.Client, id string, opts formatOpts) error {
 	if id == "" {
-		return c.listVolumes(client)
+		return c.csiVolumesList(client, opts)
 	}
 
-	// Prefix search for the volume
-	vols, _, err := client.CSIVolumes().List(&api.QueryOptions{Prefix: id})
+	// get a CSI volume that matches the given prefix or a list of all matches if an
+	// exact match is not found.
+	volStub, possible, err := getByPrefix[api.CSIVolumeListStub]("volumes", client.CSIVolumes().List,
+		func(vol *api.CSIVolumeListStub, prefix string) bool { return vol.ID == prefix },
+		&api.QueryOptions{
+			Prefix:    id,
+			Namespace: c.namespace,
+		})
 	if err != nil {
-		c.Ui.Error(fmt.Sprintf("Error querying volumes: %s", err))
-		return 1
+		return fmt.Errorf("Error listing CSI volumes: %w", err)
 	}
-	if len(vols) == 0 {
-		c.Ui.Error(fmt.Sprintf("No volumes(s) with prefix or ID %q found", id))
-		return 1
-	}
-
-	var ns string
-
-	if len(vols) == 1 {
-		// need to set id from the actual ID because it might be a prefix
-		id = vols[0].ID
-		ns = vols[0].Namespace
-	}
-
-	// List sorts by CreateIndex, not by ID, so we need to search for
-	// exact matches but account for multiple exact ID matches across
-	// namespaces
-	if len(vols) > 1 {
-		exactMatchesCount := 0
-		for _, vol := range vols {
-			if vol.ID == id {
-				exactMatchesCount++
-				ns = vol.Namespace
-			}
+	if len(possible) > 0 {
+		out, err := csiFormatVolumes(possible, c.json, c.template)
+		if err != nil {
+			return fmt.Errorf("Error formatting: %w", err)
 		}
-		if exactMatchesCount != 1 {
-			out, err := c.csiFormatVolumes(vols)
-			if err != nil {
-				c.Ui.Error(fmt.Sprintf("Error formatting: %s", err))
-				return 1
-			}
-			c.Ui.Error(fmt.Sprintf("Prefix matched multiple volumes\n\n%s", out))
-			return 1
-		}
+		return fmt.Errorf("Prefix matched multiple CSI volumes\n\n%s", out)
 	}
 
 	// Try querying the volume
-	client.SetNamespace(ns)
-	vol, _, err := client.CSIVolumes().Info(id, nil)
+	vol, _, err := client.CSIVolumes().Info(volStub.ID, nil)
 	if err != nil {
-		c.Ui.Error(fmt.Sprintf("Error querying volume: %s", err))
-		return 1
+		return fmt.Errorf("Error querying CSI volume: %w", err)
 	}
 
-	str, err := c.formatBasic(vol)
+	str, err := c.formatCSIBasic(vol)
 	if err != nil {
-		c.Ui.Error(fmt.Sprintf("Error formatting volume: %s", err))
-		return 1
+		return fmt.Errorf("Error formatting CSI volume: %w", err)
 	}
 	c.Ui.Output(str)
-
-	return 0
+	return nil
 }
 
-func (c *VolumeStatusCommand) listVolumes(client *api.Client) int {
+func (c *VolumeStatusCommand) csiVolumesList(client *api.Client, opts formatOpts) error {
 
-	c.csiBanner()
+	if !(opts.json || len(opts.template) > 0) {
+		c.Ui.Output(c.Colorize().Color("[bold]Container Storage Interface[reset]"))
+	}
+
 	vols, _, err := client.CSIVolumes().List(nil)
 	if err != nil {
-		c.Ui.Error(fmt.Sprintf("Error querying volumes: %s", err))
-		return 1
+		return fmt.Errorf("Error querying CSI volumes: %w", err)
 	}
 
 	if len(vols) == 0 {
-		// No output if we have no volumes
 		c.Ui.Error("No CSI volumes")
+		return nil // not an empty is not an error
 	} else {
-		str, err := c.csiFormatVolumes(vols)
+		str, err := csiFormatVolumes(vols, opts.json, opts.template)
 		if err != nil {
-			c.Ui.Error(fmt.Sprintf("Error formatting: %s", err))
-			return 1
+			return fmt.Errorf("Error formatting: %w", err)
 		}
 		c.Ui.Output(str)
 	}
-	if !c.verbose {
-		return 0
+	if !opts.verbose {
+		return nil
 	}
 
 	plugins, _, err := client.CSIPlugins().List(nil)
 	if err != nil {
-		c.Ui.Error(fmt.Sprintf("Error querying CSI plugins: %s", err))
-		return 1
+		return fmt.Errorf("Error querying CSI plugins: %w", err)
 	}
 
 	if len(plugins) == 0 {
-		return 0 // No more output if we have no plugins
+		return nil // No more output if we have no plugins
 	}
 
-	var code int
+	var mErr *multierror.Error
 	q := &api.QueryOptions{PerPage: 30} // TODO: tune page size
 
 NEXT_PLUGIN:
@@ -130,12 +98,11 @@ NEXT_PLUGIN:
 		for {
 			externalList, _, err := client.CSIVolumes().ListExternal(plugin.ID, q)
 			if err != nil && !errors.Is(err, io.EOF) {
-				c.Ui.Error(fmt.Sprintf(
-					"Error querying CSI external volumes for plugin %q: %s", plugin.ID, err))
+				mErr = multierror.Append(mErr, fmt.Errorf(
+					"Error querying CSI external volumes for plugin %q: %w", plugin.ID, err))
 				// we'll stop querying this plugin, but there may be more to
 				// query, so report and set the error code but move on to the
 				// next plugin
-				code = 1
 				continue NEXT_PLUGIN
 			}
 			if externalList == nil || len(externalList.Volumes) == 0 {
@@ -143,6 +110,7 @@ NEXT_PLUGIN:
 				// rather than an empty list
 				continue NEXT_PLUGIN
 			}
+			c.Ui.Output("") // force a newline
 			rows := []string{"External ID|Condition|Nodes"}
 			for _, v := range externalList.Volumes {
 				condition := "OK"
@@ -150,7 +118,7 @@ NEXT_PLUGIN:
 					condition = fmt.Sprintf("Abnormal (%v)", v.Status)
 				}
 				rows = append(rows, fmt.Sprintf("%s|%s|%s",
-					limit(v.ExternalID, c.length),
+					limit(v.ExternalID, opts.length),
 					limit(condition, 20),
 					strings.Join(v.PublishedExternalNodeIDs, ","),
 				))
@@ -167,17 +135,17 @@ NEXT_PLUGIN:
 		}
 	}
 
-	return code
+	return mErr.ErrorOrNil()
 }
 
-func (c *VolumeStatusCommand) csiFormatVolumes(vols []*api.CSIVolumeListStub) (string, error) {
+func csiFormatVolumes(vols []*api.CSIVolumeListStub, json bool, template string) (string, error) {
 	// Sort the output by volume id
 	sort.Slice(vols, func(i, j int) bool { return vols[i].ID < vols[j].ID })
 
-	if c.json || len(c.template) > 0 {
-		out, err := Format(c.json, c.template, vols)
+	if json || len(template) > 0 {
+		out, err := Format(json, template, vols)
 		if err != nil {
-			return "", fmt.Errorf("format error: %v", err)
+			return "", fmt.Errorf("format error: %w", err)
 		}
 		return out, nil
 	}
@@ -202,11 +170,11 @@ func csiFormatSortedVolumes(vols []*api.CSIVolumeListStub) (string, error) {
 	return formatList(rows), nil
 }
 
-func (c *VolumeStatusCommand) formatBasic(vol *api.CSIVolume) (string, error) {
+func (c *VolumeStatusCommand) formatCSIBasic(vol *api.CSIVolume) (string, error) {
 	if c.json || len(c.template) > 0 {
 		out, err := Format(c.json, c.template, vol)
 		if err != nil {
-			return "", fmt.Errorf("format error: %v", err)
+			return "", fmt.Errorf("format error: %w", err)
 		}
 		return out, nil
 	}
@@ -225,11 +193,9 @@ func (c *VolumeStatusCommand) formatBasic(vol *api.CSIVolume) (string, error) {
 		fmt.Sprintf("Controllers Expected|%d", vol.ControllersExpected),
 		fmt.Sprintf("Nodes Healthy|%d", vol.NodesHealthy),
 		fmt.Sprintf("Nodes Expected|%d", vol.NodesExpected),
-
 		fmt.Sprintf("Access Mode|%s", vol.AccessMode),
 		fmt.Sprintf("Attachment Mode|%s", vol.AttachmentMode),
 		fmt.Sprintf("Mount Options|%s", csiVolMountOption(vol.MountOptions, nil)),
-		fmt.Sprintf("Namespace|%s", vol.Namespace),
 	}
 
 	// Exit early
@@ -246,8 +212,13 @@ func (c *VolumeStatusCommand) formatBasic(vol *api.CSIVolume) (string, error) {
 		full = append(full, topo)
 	}
 
+	banner := c.Colorize().Color("\n[bold]Capabilities[reset]")
+	caps := formatCSIVolumeCapabilities(vol.RequestedCapabilities)
+	full = append(full, banner)
+	full = append(full, caps)
+
 	// Format the allocs
-	banner := c.Colorize().Color("\n[bold]Allocations[reset]")
+	banner = c.Colorize().Color("\n[bold]Allocations[reset]")
 	allocs := formatAllocListStubs(vol.Allocations, c.verbose, c.length)
 	full = append(full, banner)
 	full = append(full, allocs)
@@ -312,4 +283,13 @@ func csiVolMountOption(volume, request *api.CSIMountOptions) string {
 	}
 
 	return out
+}
+
+func formatCSIVolumeCapabilities(caps []*api.CSIVolumeCapability) string {
+	lines := make([]string, len(caps)+1)
+	lines[0] = "Access Mode|Attachment Mode"
+	for i, cap := range caps {
+		lines[i+1] = fmt.Sprintf("%s|%s", cap.AccessMode, cap.AttachmentMode)
+	}
+	return formatList(lines)
 }

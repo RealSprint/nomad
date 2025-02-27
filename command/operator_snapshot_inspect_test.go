@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/hashicorp/cli"
 	"github.com/hashicorp/nomad/api"
 	"github.com/hashicorp/nomad/ci"
 	"github.com/hashicorp/nomad/command/agent"
-	"github.com/mitchellh/cli"
 	"github.com/shoenig/test/must"
 )
 
@@ -64,7 +64,7 @@ func TestOperatorSnapshotInspect_HandlesFailure(t *testing.T) {
 
 		code := cmd.Run([]string{filepath.Join(tmpDir, "invalid.snap")})
 		must.Positive(t, code)
-		must.StrContains(t, ui.ErrorWriter.String(), "Error verifying snapshot")
+		must.StrContains(t, ui.ErrorWriter.String(), "Error inspecting snapshot")
 	})
 }
 

@@ -17,11 +17,11 @@ import (
 	"strings"
 	"time"
 
-	metrics "github.com/armon/go-metrics"
 	"github.com/hashicorp/go-connlimit"
 	log "github.com/hashicorp/go-hclog"
 	memdb "github.com/hashicorp/go-memdb"
-	"github.com/hashicorp/go-msgpack/codec"
+	metrics "github.com/hashicorp/go-metrics/compat"
+	"github.com/hashicorp/go-msgpack/v2/codec"
 	"github.com/hashicorp/nomad/helper"
 	"github.com/hashicorp/nomad/helper/pool"
 	"github.com/hashicorp/nomad/nomad/state"

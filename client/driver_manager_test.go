@@ -19,7 +19,7 @@ import (
 )
 
 var (
-	topology = numalib.Scan(numalib.PlatformScanners())
+	topology = numalib.Scan(numalib.PlatformScanners(false))
 )
 
 // TestDriverManager_Fingerprint_Run asserts that node is populated with
@@ -172,10 +172,6 @@ func TestDriverManager_NodeAttributes_Run(t *testing.T) {
 
 		if !d.Detected || !d.Healthy {
 			return false, fmt.Errorf("mock_driver driver is not marked as healthy: %+v", d)
-		}
-
-		if d.Attributes["driver.mock_driver"] != "" {
-			return false, fmt.Errorf("mock driver driver attributes contain duplicate health info: %#v", d.Attributes)
 		}
 
 		// check raw_exec

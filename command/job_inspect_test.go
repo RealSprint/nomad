@@ -7,12 +7,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/cli"
 	"github.com/hashicorp/nomad/api"
 	"github.com/hashicorp/nomad/ci"
 	"github.com/hashicorp/nomad/command/agent"
 	"github.com/hashicorp/nomad/nomad/mock"
 	"github.com/hashicorp/nomad/nomad/structs"
-	"github.com/mitchellh/cli"
 	"github.com/posener/complete"
 	"github.com/shoenig/test/must"
 )
@@ -185,4 +185,38 @@ namespace "default" {
 			}
 		})
 	}
+}
+
+func TestInspectCommand_HCLVars(t *testing.T) {
+	ci.Parallel(t)
+
+	// no vars
+	out := getWithVarsOutput("default", "example", "", map[string]string{})
+	must.Eq(t, `
+To run this job as originally submitted:
+
+$ nomad job inspect -namespace default -hcl example |
+    nomad job run -namespace default example
+`, out)
+
+	// vars from the UI, erratic extra spaces
+	out = getWithVarsOutput("default", "example", "\n  http_port=foo  \n \nbar=baz ",
+		map[string]string{})
+	must.Eq(t, `
+To run this job as originally submitted:
+
+$ nomad job inspect -namespace default -hcl example |
+    nomad job run -namespace default -var http_port=foo -var bar=baz example
+`, out)
+
+	// same vars from the CLI
+	out = getWithVarsOutput("default", "example", "",
+		map[string]string{"http_port": "foo", "bar": "baz"})
+	must.Eq(t, `
+To run this job as originally submitted:
+
+$ nomad job inspect -namespace default -hcl example |
+    nomad job run -namespace default -var http_port=foo -var bar=baz example
+`, out)
+
 }

@@ -5,6 +5,7 @@ package nomad
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,11 +14,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/armon/go-metrics"
 	capOIDC "github.com/hashicorp/cap/oidc"
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/go-memdb"
-	"github.com/hashicorp/go-set/v2"
+	metrics "github.com/hashicorp/go-metrics/compat"
+	"github.com/hashicorp/go-set/v3"
 
 	policy "github.com/hashicorp/nomad/acl"
 	"github.com/hashicorp/nomad/helper"
@@ -52,6 +53,10 @@ const (
 	// aclLoginRequestExpiryTime is the deadline used when performing HTTP
 	// requests to external APIs during the validation of bearer tokens.
 	aclLoginRequestExpiryTime = 60 * time.Second
+
+	// verboseLoggingMessage is the message displayed to a user when
+	// this auth config is enabled
+	verboseLoggingMessage = "attempting login with verbose logging enabled"
 )
 
 // ACL endpoint is used for manipulating ACL tokens and policies
@@ -94,9 +99,9 @@ func (a *ACL) UpsertPolicies(args *structs.ACLPolicyUpsertRequest, reply *struct
 	defer metrics.MeasureSince([]string{"nomad", "acl", "upsert_policies"}, time.Now())
 
 	// Check management level permissions
-	if acl, err := a.srv.ResolveACL(args); err != nil {
+	if aclObj, err := a.srv.ResolveACL(args); err != nil {
 		return err
-	} else if acl == nil || !acl.IsManagement() {
+	} else if !aclObj.IsManagement() {
 		return structs.ErrPermissionDenied
 	}
 
@@ -143,9 +148,9 @@ func (a *ACL) DeletePolicies(args *structs.ACLPolicyDeleteRequest, reply *struct
 	defer metrics.MeasureSince([]string{"nomad", "acl", "delete_policies"}, time.Now())
 
 	// Check management level permissions
-	if acl, err := a.srv.ResolveACL(args); err != nil {
+	if aclObj, err := a.srv.ResolveACL(args); err != nil {
 		return err
-	} else if acl == nil || !acl.IsManagement() {
+	} else if !aclObj.IsManagement() {
 		return structs.ErrPermissionDenied
 	}
 
@@ -632,9 +637,9 @@ func (a *ACL) UpsertTokens(args *structs.ACLTokenUpsertRequest, reply *structs.A
 	defer metrics.MeasureSince([]string{"nomad", "acl", "upsert_tokens"}, time.Now())
 
 	// Check management level permissions
-	if acl, err := a.srv.ResolveACL(args); err != nil {
+	if aclObj, err := a.srv.ResolveACL(args); err != nil {
 		return err
-	} else if acl == nil || !acl.IsManagement() {
+	} else if !aclObj.IsManagement() {
 		return structs.ErrPermissionDenied
 	}
 
@@ -786,9 +791,9 @@ func (a *ACL) DeleteTokens(args *structs.ACLTokenDeleteRequest, reply *structs.G
 	defer metrics.MeasureSince([]string{"nomad", "acl", "delete_tokens"}, time.Now())
 
 	// Check management level permissions
-	if acl, err := a.srv.ResolveACL(args); err != nil {
+	if aclObj, err := a.srv.ResolveACL(args); err != nil {
 		return err
-	} else if acl == nil || !acl.IsManagement() {
+	} else if !aclObj.IsManagement() {
 		return structs.ErrPermissionDenied
 	}
 
@@ -864,9 +869,9 @@ func (a *ACL) ListTokens(args *structs.ACLTokenListRequest, reply *structs.ACLTo
 	defer metrics.MeasureSince([]string{"nomad", "acl", "list_tokens"}, time.Now())
 
 	// Check management level permissions
-	if acl, err := a.srv.ResolveACL(args); err != nil {
+	if aclObj, err := a.srv.ResolveACL(args); err != nil {
 		return err
-	} else if acl == nil || !acl.IsManagement() {
+	} else if !aclObj.IsManagement() {
 		return structs.ErrPermissionDenied
 	}
 
@@ -1019,9 +1024,9 @@ func (a *ACL) GetTokens(args *structs.ACLTokenSetRequest, reply *structs.ACLToke
 	defer metrics.MeasureSince([]string{"nomad", "acl", "get_tokens"}, time.Now())
 
 	// Check management level permissions
-	if acl, err := a.srv.ResolveACL(args); err != nil {
+	if aclObj, err := a.srv.ResolveACL(args); err != nil {
 		return err
-	} else if acl == nil || !acl.IsManagement() {
+	} else if !aclObj.IsManagement() {
 		return structs.ErrPermissionDenied
 	}
 
@@ -1232,9 +1237,9 @@ func (a *ACL) ExpireOneTimeTokens(args *structs.OneTimeTokenExpireRequest, reply
 
 	// Check management level permissions
 	if a.srv.config.ACLEnabled {
-		if acl, err := a.srv.ResolveACL(args); err != nil {
+		if aclObj, err := a.srv.ResolveACL(args); err != nil {
 			return err
-		} else if acl == nil || !acl.IsManagement() {
+		} else if !aclObj.IsManagement() {
 			return structs.ErrPermissionDenied
 		}
 	}
@@ -1282,9 +1287,9 @@ func (a *ACL) UpsertRoles(
 	}
 
 	// Only management level permissions can create ACL roles.
-	if acl, err := a.srv.ResolveACL(args); err != nil {
+	if aclObj, err := a.srv.ResolveACL(args); err != nil {
 		return err
-	} else if acl == nil || !acl.IsManagement() {
+	} else if !aclObj.IsManagement() {
 		return structs.ErrPermissionDenied
 	}
 
@@ -1426,9 +1431,9 @@ func (a *ACL) DeleteRolesByID(
 	}
 
 	// Only management level permissions can create ACL roles.
-	if acl, err := a.srv.ResolveACL(args); err != nil {
+	if aclObj, err := a.srv.ResolveACL(args); err != nil {
 		return err
-	} else if acl == nil || !acl.IsManagement() {
+	} else if !aclObj.IsManagement() {
 		return structs.ErrPermissionDenied
 	}
 
@@ -1867,9 +1872,9 @@ func (a *ACL) UpsertAuthMethods(
 	}
 
 	// Check management level permissions
-	if acl, err := a.srv.ResolveACL(args); err != nil {
+	if aclObj, err := a.srv.ResolveACL(args); err != nil {
 		return err
-	} else if acl == nil || !acl.IsManagement() {
+	} else if !aclObj.IsManagement() {
 		return structs.ErrPermissionDenied
 	}
 
@@ -1970,9 +1975,9 @@ func (a *ACL) DeleteAuthMethods(
 	}
 
 	// Check management level permissions
-	if acl, err := a.srv.ResolveACL(args); err != nil {
+	if aclObj, err := a.srv.ResolveACL(args); err != nil {
 		return err
-	} else if acl == nil || !acl.IsManagement() {
+	} else if !aclObj.IsManagement() {
 		return structs.ErrPermissionDenied
 	}
 
@@ -2059,10 +2064,9 @@ func (a *ACL) GetAuthMethod(
 	defer metrics.MeasureSince([]string{"nomad", "acl", "get_auth_method_name"}, time.Now())
 
 	// Resolve the token and ensure it has some form of permissions.
-	acl, err := a.srv.ResolveACL(args)
-	if err != nil {
+	if aclObj, err := a.srv.ResolveACL(args); err != nil {
 		return err
-	} else if acl == nil || !acl.IsManagement() {
+	} else if !aclObj.IsManagement() {
 		return structs.ErrPermissionDenied
 	}
 
@@ -2224,9 +2228,9 @@ func (a *ACL) UpsertBindingRules(
 	}
 
 	// Check management level permissions
-	if acl, err := a.srv.ResolveACL(args); err != nil {
+	if aclObj, err := a.srv.ResolveACL(args); err != nil {
 		return err
-	} else if acl == nil || !acl.IsManagement() {
+	} else if !aclObj.IsManagement() {
 		return structs.ErrPermissionDenied
 	}
 
@@ -2351,9 +2355,9 @@ func (a *ACL) DeleteBindingRules(
 	}
 
 	// Check management level permissions.
-	if acl, err := a.srv.ResolveACL(args); err != nil {
+	if aclObj, err := a.srv.ResolveACL(args); err != nil {
 		return err
-	} else if acl == nil || !acl.IsManagement() {
+	} else if !aclObj.IsManagement() {
 		return structs.ErrPermissionDenied
 	}
 
@@ -2393,9 +2397,9 @@ func (a *ACL) ListBindingRules(
 	defer metrics.MeasureSince([]string{"nomad", "acl", "list_binding_rules"}, time.Now())
 
 	// Check management level permissions.
-	if acl, err := a.srv.ResolveACL(args); err != nil {
+	if aclObj, err := a.srv.ResolveACL(args); err != nil {
 		return err
-	} else if acl == nil || !acl.IsManagement() {
+	} else if !aclObj.IsManagement() {
 		return structs.ErrPermissionDenied
 	}
 
@@ -2452,9 +2456,9 @@ func (a *ACL) GetBindingRules(
 	defer metrics.MeasureSince([]string{"nomad", "acl", "get_rules"}, time.Now())
 
 	// Check management level permissions.
-	if acl, err := a.srv.ResolveACL(args); err != nil {
+	if aclObj, err := a.srv.ResolveACL(args); err != nil {
 		return err
-	} else if acl == nil || !acl.IsManagement() {
+	} else if !aclObj.IsManagement() {
 		return structs.ErrPermissionDenied
 	}
 
@@ -2507,9 +2511,9 @@ func (a *ACL) GetBindingRule(
 	defer metrics.MeasureSince([]string{"nomad", "acl", "get_binding_rule"}, time.Now())
 
 	// Check management level permissions.
-	if acl, err := a.srv.ResolveACL(args); err != nil {
+	if aclObj, err := a.srv.ResolveACL(args); err != nil {
 		return err
-	} else if acl == nil || !acl.IsManagement() {
+	} else if !aclObj.IsManagement() {
 		return structs.ErrPermissionDenied
 	}
 
@@ -2692,6 +2696,14 @@ func (a *ACL) OIDCCompleteAuth(
 		return structs.NewErrRPCCodedf(http.StatusBadRequest, "auth-method %q not found", args.AuthMethodName)
 	}
 
+	// vlog is a verbose logger used for debugging OIDC in test environments
+	vlog := hclog.NewNullLogger()
+	if authMethod.Config.VerboseLogging {
+		vlog = a.logger
+	}
+
+	vlog.Debug(verboseLoggingMessage)
+
 	// If the authentication method generates global ACL tokens, we need to
 	// forward the request onto the authoritative regional leader.
 	if authMethod.TokenLocalityIsGlobal() {
@@ -2762,6 +2774,35 @@ func (a *ACL) OIDCCompleteAuth(
 		return err
 	}
 
+	// No need to do all this marshaling if VerboseLogging is disabled
+	if authMethod.Config.VerboseLogging {
+		idTokenClaimBytes, err := json.MarshalIndent(idTokenClaims, "", " ")
+		if err != nil {
+			vlog.Debug("failed to marshal ID token claims")
+		}
+
+		userClaimBytes, err := json.MarshalIndent(userClaims, "", " ")
+		if err != nil {
+			vlog.Debug("failed to marshal user claims")
+		}
+		vlog.Debug("claims from jwt token and user info endpoint",
+			"token_claims", string(idTokenClaimBytes),
+			"user_claims", string(userClaimBytes),
+		)
+
+		internalClaimBytes, err := json.MarshalIndent(oidcInternalClaims.List, "", " ")
+		if err != nil {
+			vlog.Debug("failed to marshal OIDC internal list claims")
+		}
+		vlog.Debug("list claims after mapping to nomad identity attributes", "internal_claims", string(internalClaimBytes))
+
+		internalClaimBytes, err = json.MarshalIndent(oidcInternalClaims.Value, "", " ")
+		if err != nil {
+			vlog.Debug("failed to marshal OIDC internal value claims")
+		}
+		vlog.Debug("value claims after mapping to nomad identity attributes", "internal_claims", string(internalClaimBytes))
+	}
+
 	// Create a new binder object based on the current state snapshot to
 	// provide consistency within the RPC handler.
 	oidcBinder := auth.NewBinder(stateSnapshot)
@@ -2769,7 +2810,7 @@ func (a *ACL) OIDCCompleteAuth(
 	// Generate the role and policy bindings that will be assigned to the ACL
 	// token. Ensure we have at least 1 role or policy, otherwise the RPC will
 	// fail anyway.
-	tokenBindings, err := oidcBinder.Bind(authMethod, auth.NewIdentity(authMethod.Config, oidcInternalClaims))
+	tokenBindings, err := oidcBinder.Bind(vlog, authMethod, auth.NewIdentity(authMethod.Config, oidcInternalClaims))
 	if err != nil {
 		return err
 	}
@@ -2911,6 +2952,14 @@ func (a *ACL) Login(args *structs.ACLLoginRequest, reply *structs.ACLLoginRespon
 		)
 	}
 
+	// vlog is a verbose logger used for debugging in test environments
+	vlog := hclog.NewNullLogger()
+	if authMethod.Config.VerboseLogging {
+		vlog = a.logger
+	}
+
+	vlog.Debug(verboseLoggingMessage)
+
 	// Create a new binder object based on the current state snapshot to
 	// provide consistency within the RPC handler.
 	jwtBinder := auth.NewBinder(stateSnapshot)
@@ -2922,7 +2971,22 @@ func (a *ACL) Login(args *structs.ACLLoginRequest, reply *structs.ACLLoginRespon
 		return err
 	}
 
-	tokenBindings, err := jwtBinder.Bind(authMethod, auth.NewIdentity(authMethod.Config, jwtClaims))
+	// No need to do marshaling if VerboseLogging is not enabled
+	if authMethod.Config.VerboseLogging {
+		idTokenClaimBytes, err := json.MarshalIndent(claims, "", " ")
+		if err != nil {
+			vlog.Debug("failed to marshal token claims")
+		}
+		vlog.Debug("jwt token claims", "token_claims", string(idTokenClaimBytes))
+
+		internalClaimBytes, err := json.MarshalIndent(jwtClaims.List, "", " ")
+		if err != nil {
+			vlog.Debug("failed to marshal claims list")
+		}
+		vlog.Debug("claims after mapping to nomad identity attributes", "internal_claims", string(internalClaimBytes))
+	}
+
+	tokenBindings, err := jwtBinder.Bind(vlog, authMethod, auth.NewIdentity(authMethod.Config, jwtClaims))
 	if err != nil {
 		return err
 	}

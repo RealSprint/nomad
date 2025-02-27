@@ -4,8 +4,10 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/rpc"
 	"os"
@@ -16,9 +18,9 @@ import (
 	"sync"
 	"time"
 
-	metrics "github.com/armon/go-metrics"
 	consulapi "github.com/hashicorp/consul/api"
 	hclog "github.com/hashicorp/go-hclog"
+	metrics "github.com/hashicorp/go-metrics/compat"
 	multierror "github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/nomad/client/allocdir"
 	"github.com/hashicorp/nomad/client/allocrunner"
@@ -27,11 +29,12 @@ import (
 	"github.com/hashicorp/nomad/client/allocrunner/taskrunner/getter"
 	"github.com/hashicorp/nomad/client/allocwatcher"
 	"github.com/hashicorp/nomad/client/config"
-	consulApi "github.com/hashicorp/nomad/client/consul"
+	consulApiShim "github.com/hashicorp/nomad/client/consul"
 	"github.com/hashicorp/nomad/client/devicemanager"
 	"github.com/hashicorp/nomad/client/dynamicplugins"
 	"github.com/hashicorp/nomad/client/fingerprint"
 	"github.com/hashicorp/nomad/client/hoststats"
+	hvm "github.com/hashicorp/nomad/client/hostvolumemanager"
 	cinterfaces "github.com/hashicorp/nomad/client/interfaces"
 	"github.com/hashicorp/nomad/client/lib/cgroupslib"
 	"github.com/hashicorp/nomad/client/lib/numalib"
@@ -51,6 +54,7 @@ import (
 	"github.com/hashicorp/nomad/command/agent/consul"
 	"github.com/hashicorp/nomad/helper"
 	"github.com/hashicorp/nomad/helper/envoy"
+	"github.com/hashicorp/nomad/helper/escapingfs"
 	"github.com/hashicorp/nomad/helper/goruntime"
 	"github.com/hashicorp/nomad/helper/group"
 	"github.com/hashicorp/nomad/helper/pointer"
@@ -58,13 +62,13 @@ import (
 	"github.com/hashicorp/nomad/helper/tlsutil"
 	"github.com/hashicorp/nomad/helper/users/dynamic"
 	"github.com/hashicorp/nomad/helper/uuid"
+	"github.com/hashicorp/nomad/lib/lang"
 	"github.com/hashicorp/nomad/nomad/structs"
 	nconfig "github.com/hashicorp/nomad/nomad/structs/config"
 	"github.com/hashicorp/nomad/plugins/csi"
 	"github.com/hashicorp/nomad/plugins/device"
 	vaultapi "github.com/hashicorp/vault/api"
 	"github.com/shirou/gopsutil/v3/host"
-	"golang.org/x/exp/maps"
 )
 
 const (
@@ -114,16 +118,6 @@ const (
 	// allocSyncRetryIntv is the interval on which we retry updating
 	// the status of the allocation
 	allocSyncRetryIntv = 5 * time.Second
-
-	// defaultConnectLogLevel is the log level set in the node meta by default
-	// to be used by Consul Connect sidecar tasks.
-	defaultConnectLogLevel = "info"
-
-	// defaultConnectProxyConcurrency is the default number of worker threads the
-	// connect sidecar should be configured to use.
-	//
-	// https://www.envoyproxy.io/docs/envoy/latest/operations/cli#cmdoption-concurrency
-	defaultConnectProxyConcurrency = "1"
 )
 
 var (
@@ -241,7 +235,7 @@ type Client struct {
 
 	// consulProxiesFunc gets an interface to Nomad's custom Consul client for
 	// looking up supported envoy versions
-	consulProxiesFunc consulApi.SupportedProxiesAPIFunc
+	consulProxiesFunc consulApiShim.SupportedProxiesAPIFunc
 
 	// consulCatalog is the subset of Consul's Catalog API Nomad uses for self
 	// service discovery
@@ -265,7 +259,7 @@ type Client struct {
 
 	// tokensClient is Nomad Client's custom Consul client for requesting Consul
 	// Service Identity tokens through Nomad Server.
-	tokensClient consulApi.ServiceIdentityAPI
+	tokensClient consulApiShim.ServiceIdentityAPI
 
 	// vaultClients is used to interact with Vault for token and secret renewals
 	vaultClients map[string]vaultclient.VaultClient
@@ -296,6 +290,8 @@ type Client struct {
 
 	// drivermanager is responsible for managing driver plugins
 	drivermanager drivermanager.Manager
+
+	hostVolumeManager *hvm.HostVolumeManager
 
 	// baseLabels are used when emitting tagged metrics. All client metrics will
 	// have these tags, and optionally more.
@@ -357,7 +353,7 @@ var (
 // registered via https://golang.org/pkg/net/rpc/#Server.RegisterName in place
 // of the client's normal RPC handlers. This allows server tests to override
 // the behavior of the client.
-func NewClient(cfg *config.Config, consulCatalog consul.CatalogAPI, consulProxiesFunc consulApi.SupportedProxiesAPIFunc, consulServices serviceregistration.Handler, rpcs map[string]interface{}) (*Client, error) {
+func NewClient(cfg *config.Config, consulCatalog consul.CatalogAPI, consulProxiesFunc consulApiShim.SupportedProxiesAPIFunc, consulServices serviceregistration.Handler, rpcs map[string]interface{}) (*Client, error) {
 	// Create the tls wrapper
 	var tlsWrap tlsutil.RegionWrapper
 	if cfg.TLSConfig.EnableRPC {
@@ -413,9 +409,11 @@ func NewClient(cfg *config.Config, consulCatalog consul.CatalogAPI, consulProxie
 	}
 
 	c.batchNodeUpdates = newBatchNodeUpdates(
+		c.logger,
 		c.updateNodeFromDriver,
 		c.updateNodeFromDevices,
 		c.updateNodeFromCSI,
+		c.updateNodeFromHostVol,
 	)
 
 	// Initialize the server manager
@@ -482,7 +480,7 @@ func NewClient(cfg *config.Config, consulCatalog consul.CatalogAPI, consulProxie
 	})
 
 	// Create the cpu core partition manager
-	c.partitions = cgroupslib.GetPartition(
+	c.partitions = cgroupslib.GetPartition(c.logger.Named("partitions"),
 		c.topology.UsableCores(),
 	)
 
@@ -539,6 +537,16 @@ func NewClient(cfg *config.Config, consulCatalog consul.CatalogAPI, consulProxie
 	devManager := devicemanager.New(devConfig)
 	c.devicemanager = devManager
 	c.pluginManagers.RegisterAndRun(devManager)
+
+	// set up dynamic host volume manager
+	c.hostVolumeManager = hvm.NewHostVolumeManager(logger, hvm.Config{
+		PluginDir:      c.GetConfig().HostVolumePluginDir,
+		VolumesDir:     c.GetConfig().HostVolumesDir,
+		NodePool:       c.Node().NodePool,
+		StateMgr:       c.stateDB,
+		UpdateNodeVols: c.batchNodeUpdates.updateNodeFromHostVolume,
+	})
+	c.pluginManagers.RegisterAndRun(c.hostVolumeManager)
 
 	// Set up the service registration wrapper using the Consul and Nomad
 	// implementations. The Nomad implementation is only ever used on the
@@ -629,6 +637,10 @@ func NewClient(cfg *config.Config, consulCatalog consul.CatalogAPI, consulProxie
 	// Begin syncing allocations to the server
 	c.shutdownGroup.Go(c.allocSync)
 
+	// Ensure our base labels are generated and stored before we start the
+	// client and begin emitting stats.
+	c.setupStatsLabels()
+
 	// Start the client! Don't use the shutdownGroup as run handles
 	// shutdowns manually to prevent updates from being applied during
 	// shutdown.
@@ -692,10 +704,24 @@ func (c *Client) init() error {
 
 	c.stateDB = db
 
-	// Ensure the alloc dir exists if we have one
+	// Ensure host_volumes_dir config is not empty.
+	if conf.HostVolumesDir == "" {
+		conf = c.UpdateConfig(func(c *config.Config) {
+			c.HostVolumesDir = filepath.Join(conf.StateDir, "host_volumes")
+		})
+	}
+
+	// Ensure the alloc mounts dir exists if we are configured with a custom path.
+	if conf.AllocMountsDir != "" {
+		if err := os.MkdirAll(conf.AllocMountsDir, 0o711); err != nil {
+			return fmt.Errorf("failed creating alloc mounts dir: %w", err)
+		}
+	}
+
+	// Ensure the alloc dir exists if we are configured with a custom path.
 	if conf.AllocDir != "" {
-		if err := os.MkdirAll(conf.AllocDir, 0711); err != nil {
-			return fmt.Errorf("failed creating alloc dir: %s", err)
+		if err := os.MkdirAll(conf.AllocDir, 0o711); err != nil {
+			return fmt.Errorf("failed creating alloc dir: %w", err)
 		}
 	} else {
 		// Otherwise make a temp directory to use.
@@ -710,12 +736,13 @@ func (c *Client) init() error {
 		}
 
 		// Change the permissions to have the execute bit
-		if err := os.Chmod(p, 0711); err != nil {
+		if err := os.Chmod(p, 0o711); err != nil {
 			return fmt.Errorf("failed to change directory permissions for the AllocDir: %v", err)
 		}
 
 		conf = c.UpdateConfig(func(c *config.Config) {
 			c.AllocDir = p
+			c.AllocMountsDir = p
 		})
 	}
 
@@ -735,6 +762,26 @@ func (c *Client) init() error {
 
 	// setup the nsd check store
 	c.checkStore = checkstore.NewStore(c.logger, c.stateDB)
+
+	// COMPAT(1.12.0): remove in Nomad 1.12.0
+	oldCNIDir := "/var/lib/cni/networks/nomad"
+	newCNIDir := "/var/run/cni/nomad"
+	if _, err := os.Stat(newCNIDir); os.IsNotExist(err) {
+		if _, err := os.Stat(oldCNIDir); err == nil {
+			err := escapingfs.CopyDir(oldCNIDir, newCNIDir)
+			if err != nil {
+				c.logger.Error("failed to migrate existing CNI state",
+					"error", err, "src", oldCNIDir, "dest", newCNIDir)
+			} else {
+				err := os.RemoveAll(oldCNIDir)
+				if err != nil {
+					c.logger.Error("migrated CNI state but could not remove old state",
+						"error", err, "src", oldCNIDir, "dest", newCNIDir)
+				}
+				c.logger.Info("migrated CNI state", "src", oldCNIDir, "dest", newCNIDir)
+			}
+		}
+	}
 
 	return nil
 }
@@ -968,6 +1015,24 @@ func (c *Client) SignalAllocation(allocID, task, signal string) error {
 	}
 
 	return ar.Signal(task, signal)
+}
+
+// PauseAllocation sets the pause state of the given task for the allocation.
+func (c *Client) PauseAllocation(allocID, task string, scheduleState structs.TaskScheduleState) error {
+	ar, err := c.getAllocRunner(allocID)
+	if err != nil {
+		return err
+	}
+	return ar.SetTaskPauseState(task, scheduleState)
+}
+
+// GetPauseAllocation gets the pause state of the  given task for the allocation.
+func (c *Client) GetPauseAllocation(allocID, task string) (structs.TaskScheduleState, error) {
+	ar, err := c.getAllocRunner(allocID)
+	if err != nil {
+		return "", err
+	}
+	return ar.GetTaskPauseState(task)
 }
 
 // CollectAllocation garbage collects a single allocation on a node. Returns
@@ -1258,7 +1323,6 @@ func (c *Client) restoreState() error {
 		// wait for servers to be contacted before proceeding with the
 		// restoration process.
 		arConf.ServersContactedCh = c.serversContactedCh
-
 		ar, err := c.allocrunnerFactory(arConf)
 		if err != nil {
 			c.logger.Error("error running alloc", "error", err, "alloc_id", alloc.ID)
@@ -1533,14 +1597,12 @@ func (c *Client) setupNode() error {
 	}
 	node.CgroupParent = newConfig.CgroupParent
 	if node.HostVolumes == nil {
-		if l := len(newConfig.HostVolumes); l != 0 {
-			node.HostVolumes = make(map[string]*structs.ClientHostVolumeConfig, l)
-			for k, v := range newConfig.HostVolumes {
-				if _, err := os.Stat(v.Path); err != nil {
-					return fmt.Errorf("failed to validate volume %s, err: %v", v.Name, err)
-				}
-				node.HostVolumes[k] = v.Copy()
+		node.HostVolumes = make(map[string]*structs.ClientHostVolumeConfig, len(newConfig.HostVolumes))
+		for k, v := range newConfig.HostVolumes {
+			if _, err := os.Stat(v.Path); err != nil {
+				return fmt.Errorf("failed to validate volume %s, err: %w", v.Name, err)
 			}
+			node.HostVolumes[k] = v.Copy()
 		}
 	}
 	if node.HostNetworks == nil {
@@ -1564,11 +1626,17 @@ func (c *Client) setupNode() error {
 	if _, ok := node.Meta[envoy.GatewayMetaParam]; !ok {
 		node.Meta[envoy.GatewayMetaParam] = envoy.ImageFormat
 	}
-	if _, ok := node.Meta["connect.log_level"]; !ok {
-		node.Meta["connect.log_level"] = defaultConnectLogLevel
+	if _, ok := node.Meta[envoy.DefaultConnectLogLevelParam]; !ok {
+		node.Meta[envoy.DefaultConnectLogLevelParam] = envoy.DefaultConnectLogLevel
 	}
-	if _, ok := node.Meta["connect.proxy_concurrency"]; !ok {
-		node.Meta["connect.proxy_concurrency"] = defaultConnectProxyConcurrency
+	if _, ok := node.Meta[envoy.DefaultConnectProxyConcurrencyParam]; !ok {
+		node.Meta[envoy.DefaultConnectProxyConcurrencyParam] = envoy.DefaultConnectProxyConcurrency
+	}
+	if _, ok := node.Meta[envoy.DefaultTransparentProxyUIDParam]; !ok {
+		node.Meta[envoy.DefaultTransparentProxyUIDParam] = envoy.DefaultTransparentProxyUID
+	}
+	if _, ok := node.Meta[envoy.DefaultTransparentProxyOutboundPortParam]; !ok {
+		node.Meta[envoy.DefaultTransparentProxyOutboundPortParam] = envoy.DefaultTransparentProxyOutboundPort
 	}
 
 	// Since node.Meta will get dynamic metadata merged in, save static metadata
@@ -2760,6 +2828,7 @@ func (c *Client) newAllocRunnerConfig(
 ) *config.AllocRunnerConfig {
 	return &config.AllocRunnerConfig{
 		Alloc:               alloc,
+		BaseLabels:          c.baseLabels,
 		CSIManager:          c.csimanager,
 		CheckStore:          c.checkStore,
 		ClientConfig:        c.GetConfig(),
@@ -2790,7 +2859,7 @@ func (c *Client) newAllocRunnerConfig(
 // identity tokens.
 // DEPRECATED: remove in 1.9.0
 func (c *Client) setupConsulTokenClient() error {
-	tc := consulApi.NewIdentitiesClient(c.logger, c.deriveSIToken)
+	tc := consulApiShim.NewIdentitiesClient(c.logger, c.deriveSIToken)
 	c.tokensClient = tc
 	return nil
 }
@@ -2937,7 +3006,7 @@ func (c *Client) deriveToken(alloc *structs.Allocation, taskNames []string, vcli
 // deriveSIToken takes an allocation and a set of tasks and derives Consul
 // Service Identity tokens for each of the tasks by requesting them from the
 // Nomad Server.
-func (c *Client) deriveSIToken(alloc *structs.Allocation, taskNames []string) (map[string]string, error) {
+func (c *Client) deriveSIToken(ctx context.Context, alloc *structs.Allocation, taskNames []string) (map[string]string, error) {
 	tasks, err := verifiedTasks(c.logger, alloc, taskNames)
 	if err != nil {
 		return nil, err
@@ -2978,7 +3047,36 @@ func (c *Client) deriveSIToken(alloc *structs.Allocation, taskNames []string) (m
 	// https://www.consul.io/api/acl/tokens.html#read-a-token
 	// https://www.consul.io/docs/internals/security.html
 
+	consulConfigs := c.config.GetConsulConfigs(c.logger)
+	consulClientConstructor := consulApiShim.NewConsulClientFactory(c.config)
+
+	tg := alloc.Job.LookupTaskGroup(alloc.TaskGroup)
+	tgNs := tg.Consul.GetNamespace()
+
+	for task, secretID := range resp.Tokens {
+		t := tg.LookupTask(task)
+		ns := t.Consul.GetNamespace()
+		if ns == "" {
+			ns = tgNs
+		}
+		cluster := tg.LookupTask(task).GetConsulClusterName(tg)
+		consulConfig := consulConfigs[cluster]
+		consulClient, err := consulClientConstructor(consulConfig, c.logger)
+		if err != nil {
+			return nil, err
+		}
+
+		err = consulClient.TokenPreflightCheck(ctx, &consulapi.ACLToken{
+			Namespace: ns,
+			SecretID:  secretID,
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	m := maps.Clone(resp.Tokens)
+
 	return m, nil
 }
 
@@ -3131,22 +3229,33 @@ DISCOLOOP:
 	return nil
 }
 
-// emitStats collects host resource usage stats periodically
-func (c *Client) emitStats() {
-	// Determining NodeClass to be emitted
+// setupStatsLabels builds the base labels for the client. This should be done
+// before Client.run() is called, so that sub-system can use these without fear
+// they have not been set.
+func (c *Client) setupStatsLabels() {
+
+	// Determine the node class label value to emit, so we do not emit an empty
+	// string if this parameter has not been set by operators.
 	var emittedNodeClass string
 	if emittedNodeClass = c.Node().NodeClass; emittedNodeClass == "" {
 		emittedNodeClass = "none"
 	}
 
-	// Assign labels directly before emitting stats so the information expected
-	// is ready
+	// Store the base labels, so client and allocrunner subsystem can access
+	// and use these.
+	//
+	// The four labels provide enough useful information for operators in both
+	// single and multi-tenant clusters while not exploding the cardinality.
 	c.baseLabels = []metrics.Label{
 		{Name: "node_id", Value: c.NodeID()},
 		{Name: "datacenter", Value: c.Datacenter()},
 		{Name: "node_class", Value: emittedNodeClass},
 		{Name: "node_pool", Value: c.Node().NodePool},
 	}
+}
+
+// emitStats collects host resource usage stats periodically
+func (c *Client) emitStats() {
 
 	// Start collecting host stats right away and then keep collecting every
 	// collection interval
@@ -3247,7 +3356,11 @@ func (c *Client) setGaugeForAllocationStats(nodeID string, baseLabels []metrics.
 	// Emit unallocated
 	unallocatedMem := total.Memory.MemoryMB - res.Memory.MemoryMB - allocated.Flattened.Memory.MemoryMB
 	unallocatedDisk := total.Disk.DiskMB - res.Disk.DiskMB - allocated.Shared.DiskMB
-	unallocatedCpu := int64(total.Processors.Topology.UsableCompute()) - res.Cpu.CpuShares - allocated.Flattened.Cpu.CpuShares
+
+	// The UsableCompute function call already subtracts and accounts for any
+	// reserved CPU within the client configuration. Therefore, we do not need
+	// to subtract that here.
+	unallocatedCpu := int64(total.Processors.Topology.UsableCompute()) - allocated.Flattened.Cpu.CpuShares
 
 	metrics.SetGaugeWithLabels([]string{"client", "unallocated", "memory"}, float32(unallocatedMem), baseLabels)
 	metrics.SetGaugeWithLabels([]string{"client", "unallocated", "disk"}, float32(unallocatedDisk), baseLabels)
@@ -3297,8 +3410,23 @@ func (c *Client) emitClientMetrics() {
 
 	// Emit allocation metrics
 	blocked, migrating, pending, running, terminal := 0, 0, 0, 0, 0
+	taskRunning, taskPending, taskDead := 0, 0, 0
 	for _, ar := range c.getAllocRunners() {
-		switch ar.AllocState().ClientStatus {
+
+		allocState := ar.AllocState()
+
+		for _, taskState := range allocState.TaskStates {
+			switch taskState.State {
+			case structs.TaskStateDead:
+				taskDead++
+			case structs.TaskStatePending:
+				taskPending++
+			case structs.TaskStateRunning:
+				taskRunning++
+			}
+		}
+
+		switch allocState.ClientStatus {
 		case structs.AllocClientStatusPending:
 			switch {
 			case ar.IsWaiting():
@@ -3320,6 +3448,9 @@ func (c *Client) emitClientMetrics() {
 	metrics.SetGaugeWithLabels([]string{"client", "allocations", "pending"}, float32(pending), labels)
 	metrics.SetGaugeWithLabels([]string{"client", "allocations", "running"}, float32(running), labels)
 	metrics.SetGaugeWithLabels([]string{"client", "allocations", "terminal"}, float32(terminal), labels)
+	metrics.SetGaugeWithLabels([]string{"client", "tasks", "pending"}, float32(taskPending), labels)
+	metrics.SetGaugeWithLabels([]string{"client", "tasks", "running"}, float32(taskRunning), labels)
+	metrics.SetGaugeWithLabels([]string{"client", "tasks", "dead"}, float32(taskDead), labels)
 }
 
 // labels takes the base labels and appends the node state
@@ -3470,7 +3601,7 @@ func (p *pendingClientUpdates) nextBatch(c *Client, updateTicks int) []*structs.
 
 	// Clear here so that allocrunners can queue up the next set of updates
 	// while we're waiting to hear from the server
-	maps.Clear(p.updates)
+	lang.MapClear(p.updates)
 
 	return toSync
 

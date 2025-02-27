@@ -32,19 +32,20 @@ var (
 	// hostFingerprinters contains the host fingerprints which are available for a
 	// given platform.
 	hostFingerprinters = map[string]Factory{
-		"arch":        NewArchFingerprint,
-		"consul":      NewConsulFingerprint,
-		"cni":         NewCNIFingerprint, // networks
-		"cpu":         NewCPUFingerprint,
-		"host":        NewHostFingerprint,
-		"landlock":    NewLandlockFingerprint,
-		"memory":      NewMemoryFingerprint,
-		"network":     NewNetworkFingerprint,
-		"nomad":       NewNomadFingerprint,
-		"plugins_cni": NewPluginsCNIFingerprint,
-		"signal":      NewSignalFingerprint,
-		"storage":     NewStorageFingerprint,
-		"vault":       NewVaultFingerprint,
+		"arch":                NewArchFingerprint,
+		"consul":              NewConsulFingerprint,
+		"cni":                 NewCNIFingerprint, // networks
+		"cpu":                 NewCPUFingerprint,
+		"host":                NewHostFingerprint,
+		"landlock":            NewLandlockFingerprint,
+		"memory":              NewMemoryFingerprint,
+		"network":             NewNetworkFingerprint,
+		"nomad":               NewNomadFingerprint,
+		"plugins_cni":         NewPluginsCNIFingerprint,
+		"host_volume_plugins": NewPluginsHostVolumeFingerprint,
+		"signal":              NewSignalFingerprint,
+		"storage":             NewStorageFingerprint,
+		"vault":               NewVaultFingerprint,
 	}
 
 	// envFingerprinters contains the fingerprints that are environment specific.
@@ -123,8 +124,11 @@ type Fingerprint interface {
 	Periodic() (bool, time.Duration)
 }
 
-// ReloadableFingerprint can be implemented if the fingerprinter needs to be run during client reload.
-// If implemented, the client will call Reload during client reload then immediately Fingerprint
+// ReloadableFingerprint can be implemented if the fingerprinter needs to be run
+// during client reload. If implemented, the client will call Reload during
+// client reload then immediately Fingerprint. The Reload call is not protected
+// by the same mutex that Fingerprint is, so implementations must ensure they
+// are safe to call concurrently with a Fingerprint
 type ReloadableFingerprint interface {
 	Fingerprint
 	Reload()

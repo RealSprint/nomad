@@ -9,11 +9,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/cli"
 	"github.com/hashicorp/nomad/api"
 	"github.com/hashicorp/nomad/ci"
 	"github.com/hashicorp/nomad/helper/pointer"
 	"github.com/hashicorp/nomad/testutil"
-	"github.com/mitchellh/cli"
 	"github.com/shoenig/test/must"
 )
 
@@ -114,25 +114,6 @@ job "job1" {
 	if out := ui.ErrorWriter.String(); !strings.Contains(out, "Error during plan") {
 		t.Fatalf("expected failed query error, got: %s", out)
 	}
-}
-
-func TestPlanCommand_hcl1_hcl2_strict(t *testing.T) {
-	ci.Parallel(t)
-
-	_, _, addr := testServer(t, false, nil)
-
-	t.Run("-hcl1 implies -hcl2-strict is false", func(t *testing.T) {
-		ui := cli.NewMockUi()
-		cmd := &JobPlanCommand{Meta: Meta{Ui: ui}}
-		got := cmd.Run([]string{
-			"-hcl1", "-hcl2-strict",
-			"-address", addr,
-			"asset/example-short.nomad.hcl",
-		})
-		// Exit code 1 here means that an alloc will be created, which is
-		// expected.
-		must.One(t, got)
-	})
 }
 
 func TestPlanCommand_From_STDIN(t *testing.T) {

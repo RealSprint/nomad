@@ -4,6 +4,7 @@
 package command
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -38,7 +39,8 @@ General Options:
 Status Options:
 
   -type <type>
-    List only volumes of type <type>.
+    List only volumes of type <type> (one of "host" or "csi"). If omitted, the
+    command will query for both dynamic host volumes and CSI volumes.
 
   -short
     Display short output. Used only when a single volume is being
@@ -52,6 +54,12 @@ Status Options:
 
   -t
     Format and display volumes using a Go template.
+
+  -node-pool <pool>
+    Filter results by node pool, when no volume ID is provided and -type=host.
+
+  -node <node ID>
+    Filter results by node ID, when no volume ID is provided and -type=host.
 `
 	return strings.TrimSpace(helpText)
 }
@@ -63,11 +71,13 @@ func (c *VolumeStatusCommand) Synopsis() string {
 func (c *VolumeStatusCommand) AutocompleteFlags() complete.Flags {
 	return mergeAutocompleteFlags(c.Meta.AutocompleteFlags(FlagSetClient),
 		complete.Flags{
-			"-type":    predictVolumeType,
-			"-short":   complete.PredictNothing,
-			"-verbose": complete.PredictNothing,
-			"-json":    complete.PredictNothing,
-			"-t":       complete.PredictAnything,
+			"-type":      complete.PredictSet("csi", "host"),
+			"-short":     complete.PredictNothing,
+			"-verbose":   complete.PredictNothing,
+			"-json":      complete.PredictNothing,
+			"-t":         complete.PredictAnything,
+			"-node":      nodePredictor(c.Client, nil),
+			"-node-pool": nodePoolPredictor(c.Client, nil),
 		})
 }
 
@@ -82,14 +92,21 @@ func (c *VolumeStatusCommand) AutocompleteArgs() complete.Predictor {
 		if err != nil {
 			return []string{}
 		}
-		return resp.Matches[contexts.Volumes]
+		matches := resp.Matches[contexts.Volumes]
+
+		resp, _, err = client.Search().PrefixSearch(a.Last, contexts.HostVolumes, nil)
+		if err != nil {
+			return []string{}
+		}
+		matches = append(matches, resp.Matches[contexts.HostVolumes]...)
+		return matches
 	})
 }
 
 func (c *VolumeStatusCommand) Name() string { return "volume status" }
 
 func (c *VolumeStatusCommand) Run(args []string) int {
-	var typeArg string
+	var typeArg, nodeID, nodePool string
 
 	flags := c.Meta.FlagSet(c.Name(), FlagSetClient)
 	flags.Usage = func() { c.Ui.Output(c.Help()) }
@@ -98,6 +115,8 @@ func (c *VolumeStatusCommand) Run(args []string) int {
 	flags.BoolVar(&c.verbose, "verbose", false, "")
 	flags.BoolVar(&c.json, "json", false, "")
 	flags.StringVar(&c.template, "t", "", "")
+	flags.StringVar(&nodeID, "node", "", "")
+	flags.StringVar(&nodePool, "node-pool", "", "")
 
 	if err := flags.Parse(args); err != nil {
 		c.Ui.Error(fmt.Sprintf("Error parsing arguments %s", err))
@@ -130,12 +149,65 @@ func (c *VolumeStatusCommand) Run(args []string) int {
 		id = args[0]
 	}
 
-	code := c.csiStatus(client, id)
-	if code != 0 {
-		return code
+	opts := formatOpts{
+		verbose:  c.verbose,
+		short:    c.short,
+		length:   c.length,
+		json:     c.json,
+		template: c.template,
 	}
 
-	// Extend this section with other volume implementations
+	switch typeArg {
+	case "csi":
+		if nodeID != "" || nodePool != "" {
+			c.Ui.Error("-node and -node-pool can only be used with -type host")
+			return 1
+		}
+		if err := c.csiVolumeStatus(client, id, opts); err != nil {
+			c.Ui.Error(err.Error())
+			return 1
+		}
+	case "host":
+		if err := c.hostVolumeStatus(client, id, nodeID, nodePool, opts); err != nil {
+			c.Ui.Error(err.Error())
+			return 1
+		}
+	case "":
+		if id == "" {
+			// for list, we want to show both
+			dhvErr := c.hostVolumeList(client, nodeID, nodePool, opts)
+			if dhvErr != nil {
+				c.Ui.Error(dhvErr.Error())
+			}
+			c.Ui.Output("")
+			csiErr := c.csiVolumesList(client, opts)
+			if csiErr != nil {
+				c.Ui.Error(csiErr.Error())
+			}
+			if dhvErr == nil && csiErr == nil {
+				return 0
+			}
+			return 1
+		} else {
+			// for read, we only want to show whichever has results
+			hostErr := c.hostVolumeStatus(client, id, nodeID, nodePool, opts)
+			if hostErr != nil {
+				if !errors.Is(hostErr, hostVolumeListError) {
+					c.Ui.Error(hostErr.Error())
+					return 1 // we found a host volume but had some other error
+				}
+				csiErr := c.csiVolumeStatus(client, id, opts)
+				if csiErr != nil {
+					c.Ui.Error(hostErr.Error())
+					c.Ui.Error(csiErr.Error())
+					return 1
+				}
+			}
+		}
+	default:
+		c.Ui.Error(fmt.Sprintf("No such volume type %q", typeArg))
+		return 1
+	}
 
 	return 0
 }

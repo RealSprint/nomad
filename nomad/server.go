@@ -21,9 +21,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/armon/go-metrics"
 	consulapi "github.com/hashicorp/consul/api"
 	log "github.com/hashicorp/go-hclog"
+	metrics "github.com/hashicorp/go-metrics/compat"
 	multierror "github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/raft"
 	autopilot "github.com/hashicorp/raft-autopilot"
@@ -36,7 +36,6 @@ import (
 	"github.com/hashicorp/nomad/helper/codec"
 	"github.com/hashicorp/nomad/helper/goruntime"
 	"github.com/hashicorp/nomad/helper/group"
-	"github.com/hashicorp/nomad/helper/iterator"
 	"github.com/hashicorp/nomad/helper/pool"
 	"github.com/hashicorp/nomad/helper/tlsutil"
 	"github.com/hashicorp/nomad/lib/auth/oidc"
@@ -552,6 +551,9 @@ func NewServer(config *Config, consulCatalog consul.CatalogAPI, consulConfigFunc
 	// be created before the RPC server and FSM but needs them to
 	// exist before it can start.
 	s.keyringReplicator = NewKeyringReplicator(s, encrypter)
+
+	// Block until keys are decrypted
+	s.encrypter.IsReady(s.shutdownCtx)
 
 	// Done
 	return s, nil
@@ -1354,6 +1356,9 @@ func (s *Server) setupRpcServer(server *rpc.Server, ctx *RPCContext) {
 	_ = server.Register(NewStatusEndpoint(s, ctx))
 	_ = server.Register(NewSystemEndpoint(s, ctx))
 	_ = server.Register(NewVariablesEndpoint(s, ctx, s.encrypter))
+	_ = server.Register(NewHostVolumeEndpoint(s, ctx))
+	_ = server.Register(NewTaskGroupVolumeClaimEndpoint(s, ctx))
+	_ = server.Register(NewClientHostVolumeEndpoint(s, ctx))
 
 	// Register non-streaming
 
@@ -1378,12 +1383,14 @@ func (s *Server) setupRaft() error {
 		EvalBroker:         s.evalBroker,
 		Periodic:           s.periodicDispatcher,
 		Blocked:            s.blockedEvals,
+		Encrypter:          s.encrypter,
 		Logger:             s.logger,
 		Region:             s.Region(),
 		EnableEventBroker:  s.config.EnableEventBroker,
 		EventBufferSize:    s.config.EventBufferSize,
 		JobTrackedVersions: s.config.JobTrackedVersions,
 	}
+
 	var err error
 	s.fsm, err = NewFSM(fsmConfig)
 	if err != nil {
@@ -1391,8 +1398,19 @@ func (s *Server) setupRaft() error {
 	}
 
 	// Create a transport layer
-	trans := raft.NewNetworkTransport(s.raftLayer, 3, s.config.RaftTimeout,
-		s.config.LogOutput)
+	logger := log.New(&log.LoggerOptions{
+		Name:   "raft-net",
+		Output: s.config.LogOutput,
+		Level:  log.DefaultLevel,
+	})
+	netConfig := &raft.NetworkTransportConfig{
+		Stream:                  s.raftLayer,
+		MaxPool:                 3,
+		Timeout:                 s.config.RaftTimeout,
+		Logger:                  logger,
+		MsgpackUseNewTimeFormat: true,
+	}
+	trans := raft.NewNetworkTransportWithConfig(netConfig)
 	s.raftTransport = trans
 
 	// Make sure we set the Logger.
@@ -1442,6 +1460,7 @@ func (s *Server) setupRaft() error {
 			BoltOptions: &bbolt.Options{
 				NoFreelistSync: s.config.RaftBoltNoFreelistSync,
 			},
+			MsgpackUseNewTimeFormat: true,
 		})
 		if raftErr != nil {
 			return raftErr
@@ -1628,9 +1647,10 @@ func (s *Server) setupSerf(conf *serf.Config, ch chan serf.Event, path string) (
 			return nil, err
 		}
 	}
-	// LeavePropagateDelay is used to make sure broadcasted leave intents propagate
-	// This value was tuned using https://www.serf.io/docs/internals/simulator.html to
-	// allow for convergence in 99.9% of nodes in a 10 node cluster
+	// LeavePropagateDelay is used to make sure broadcasted leave intents
+	// propagate This value was tuned using
+	// https://github.com/hashicorp/serf/blob/master/docs/internals/simulator.html.erb
+	// to allow for convergence in 99.9% of nodes in a 10 node cluster
 	conf.LeavePropagateDelay = 1 * time.Second
 	conf.Merge = &serfMergeDelegate{}
 
@@ -2152,7 +2172,7 @@ func (s *Server) ClusterMetadata() (structs.ClusterMetadata, error) {
 
 	// if we are not the leader, nothing more we can do
 	if !s.IsLeader() {
-		return structs.ClusterMetadata{}, errors.New("cluster ID not ready {}yet")
+		return structs.ClusterMetadata{}, errors.New("cluster ID not ready yet")
 	}
 
 	// we are the leader, try to generate the ID now
@@ -2166,20 +2186,6 @@ func (s *Server) ClusterMetadata() (structs.ClusterMetadata, error) {
 
 func (s *Server) isSingleServerCluster() bool {
 	return s.config.BootstrapExpect == 1
-}
-
-func (s *Server) GetClientNodesCount() (int, error) {
-	stateSnapshot, err := s.State().Snapshot()
-	if err != nil {
-		return 0, err
-	}
-
-	iter, err := stateSnapshot.Nodes(nil)
-	if err != nil {
-		return 0, err
-	}
-
-	return iterator.Len(iter), nil
 }
 
 // peersInfoContent is used to help operators understand what happened to the

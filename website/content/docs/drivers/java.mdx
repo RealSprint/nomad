@@ -1,10 +1,10 @@
 ---
 layout: docs
-page_title: 'Drivers: Java'
-description: The Java task driver is used to run Jars using the JVM.
+page_title: Java task driver
+description: Nomad's Java task driver lets you run JAR files in your workloads. Learn how to configure a job task that uses the Java task driver. Configure paths, JAR args, JVM options, namespace isolation, work directory, and Linux capabilities. Review the Java task driver capabilities, plugin options, client requirements, and client attributes such as Java version and virtual machine. Learn how the Java task driver affects resource isolation and chroot.
 ---
 
-# Java Driver
+# Java task driver
 
 Name: `java`
 
@@ -84,6 +84,11 @@ config {
   cap_add  = ["chown", "sys_chroot", "mknod"]
 }
 ```
+
+- `work_dir` - (Optional) Sets a custom working directory for the task. This path must be
+  absolute and within the task's [chroot](#chroot) or in a [host volume][] mounted
+  with a [`volume_mount`][volume_mount] block. This will also change the working
+  directory when using `nomad alloc exec`.
 
 ## Examples
 
@@ -260,3 +265,5 @@ This list is configurable through the agent client
 [allow_caps]: /nomad/docs/drivers/java#allow_caps
 [docker_caps]: https://docs.docker.com/engine/reference/run/#runtime-privilege-and-linux-capabilities
 [cgroup controller requirements]: /nomad/docs/install/production/requirements#hardening-nomad
+[volume_mount]: /nomad/docs/job-specification/volume_mount
+[host volume]: /nomad/docs/configuration/client#host_volume-block

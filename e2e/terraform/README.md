@@ -4,10 +4,10 @@ This folder contains Terraform resources for provisioning a Nomad
 cluster on EC2 instances on AWS to use as the target of end-to-end
 tests.
 
-Terraform provisions the AWS infrastructure assuming that EC2 AMIs
-have already been built via Packer and HCP Consul and HCP Vault
-clusters are already running. It deploys a build of Nomad from your
-local machine along with configuration files.
+Terraform provisions the AWS infrastructure assuming that EC2 AMIs have already
+been built via Packer and a HCP Vault cluster is already running. It deploys a
+build of Nomad from your local machine along with configuration files, as well
+as a single-node Consul server cluster.
 
 ## Setup
 
@@ -30,8 +30,6 @@ team's vault under `nomad-e2e`.
 ```
 export HCP_CLIENT_ID=
 export HCP_CLIENT_SECRET=
-export CONSUL_HTTP_TOKEN=
-export CONSUL_HTTP_ADDR=
 ```
 
 The Vault admin token will expire after 6 hours. If you haven't
@@ -44,6 +42,7 @@ cd ./hcp-vault-auth
 terraform init
 terraform apply --auto-approve
 $(terraform output --raw environment)
+cd ../
 ```
 
 Optionally, edit the `terraform.tfvars` file to change the number of
@@ -53,20 +52,33 @@ Linux clients or Windows clients.
 region                           = "us-east-1"
 instance_type                    = "t2.medium"
 server_count                     = "3"
-client_count_ubuntu_jammy_amd64  = "4"
-client_count_windows_2016_amd64  = "1"
+client_count_linux               = "4"
+client_count_windows_2016        = "1"
 ```
+
+You will also need a Consul Enterprise license file and a Nomad Enterprise license file.
 
 Optionally, edit the `nomad_local_binary` variable in the
 `terraform.tfvars` file to change the path to the local binary of
-Nomad you'd like to upload.
+Nomad you'd like to upload, but keep in mind it has to match the OS and the CPU architecture of the nodes (amd64 linux). 
+
+NOTE: If you want to have a cluster with mixed CPU architectures, you need to specify the count and also provide the 
+corresponding binary using `var.nomad_local_binary_client_ubuntu_jammy` and or `var.nomad_local_binary_client_windows_2016`.
 
 Run Terraform apply to deploy the infrastructure:
 
 ```sh
 cd e2e/terraform/
 terraform init
-terraform apply
+terraform apply -var="consul_license=$(cat full_path_to_consul.hclic)" -var="nomad_license=$(cat full_path_to_nomad.hclic)"    
+```
+ 
+Alternative you can also run `make apply_full` from the terraform directory:
+
+```
+export NOMAD_LICENSE_PATH=./nomad.hclic
+export CONSUL_LICENSE_PATH=./consul.hclic 
+make apply_full
 ```
 
 > Note: You will likely see "Connection refused" or "Permission denied" errors
@@ -126,20 +138,21 @@ about the cluster:
   client node IPs.
 - `terraform output windows_clients` will output the list of Windows
   client node IPs.
+- `cluster_unique_identifier` will output the random name used to identify the cluster's resources
 
 ## SSH
 
 You can use Terraform outputs above to access nodes via ssh:
 
 ```sh
-ssh -i keys/nomad-e2e-*.pem ubuntu@${EC2_IP_ADDR}
+ssh -i keys/${CLUSTER_UNIQUE_IDENTIFIER}/nomad-e2e-*.pem ubuntu@${EC2_IP_ADDR}
 ```
 
 The Windows client runs OpenSSH for convenience, but has a different
 user and will drop you into a Powershell shell instead of bash:
 
 ```sh
-ssh -i keys/nomad-e2e-*.pem Administrator@${EC2_IP_ADDR}
+ssh -i keys/${CLUSTER_UNIQUE_IDENTIFIER}/nomad-e2e-*.pem Administrator@${EC2_IP_ADDR}
 ```
 
 ## Teardown

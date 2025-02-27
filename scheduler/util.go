@@ -12,6 +12,7 @@ import (
 
 	log "github.com/hashicorp/go-hclog"
 	memdb "github.com/hashicorp/go-memdb"
+	"github.com/hashicorp/go-set/v3"
 	"github.com/hashicorp/nomad/helper"
 	"github.com/hashicorp/nomad/nomad/structs"
 )
@@ -232,16 +233,6 @@ func tasksUpdated(jobA, jobB *structs.Job, taskGroup string) comparison {
 		return c
 	}
 
-	// Check Affinities
-	if c := affinitiesUpdated(jobA, jobB, taskGroup); c.modified {
-		return c
-	}
-
-	// Check Spreads
-	if c := spreadsUpdated(jobA, jobB, taskGroup); c.modified {
-		return c
-	}
-
 	// Check consul updated
 	if c := consulUpdated(a.Consul, b.Consul); c.modified {
 		return c
@@ -334,6 +325,11 @@ func tasksUpdated(jobA, jobB *structs.Job, taskGroup string) comparison {
 			return difference("task log disabled", at.LogConfig.Disabled, bt.LogConfig.Disabled)
 		}
 
+		// Check volume mount updates
+		if c := volumeMountsUpdated(at.VolumeMounts, bt.VolumeMounts); c.modified {
+			return c
+		}
+
 		// Check if restart.render_templates is updated
 		if c := renderTemplatesUpdated(at.RestartPolicy, bt.RestartPolicy,
 			"task restart render_templates"); c.modified {
@@ -362,6 +358,8 @@ func nonNetworkResourcesUpdated(a, b *structs.Resources) comparison {
 		return difference("task devices", a.Devices, b.Devices)
 	case !a.NUMA.Equal(b.NUMA):
 		return difference("numa", a.NUMA, b.NUMA)
+	case a.SecretsMB != b.SecretsMB:
+		return difference("task secrets", a.SecretsMB, b.SecretsMB)
 	}
 	return same
 }
@@ -421,6 +419,32 @@ func connectServiceUpdated(servicesA, servicesB []*structs.Service) comparison {
 			}
 		}
 	}
+	return same
+}
+
+func volumeMountsUpdated(a, b []*structs.VolumeMount) comparison {
+	setA := set.HashSetFrom(a)
+	setB := set.HashSetFrom(b)
+
+	if setA.Equal(setB) {
+		return same
+	}
+
+	return difference("volume mounts", a, b)
+}
+
+// volumeMountUpdated returns true if the definition of the volume mount
+// has been updated in a manner that will requires the task to be recreated.
+func volumeMountUpdated(mountA, mountB *structs.VolumeMount) comparison {
+	if mountA != nil && mountB == nil {
+		difference("volume mount removed", mountA, mountB)
+	}
+
+	if mountA != nil && mountB != nil &&
+		mountA.SELinuxLabel != mountB.SELinuxLabel {
+		return difference("volume mount selinux label", mountA.SELinuxLabel, mountB.SELinuxLabel)
+	}
+
 	return same
 }
 
@@ -510,6 +534,10 @@ func networkUpdated(netA, netB []*structs.NetworkResource) comparison {
 			return difference("network dns", an.DNS, bn.DNS)
 		}
 
+		if !an.CNI.Equal(bn.CNI) {
+			return difference("network cni", an.CNI, bn.CNI)
+		}
+
 		aPorts, bPorts := networkPortMap(an), networkPortMap(bn)
 		if !aPorts.Equal(bPorts) {
 			return difference("network port map", aPorts, bPorts)
@@ -540,67 +568,6 @@ func networkPortMap(n *structs.NetworkResource) structs.AllocatedPorts {
 		})
 	}
 	return m
-}
-
-func affinitiesUpdated(jobA, jobB *structs.Job, taskGroup string) comparison {
-	var affinitiesA structs.Affinities
-	var affinitiesB structs.Affinities
-
-	// accumulate job affinities
-
-	affinitiesA = append(affinitiesA, jobA.Affinities...)
-	affinitiesB = append(affinitiesB, jobB.Affinities...)
-
-	tgA := jobA.LookupTaskGroup(taskGroup)
-	tgB := jobB.LookupTaskGroup(taskGroup)
-
-	// append group level affinities
-
-	affinitiesA = append(affinitiesA, tgA.Affinities...)
-	affinitiesB = append(affinitiesB, tgB.Affinities...)
-
-	// append task level affinities for A
-
-	for _, task := range tgA.Tasks {
-		affinitiesA = append(affinitiesA, task.Affinities...)
-	}
-
-	// append task level affinities for B
-	for _, task := range tgB.Tasks {
-		affinitiesB = append(affinitiesB, task.Affinities...)
-	}
-
-	// finally check if all the affinities from both jobs match
-	if !affinitiesA.Equal(&affinitiesB) {
-		return difference("affinities", affinitiesA, affinitiesB)
-	}
-
-	return same
-}
-
-func spreadsUpdated(jobA, jobB *structs.Job, taskGroup string) comparison {
-	var spreadsA []*structs.Spread
-	var spreadsB []*structs.Spread
-
-	// accumulate job spreads
-
-	spreadsA = append(spreadsA, jobA.Spreads...)
-	spreadsB = append(spreadsB, jobB.Spreads...)
-
-	tgA := jobA.LookupTaskGroup(taskGroup)
-	tgB := jobB.LookupTaskGroup(taskGroup)
-
-	// append group spreads
-	spreadsA = append(spreadsA, tgA.Spreads...)
-	spreadsB = append(spreadsB, tgB.Spreads...)
-
-	if !slices.EqualFunc(spreadsA, spreadsB, func(a, b *structs.Spread) bool {
-		return a.Equal(b)
-	}) {
-		return difference("spreads", spreadsA, spreadsB)
-	}
-
-	return same
 }
 
 // renderTemplatesUpdated returns the difference in the RestartPolicy's

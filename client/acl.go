@@ -6,8 +6,8 @@ package client
 import (
 	"time"
 
-	"github.com/armon/go-metrics"
-	"github.com/hashicorp/go-set/v2"
+	metrics "github.com/hashicorp/go-metrics/compat"
+	"github.com/hashicorp/go-set/v3"
 	"github.com/hashicorp/nomad/acl"
 	"github.com/hashicorp/nomad/nomad/structs"
 )

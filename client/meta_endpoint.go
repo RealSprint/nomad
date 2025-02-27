@@ -4,12 +4,12 @@
 package client
 
 import (
+	"maps"
 	"net/http"
 	"time"
 
-	"github.com/armon/go-metrics"
+	metrics "github.com/hashicorp/go-metrics/compat"
 	"github.com/hashicorp/nomad/nomad/structs"
-	"golang.org/x/exp/maps"
 )
 
 type NodeMeta struct {

@@ -71,7 +71,7 @@ information on how to configure the `jwks_url` value.
 
 [![Vault Auth Method][img_vault_auth_method]][img_vault_auth_method]
 
-When an allocation that needs access access to Vault starts, the Nomad client
+When an allocation that needs access to Vault starts, the Nomad client
 running it exchanges the Nomad workload identities for tasks for Vault ACL
 tokens.
 
@@ -295,7 +295,10 @@ your Vault and Nomad clusters are configured and deployed.
 It is highly recommended to use [mutual TLS][tutorial_mtls] in production
 deployments of Nomad. With mTLS enabled, the [`tls.verify_https_client`][]
 configuration must be set to `false` since it is not possible to provide client
-certificates to the Vault auth method.
+certificates to the Vault auth method. Nomad's CA certificate should be
+specified in the Vault auth method's
+[`jwks_ca_pem`](https://developer.hashicorp.com/vault/api-docs/auth/jwt#jwks_ca_pem)
+parameter.
 
 Alternatively, you may expose Nomad's JWKS URL from a proxy or a load balancer
 that handles the mutual TLS connection to Nomad and exposes the JWKS URL
@@ -313,10 +316,10 @@ You may also host the JWKS JSON response from Nomad in an external location
 that is reachable by the Vault servers, and use that address as the value for
 `jwks_url`.
 
-It is important to remember that the Nomad keys **are rotated periodically**,
-so both approaches should be automated and done continually. The rotation
-frequency is controlled by the [`server.root_key_rotation_threshold`][]
-configuration of the Nomad servers.
+It is important to remember that the Nomad keys **are rotated periodically**, so
+both approaches should be automated and done continually. The rotation frequency
+is controlled by the [`server.root_key_rotation_threshold`][] configuration of
+the Nomad servers. Keys will be prepublished at half the rotation threshold.
 
 ### Additional References
 
@@ -340,9 +343,9 @@ Nomad clients do not need to be provided with a Vault token.**
 
 <Note title="Deprecation Warning">
 
-This legacy workflow will be removed in Nomad 1.9. Before upgrading to Nomad 1.9
-you will need to have configured authentication with Vault as described in
-[Nomad Workload Identities](#nomad-workload-identities).
+This legacy workflow will be removed in Nomad 1.10. Before upgrading to Nomad
+1.10, you need to configure authentication with Vault as described in [Nomad
+Workload Identities](#nomad-workload-identities).
 
 </Note>
 

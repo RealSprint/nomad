@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/cli"
 	"github.com/hashicorp/nomad/ci"
 	"github.com/hashicorp/nomad/helper/pointer"
 	"github.com/hashicorp/nomad/testutil"
-	"github.com/mitchellh/cli"
 	"github.com/shoenig/test/must"
 )
 
@@ -69,22 +69,6 @@ func TestValidateCommand_Files(t *testing.T) {
 		code := cmd.Run(args)
 		must.StrContains(t, ui.ErrorWriter.String(), "* bad token")
 		must.One(t, code)
-	})
-}
-func TestValidateCommand_hcl1_hcl2_strict(t *testing.T) {
-	ci.Parallel(t)
-
-	_, _, addr := testServer(t, false, nil)
-
-	t.Run("-hcl1 implies -hcl2-strict is false", func(t *testing.T) {
-		ui := cli.NewMockUi()
-		cmd := &JobValidateCommand{Meta: Meta{Ui: ui}}
-		got := cmd.Run([]string{
-			"-hcl1", "-hcl2-strict",
-			"-address", addr,
-			"asset/example-short.nomad.hcl",
-		})
-		must.Zero(t, got)
 	})
 }
 

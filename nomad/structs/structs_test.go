@@ -12,8 +12,6 @@ import (
 	"testing"
 	"time"
 
-	jwt "github.com/go-jose/go-jose/v3/jwt"
-	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/go-multierror"
 	"github.com/hashicorp/nomad/ci"
@@ -343,6 +341,17 @@ func TestJob_Validate(t *testing.T) {
 			},
 		},
 		{
+			name: "job description is too long",
+			job: &Job{
+				UI: &JobUIConfig{
+					Description: strings.Repeat("a", 1015),
+				},
+			},
+			expErr: []string{
+				"UI description must be under 1000 characters",
+			},
+		},
+		{
 			name: "job task group is type invalid",
 			job: &Job{
 				Region:      "global",
@@ -386,6 +395,18 @@ func TestJob_Validate(t *testing.T) {
 				"Unsupported restart mode",
 				"Task Group web should have a reschedule policy",
 				"Task Group web should have an ephemeral disk object",
+			},
+		},
+		{
+			name: "VersionTag Description length",
+			job: &Job{
+				Type: JobTypeService,
+				VersionTag: &JobVersionTag{
+					Description: strings.Repeat("a", 1001),
+				},
+			},
+			expErr: []string{
+				"Tagged version description must be under 1000 characters",
 			},
 		},
 	}
@@ -673,6 +694,19 @@ func testJob() *Job {
 		AllAtOnce:   false,
 		Datacenters: []string{"*"},
 		NodePool:    NodePoolDefault,
+		UI: &JobUIConfig{
+			Description: "A job",
+			Links: []*JobUILink{
+				{
+					Label: "Nomad Project",
+					Url:   "https://nomadproject.io",
+				},
+				{
+					Label: "Nomad on GitHub",
+					Url:   "https://github.com/hashicorp/nomad",
+				},
+			},
+		},
 		Constraints: []*Constraint{
 			{
 				LTarget: "$attr.kernel.name",
@@ -730,6 +764,7 @@ func testJob() *Job {
 							},
 						},
 						Identity: &WorkloadIdentity{
+							Name: "foo",
 							Env:  true,
 							File: true,
 						},
@@ -763,6 +798,38 @@ func TestJob_Copy(t *testing.T) {
 	c := j.Copy()
 	if !reflect.DeepEqual(j, c) {
 		t.Fatalf("Copy() returned an unequal Job; got %#v; want %#v", c, j)
+	}
+}
+
+func TestJob_Canonicalize(t *testing.T) {
+	ci.Parallel(t)
+	cases := []struct {
+		job *Job
+	}{
+		{
+			job: testJob(),
+		},
+		{
+			job: &Job{},
+		},
+		{
+			job: &Job{
+				Datacenters: []string{},
+				Constraints: []*Constraint{},
+				Affinities:  []*Affinity{},
+				Spreads:     []*Spread{},
+				TaskGroups:  []*TaskGroup{},
+				Meta:        map[string]string{},
+			},
+		},
+	}
+
+	for _, c := range cases {
+		c.job.Canonicalize()
+		copied := c.job.Copy()
+		if !reflect.DeepEqual(c.job, copied) {
+			t.Fatalf("Canonicalize() returned a Job that changed after copy; before %#v; after %#v", c.job, copied)
+		}
 	}
 }
 
@@ -1464,7 +1531,7 @@ func TestTaskGroup_Validate(t *testing.T) {
 			tg: &TaskGroup{
 				Networks: []*NetworkResource{
 					{
-						DynamicPorts: []Port{{"http", 0, 80, ""}},
+						DynamicPorts: []Port{{Label: "http", To: 80}},
 					},
 				},
 				Tasks: []*Task{
@@ -1472,7 +1539,7 @@ func TestTaskGroup_Validate(t *testing.T) {
 						Resources: &Resources{
 							Networks: []*NetworkResource{
 								{
-									DynamicPorts: []Port{{"http", 0, 80, ""}},
+									DynamicPorts: []Port{{Label: "http", To: 80}},
 								},
 							},
 						},
@@ -1959,6 +2026,83 @@ func TestTaskGroupNetwork_Validate(t *testing.T) {
 			},
 			ErrContains: "Hostname is not a valid DNS name",
 		},
+		{
+			TG: &TaskGroup{
+				Name: "testing-duplicate-cni-arg-keys",
+				Networks: []*NetworkResource{
+					{
+						CNI: &CNIConfig{Args: map[string]string{"static": "first_value"}},
+					},
+					{
+						CNI: &CNIConfig{Args: map[string]string{"static": "new_value"}},
+					},
+				},
+			},
+			ErrContains: "duplicate CNI arg",
+		},
+		{
+			TG: &TaskGroup{
+				Name: "testing-valid-cni-arg-keys",
+				Networks: []*NetworkResource{
+					{
+						CNI: &CNIConfig{Args: map[string]string{"static": "first_value"}},
+					},
+					{
+						CNI: &CNIConfig{Args: map[string]string{"new_key": "new_value"}},
+					},
+					{
+						CNI: &CNIConfig{Args: map[string]string{"newest_key": "new_value", "second_key": "second_value"}},
+					},
+				},
+			},
+		},
+		{
+			TG: &TaskGroup{
+				Name: "testing-invalid-character-cni-arg-key",
+				Networks: []*NetworkResource{
+					{
+						CNI: &CNIConfig{Args: map[string]string{"static;": "first_value"}},
+					},
+				},
+			},
+			ErrContains: "invalid ';' character in CNI arg key \"static;",
+		},
+		{
+			TG: &TaskGroup{
+				Name: "testing-invalid-character-cni-arg-value",
+				Networks: []*NetworkResource{
+					{
+						CNI: &CNIConfig{Args: map[string]string{"static": "first_value;"}},
+					},
+				},
+			},
+			ErrContains: "invalid ';' character in CNI arg value \"first_value;",
+		},
+		{
+			TG: &TaskGroup{
+				Name: "testing-port-ignore-collision-ok",
+				Networks: []*NetworkResource{{
+					Mode: "host",
+					ReservedPorts: []Port{
+						{Label: "one", Value: 10, IgnoreCollision: true},
+						{Label: "two", Value: 10, IgnoreCollision: true},
+					},
+				}},
+			},
+		},
+		{
+			TG: &TaskGroup{
+				Name: "testing-port-ignore-collision-non-host-network-mode",
+				Networks: []*NetworkResource{{
+					Mode: "not-host",
+					ReservedPorts: []Port{
+						{Label: "one", Value: 10, IgnoreCollision: true},
+						{Label: "two", Value: 10, IgnoreCollision: true},
+					},
+				}},
+			},
+			ErrContains: "collision may not be ignored on non-host network mode",
+		},
 	}
 
 	for i := range cases {
@@ -1974,6 +2118,41 @@ func TestTaskGroupNetwork_Validate(t *testing.T) {
 			require.Error(t, err)
 			require.Contains(t, err.Error(), tc.ErrContains)
 		})
+	}
+}
+
+func TestTaskGroup_Canonicalize(t *testing.T) {
+	ci.Parallel(t)
+	job := testJob()
+	cases := []struct {
+		tg *TaskGroup
+	}{
+		{
+			tg: job.TaskGroups[0],
+		},
+		{
+			tg: &TaskGroup{},
+		},
+		{
+			tg: &TaskGroup{
+				Constraints: []*Constraint{},
+				Tasks:       []*Task{},
+				Meta:        map[string]string{},
+				Affinities:  []*Affinity{},
+				Spreads:     []*Spread{},
+				Networks:    []*NetworkResource{},
+				Services:    []*Service{},
+				Volumes:     map[string]*VolumeRequest{},
+			},
+		},
+	}
+
+	for _, c := range cases {
+		c.tg.Canonicalize(job)
+		copied := c.tg.Copy()
+		if !reflect.DeepEqual(c.tg, copied) {
+			t.Fatalf("Canonicalize() returned a TaskGroup that changed after copy; before %#v; after %#v", c.tg, copied)
+		}
 	}
 }
 
@@ -2095,6 +2274,7 @@ func TestTask_Validate_Resources(t *testing.T) {
 								HostNetwork: "loopback",
 							},
 						},
+						CNI: &CNIConfig{map[string]string{"static": "new_val"}},
 					},
 				},
 			},
@@ -2132,19 +2312,94 @@ func TestTask_Validate_Resources(t *testing.T) {
 				MemoryMaxMB: -1,
 			},
 		},
+		{
+			name: "numa devices do not match",
+			res: &Resources{
+				CPU:      100,
+				MemoryMB: 200,
+				Devices: []*RequestedDevice{
+					{
+						Name:  "evilcorp/gpu",
+						Count: 2,
+					},
+					{
+						Name:  "fpga",
+						Count: 1,
+					},
+					{
+						Name:  "net/nic/model1",
+						Count: 1,
+					},
+				},
+				NUMA: &NUMA{
+					Affinity: "require",
+					Devices:  []string{"evilcorp/gpu", "bad/bad", "fpga"},
+				},
+			},
+			err: "numa device \"bad/bad\" not requested as task resource",
+		},
+		{
+			name: "numa affinity not valid",
+			res: &Resources{
+				CPU:      100,
+				MemoryMB: 200,
+				NUMA: &NUMA{
+					Affinity: "bad",
+				},
+			},
+			err: "numa affinity must be one of none, prefer, or require",
+		},
 	}
 
-	for i := range cases {
-		tc := cases[i]
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.res.Validate()
 			if tc.err == "" {
-				require.NoError(t, err)
+				must.NoError(t, err)
 			} else {
-				require.Error(t, err)
-				require.Contains(t, err.Error(), tc.err)
+				must.ErrorContains(t, err, tc.err)
 			}
 		})
+	}
+}
+
+func TestTask_Canonicalize(t *testing.T) {
+	ci.Parallel(t)
+	job := testJob()
+	tg := job.TaskGroups[0]
+	cases := []struct {
+		task *Task
+	}{
+		{
+			task: tg.Tasks[0],
+		},
+		{
+			task: &Task{},
+		},
+		{
+			task: &Task{
+				Config:          map[string]interface{}{},
+				Env:             map[string]string{},
+				Services:        []*Service{},
+				Templates:       []*Template{},
+				Constraints:     []*Constraint{},
+				Affinities:      []*Affinity{},
+				Meta:            map[string]string{},
+				Artifacts:       []*TaskArtifact{},
+				VolumeMounts:    []*VolumeMount{},
+				ScalingPolicies: []*ScalingPolicy{},
+				Identities:      []*WorkloadIdentity{},
+				Actions:         []*Action{},
+			},
+		},
+	}
+
+	for _, c := range cases {
+		c.task.Canonicalize(job, tg)
+		copied := c.task.Copy()
+		if !reflect.DeepEqual(c.task, copied) {
+			t.Fatalf("Canonicalize() returned a Task that changed after copy; before %#v; after %#v", c.task, copied)
+		}
 	}
 }
 
@@ -2187,6 +2442,7 @@ func TestNetworkResource_Copy(t *testing.T) {
 						HostNetwork: "public",
 					},
 				},
+				CNI: &CNIConfig{Args: map[string]string{"foo": "bar", "hello": "world"}},
 			},
 			name: "fully populated input check",
 		},
@@ -3580,25 +3836,33 @@ func TestResource_Add(t *testing.T) {
 
 	r1 := &Resources{
 		CPU:      2000,
+		Cores:    100,
 		MemoryMB: 2048,
 		DiskMB:   10000,
 		Networks: []*NetworkResource{
 			{
 				CIDR:          "10.0.0.0/8",
 				MBits:         100,
-				ReservedPorts: []Port{{"ssh", 22, 0, ""}},
+				ReservedPorts: []Port{{Label: "ssh", Value: 22}},
 			},
 		},
 	}
 	r2 := &Resources{
 		CPU:      2000,
+		Cores:    100,
 		MemoryMB: 1024,
 		DiskMB:   5000,
 		Networks: []*NetworkResource{
 			{
 				IP:            "10.0.0.1",
 				MBits:         50,
-				ReservedPorts: []Port{{"web", 80, 0, ""}},
+				ReservedPorts: []Port{{Label: "web", Value: 80}},
+			},
+		},
+		Devices: []*RequestedDevice{
+			{
+				Name:  "nvidia/gpu/Tesla M60",
+				Count: 1,
 			},
 		},
 	}
@@ -3606,21 +3870,27 @@ func TestResource_Add(t *testing.T) {
 	r1.Add(r2)
 
 	expect := &Resources{
-		CPU:      3000,
-		MemoryMB: 3072,
-		DiskMB:   15000,
+		CPU:         4000,
+		Cores:       200,
+		MemoryMB:    3072,
+		MemoryMaxMB: 1024,
+		DiskMB:      15000,
 		Networks: []*NetworkResource{
 			{
 				CIDR:          "10.0.0.0/8",
 				MBits:         150,
-				ReservedPorts: []Port{{"ssh", 22, 0, ""}, {"web", 80, 0, ""}},
+				ReservedPorts: []Port{{Label: "ssh", Value: 22}, {Label: "web", Value: 80}},
+			},
+		},
+		Devices: []*RequestedDevice{
+			{
+				Name:  "nvidia/gpu/Tesla M60",
+				Count: 1,
 			},
 		},
 	}
 
-	if !reflect.DeepEqual(expect.Networks, r1.Networks) {
-		t.Fatalf("bad: %#v %#v", expect, r1)
-	}
+	must.Eq(t, expect, r1)
 }
 
 func TestResource_Add_Network(t *testing.T) {
@@ -3631,7 +3901,7 @@ func TestResource_Add_Network(t *testing.T) {
 		Networks: []*NetworkResource{
 			{
 				MBits:        50,
-				DynamicPorts: []Port{{"http", 0, 80, ""}, {"https", 0, 443, ""}},
+				DynamicPorts: []Port{{Label: "http", To: 80}, {Label: "https", To: 443}},
 			},
 		},
 	}
@@ -3639,7 +3909,7 @@ func TestResource_Add_Network(t *testing.T) {
 		Networks: []*NetworkResource{
 			{
 				MBits:        25,
-				DynamicPorts: []Port{{"admin", 0, 8080, ""}},
+				DynamicPorts: []Port{{Label: "admin", To: 8080}},
 			},
 		},
 	}
@@ -3651,7 +3921,7 @@ func TestResource_Add_Network(t *testing.T) {
 		Networks: []*NetworkResource{
 			{
 				MBits:        75,
-				DynamicPorts: []Port{{"http", 0, 80, ""}, {"https", 0, 443, ""}, {"admin", 0, 8080, ""}},
+				DynamicPorts: []Port{{Label: "http", To: 80}, {Label: "https", To: 443}, {Label: "admin", To: 8080}},
 			},
 		},
 	}
@@ -3678,7 +3948,7 @@ func TestComparableResources_Subtract(t *testing.T) {
 				{
 					CIDR:          "10.0.0.0/8",
 					MBits:         100,
-					ReservedPorts: []Port{{"ssh", 22, 0, ""}},
+					ReservedPorts: []Port{{Label: "ssh", Value: 22}},
 				},
 			},
 		},
@@ -3701,7 +3971,7 @@ func TestComparableResources_Subtract(t *testing.T) {
 				{
 					CIDR:          "10.0.0.0/8",
 					MBits:         20,
-					ReservedPorts: []Port{{"ssh", 22, 0, ""}},
+					ReservedPorts: []Port{{Label: "ssh", Value: 22}},
 				},
 			},
 		},
@@ -3725,7 +3995,7 @@ func TestComparableResources_Subtract(t *testing.T) {
 				{
 					CIDR:          "10.0.0.0/8",
 					MBits:         100,
-					ReservedPorts: []Port{{"ssh", 22, 0, ""}},
+					ReservedPorts: []Port{{Label: "ssh", Value: 22}},
 				},
 			},
 		},
@@ -4785,6 +5055,27 @@ func TestTaskArtifact_Hash(t *testing.T) {
 			GetterMode:   "g",
 			RelativeDest: "i",
 		},
+		{
+			GetterSource: "b",
+			GetterOptions: map[string]string{
+				"c": "c",
+				"d": "e",
+			},
+			GetterMode:     "g",
+			GetterInsecure: true,
+			RelativeDest:   "i",
+		},
+		{
+			GetterSource: "b",
+			GetterOptions: map[string]string{
+				"c": "c",
+				"d": "e",
+			},
+			GetterMode:     "g",
+			GetterInsecure: true,
+			RelativeDest:   "i",
+			Chown:          true,
+		},
 	}
 
 	// Map of hash to source
@@ -5045,22 +5336,26 @@ func TestPlan_AppendPreemptedAllocAppendsAllocWithUpdatedAttrs(t *testing.T) {
 	assert.Equal(t, expectedAlloc, appendedAlloc)
 }
 
-func TestAllocation_MsgPackTags(t *testing.T) {
+func TestMsgPackTags(t *testing.T) {
 	ci.Parallel(t)
-	planType := reflect.TypeOf(Allocation{})
 
-	msgPackTags, _ := planType.FieldByName("_struct")
+	cases := []struct {
+		name   string
+		typeOf reflect.Type
+	}{
+		{"Allocation", reflect.TypeOf(Allocation{})},
+		{"Evaluation", reflect.TypeOf(Evaluation{})},
+		{"NetworkResource", reflect.TypeOf(NetworkResource{})},
+		{"Plan", reflect.TypeOf(Plan{})},
+	}
 
-	assert.Equal(t, msgPackTags.Tag, reflect.StructTag(`codec:",omitempty"`))
-}
-
-func TestEvaluation_MsgPackTags(t *testing.T) {
-	ci.Parallel(t)
-	planType := reflect.TypeOf(Evaluation{})
-
-	msgPackTags, _ := planType.FieldByName("_struct")
-
-	assert.Equal(t, msgPackTags.Tag, reflect.StructTag(`codec:",omitempty"`))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			field, ok := tc.typeOf.FieldByName("_struct")
+			must.True(t, ok, must.Sprint("_struct field not found"))
+			must.Eq(t, `codec:",omitempty"`, field.Tag, must.Sprint("bad _struct tag"))
+		})
+	}
 }
 
 func TestAllocation_Terminated(t *testing.T) {
@@ -5229,7 +5524,10 @@ func TestAllocation_ShouldReschedule(t *testing.T) {
 		alloc := Allocation{}
 		alloc.DesiredStatus = state.DesiredStatus
 		alloc.ClientStatus = state.ClientStatus
-		alloc.RescheduleTracker = &RescheduleTracker{state.RescheduleTrackers}
+		alloc.RescheduleTracker = &RescheduleTracker{
+			Events:         state.RescheduleTrackers,
+			LastReschedule: "",
+		}
 
 		t.Run(state.Desc, func(t *testing.T) {
 			if got := alloc.ShouldReschedule(state.ReschedulePolicy, state.FailTime); got != state.ShouldReschedule {
@@ -5891,6 +6189,123 @@ func TestAllocation_NeedsToReconnect(t *testing.T) {
 	}
 }
 
+func TestAllocation_RescheduleTimeOnDisconnect(t *testing.T) {
+	ci.Parallel(t)
+	testNow := time.Now()
+
+	testAlloc := MockAlloc()
+
+	testCases := []struct {
+		name            string
+		taskGroup       string
+		disconnectGroup *DisconnectStrategy
+		expected        bool
+		expectedTime    time.Time
+	}{
+		{
+			name:         "missing_task_group",
+			taskGroup:    "missing-task-group",
+			expected:     false,
+			expectedTime: time.Time{},
+		},
+		{
+			name:            "missing_disconnect_group",
+			taskGroup:       "web",
+			disconnectGroup: nil,
+			expected:        true,
+			expectedTime:    testNow.Add(RestartPolicyMinInterval), // RestartPolicyMinInterval is the default value
+		},
+		{
+			name:            "empty_disconnect_group",
+			taskGroup:       "web",
+			disconnectGroup: &DisconnectStrategy{},
+			expected:        true,
+			expectedTime:    testNow.Add(RestartPolicyMinInterval), // RestartPolicyMinInterval is the default value
+		},
+		{
+			name:      "replace_enabled",
+			taskGroup: "web",
+			disconnectGroup: &DisconnectStrategy{
+				Replace: pointer.Of(true),
+			},
+			expected:     true,
+			expectedTime: testNow,
+		},
+		{
+			name:      "replace_disabled",
+			taskGroup: "web",
+			disconnectGroup: &DisconnectStrategy{
+				Replace: pointer.Of(false),
+			},
+			expected:     false,
+			expectedTime: testNow,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			alloc := testAlloc.Copy()
+
+			alloc.TaskGroup = tc.taskGroup
+			alloc.Job.TaskGroups[0].Disconnect = tc.disconnectGroup
+
+			time, eligible := alloc.RescheduleTimeOnDisconnect(testNow)
+
+			must.Eq(t, tc.expected, eligible)
+			must.Eq(t, tc.expectedTime, time)
+		})
+	}
+}
+
+func TestAllocation_LastStartOfTask(t *testing.T) {
+	ci.Parallel(t)
+	testNow := time.Now()
+
+	alloc := MockAlloc()
+	alloc.TaskStates = map[string]*TaskState{
+		"task-with-restarts": {
+			StartedAt:   testNow.Add(-30 * time.Minute),
+			Restarts:    3,
+			LastRestart: testNow.Add(-5 * time.Minute),
+		},
+		"task-without-restarts": {
+			StartedAt: testNow.Add(-30 * time.Minute),
+			Restarts:  0,
+		},
+	}
+
+	testCases := []struct {
+		name     string
+		taskName string
+		expected time.Time
+	}{
+		{
+			name:     "missing_task",
+			taskName: "missing-task",
+			expected: time.Time{},
+		},
+		{
+			name:     "task_with_restarts",
+			taskName: "task-with-restarts",
+			expected: testNow.Add(-5 * time.Minute),
+		},
+		{
+			name:     "task_without_restarts",
+			taskName: "task-without-restarts",
+			expected: testNow.Add(-30 * time.Minute),
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			alloc.TaskGroup = "web"
+			got := alloc.LastStartOfTask(tc.taskName)
+
+			must.Eq(t, tc.expected, got)
+		})
+	}
+}
+
 func TestAllocation_Canonicalize_Old(t *testing.T) {
 	ci.Parallel(t)
 
@@ -6107,10 +6522,17 @@ func TestDispatchPayloadConfig_Validate(t *testing.T) {
 func TestScalingPolicy_Canonicalize(t *testing.T) {
 	ci.Parallel(t)
 
+	job := &Job{Namespace: "prod", ID: "example"}
+	tg := &TaskGroup{Name: "web"}
+	task := &Task{Name: "httpd"}
+
 	cases := []struct {
 		name     string
 		input    *ScalingPolicy
 		expected *ScalingPolicy
+		job      *Job
+		tg       *TaskGroup
+		task     *Task
 	}{
 		{
 			name:     "empty policy",
@@ -6122,14 +6544,42 @@ func TestScalingPolicy_Canonicalize(t *testing.T) {
 			input:    &ScalingPolicy{Type: "other-type"},
 			expected: &ScalingPolicy{Type: "other-type"},
 		},
+		{
+			name:  "policy with type and task group",
+			input: &ScalingPolicy{Type: "other-type"},
+			expected: &ScalingPolicy{
+				Type: "other-type",
+				Target: map[string]string{
+					ScalingTargetNamespace: "prod",
+					ScalingTargetJob:       "example",
+					ScalingTargetGroup:     "web",
+				},
+			},
+			job: job,
+			tg:  tg,
+		},
+		{
+			name:  "policy with type and task",
+			input: &ScalingPolicy{Type: "other-type"},
+			expected: &ScalingPolicy{
+				Type: "other-type",
+				Target: map[string]string{
+					ScalingTargetNamespace: "prod",
+					ScalingTargetJob:       "example",
+					ScalingTargetGroup:     "web",
+					ScalingTargetTask:      "httpd",
+				},
+			},
+			job:  job,
+			tg:   tg,
+			task: task,
+		},
 	}
 
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			require := require.New(t)
-
-			c.input.Canonicalize()
-			require.Equal(c.expected, c.input)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.input.Canonicalize(tc.job, tc.tg, tc.task)
+			must.Eq(t, tc.expected, tc.input)
 		})
 	}
 }
@@ -6405,12 +6855,12 @@ func TestNetworkResourcesEquals(t *testing.T) {
 				{
 					IP:            "10.0.0.1",
 					MBits:         50,
-					ReservedPorts: []Port{{"web", 80, 0, ""}},
+					ReservedPorts: []Port{{Label: "web", Value: 80}},
 				},
 				{
 					IP:            "10.0.0.1",
 					MBits:         50,
-					ReservedPorts: []Port{{"web", 80, 0, ""}},
+					ReservedPorts: []Port{{Label: "web", Value: 80}},
 				},
 			},
 			true,
@@ -6421,12 +6871,12 @@ func TestNetworkResourcesEquals(t *testing.T) {
 				{
 					IP:            "10.0.0.0",
 					MBits:         50,
-					ReservedPorts: []Port{{"web", 80, 0, ""}},
+					ReservedPorts: []Port{{Label: "web", Value: 80}},
 				},
 				{
 					IP:            "10.0.0.1",
 					MBits:         50,
-					ReservedPorts: []Port{{"web", 80, 0, ""}},
+					ReservedPorts: []Port{{Label: "web", Value: 80}},
 				},
 			},
 			false,
@@ -6437,12 +6887,12 @@ func TestNetworkResourcesEquals(t *testing.T) {
 				{
 					IP:            "10.0.0.1",
 					MBits:         40,
-					ReservedPorts: []Port{{"web", 80, 0, ""}},
+					ReservedPorts: []Port{{Label: "web", Value: 80}},
 				},
 				{
 					IP:            "10.0.0.1",
 					MBits:         50,
-					ReservedPorts: []Port{{"web", 80, 0, ""}},
+					ReservedPorts: []Port{{Label: "web", Value: 80}},
 				},
 			},
 			false,
@@ -6453,12 +6903,12 @@ func TestNetworkResourcesEquals(t *testing.T) {
 				{
 					IP:            "10.0.0.1",
 					MBits:         50,
-					ReservedPorts: []Port{{"web", 80, 0, ""}},
+					ReservedPorts: []Port{{Label: "web", Value: 80}},
 				},
 				{
 					IP:            "10.0.0.1",
 					MBits:         50,
-					ReservedPorts: []Port{{"web", 80, 0, ""}, {"web", 80, 0, ""}},
+					ReservedPorts: []Port{{Label: "web", Value: 80}, {Label: "web", Value: 80}},
 				},
 			},
 			false,
@@ -6469,7 +6919,7 @@ func TestNetworkResourcesEquals(t *testing.T) {
 				{
 					IP:            "10.0.0.1",
 					MBits:         50,
-					ReservedPorts: []Port{{"web", 80, 0, ""}},
+					ReservedPorts: []Port{{Label: "web", Value: 80}},
 				},
 				{
 					IP:            "10.0.0.1",
@@ -6485,12 +6935,12 @@ func TestNetworkResourcesEquals(t *testing.T) {
 				{
 					IP:            "10.0.0.1",
 					MBits:         50,
-					ReservedPorts: []Port{{"web", 80, 0, ""}},
+					ReservedPorts: []Port{{Label: "web", Value: 80}},
 				},
 				{
 					IP:            "10.0.0.1",
 					MBits:         50,
-					ReservedPorts: []Port{{"notweb", 80, 0, ""}},
+					ReservedPorts: []Port{{Label: "notweb", Value: 80}},
 				},
 			},
 			false,
@@ -6501,12 +6951,12 @@ func TestNetworkResourcesEquals(t *testing.T) {
 				{
 					IP:           "10.0.0.1",
 					MBits:        50,
-					DynamicPorts: []Port{{"web", 80, 0, ""}},
+					DynamicPorts: []Port{{Label: "web", Value: 80}},
 				},
 				{
 					IP:           "10.0.0.1",
 					MBits:        50,
-					DynamicPorts: []Port{{"web", 80, 0, ""}, {"web", 80, 0, ""}},
+					DynamicPorts: []Port{{Label: "web", Value: 80}, {Label: "web", Value: 80}},
 				},
 			},
 			false,
@@ -6517,7 +6967,7 @@ func TestNetworkResourcesEquals(t *testing.T) {
 				{
 					IP:           "10.0.0.1",
 					MBits:        50,
-					DynamicPorts: []Port{{"web", 80, 0, ""}},
+					DynamicPorts: []Port{{Label: "web", Value: 80}},
 				},
 				{
 					IP:           "10.0.0.1",
@@ -6533,12 +6983,12 @@ func TestNetworkResourcesEquals(t *testing.T) {
 				{
 					IP:           "10.0.0.1",
 					MBits:        50,
-					DynamicPorts: []Port{{"web", 80, 0, ""}},
+					DynamicPorts: []Port{{Label: "web", Value: 80}},
 				},
 				{
 					IP:           "10.0.0.1",
 					MBits:        50,
-					DynamicPorts: []Port{{"notweb", 80, 0, ""}},
+					DynamicPorts: []Port{{Label: "notweb", Value: 80}},
 				},
 			},
 			false,
@@ -6974,7 +7424,7 @@ func TestNodeResources_Merge(t *testing.T) {
 	}
 
 	topo2 := MockBasicTopology()
-	topo2.NodeIDs = idset.From[hw.NodeID]([]hw.NodeID{0, 1, 2})
+	topo2.SetNodes(idset.From[hw.NodeID]([]hw.NodeID{0, 1, 2}))
 
 	res.Merge(&NodeResources{
 		Processors: NodeProcessorResources{topo2},
@@ -7046,7 +7496,7 @@ func TestAllocatedResources_Canonicalize(t *testing.T) {
 						Networks: Networks{
 							{
 								IP:           "127.0.0.1",
-								DynamicPorts: []Port{{"admin", 8080, 0, "default"}},
+								DynamicPorts: []Port{{Label: "admin", Value: 8080, HostNetwork: "default"}},
 							},
 						},
 					},
@@ -7058,7 +7508,7 @@ func TestAllocatedResources_Canonicalize(t *testing.T) {
 						Networks: Networks{
 							{
 								IP:           "127.0.0.1",
-								DynamicPorts: []Port{{"admin", 8080, 0, "default"}},
+								DynamicPorts: []Port{{Label: "admin", Value: 8080, HostNetwork: "default"}},
 							},
 						},
 					},
@@ -7082,7 +7532,7 @@ func TestAllocatedResources_Canonicalize(t *testing.T) {
 						Networks: Networks{
 							{
 								IP:           "127.0.0.1",
-								DynamicPorts: []Port{{"admin", 8080, 0, "default"}},
+								DynamicPorts: []Port{{Label: "admin", Value: 8080, HostNetwork: "default"}},
 							},
 						},
 					},
@@ -7104,7 +7554,7 @@ func TestAllocatedResources_Canonicalize(t *testing.T) {
 						Networks: Networks{
 							{
 								IP:           "127.0.0.1",
-								DynamicPorts: []Port{{"admin", 8080, 0, "default"}},
+								DynamicPorts: []Port{{Label: "admin", Value: 8080, HostNetwork: "default"}},
 							},
 						},
 					},
@@ -7309,6 +7759,185 @@ func TestComparableResources_Superset(t *testing.T) {
 	}
 }
 
+func TestAllocatedResources_Comparable_Flattened(t *testing.T) {
+	ci.Parallel(t)
+
+	allocationResources := AllocatedResources{
+		TaskLifecycles: map[string]*TaskLifecycleConfig{
+			"prestart-task": {
+				Hook:    TaskLifecycleHookPrestart,
+				Sidecar: false,
+			},
+			"poststop-task": {
+				Hook:    TaskLifecycleHookPoststop,
+				Sidecar: false,
+			},
+		},
+		Tasks: map[string]*AllocatedTaskResources{
+			"prestart-task": {
+				Cpu: AllocatedCpuResources{
+					CpuShares: 2000,
+				},
+			},
+			"main-task": {
+				Cpu: AllocatedCpuResources{
+					CpuShares: 4000,
+				},
+			},
+			"poststop-task": {
+				Cpu: AllocatedCpuResources{
+					CpuShares: 1000,
+				},
+			},
+		},
+	}
+
+	// The output of Flattened should return the resource required during the execution of the largest lifecycle
+	must.Eq(t, 4000, allocationResources.Comparable().Flattened.Cpu.CpuShares)
+	must.Len(t, 0, allocationResources.Comparable().Flattened.Cpu.ReservedCores)
+
+	allocationResources = AllocatedResources{
+		TaskLifecycles: map[string]*TaskLifecycleConfig{
+			"prestart-task": {
+				Hook:    TaskLifecycleHookPrestart,
+				Sidecar: false,
+			},
+			"prestart-sidecar-task": {
+				Hook:    TaskLifecycleHookPrestart,
+				Sidecar: true,
+			},
+			"poststop-task": {
+				Hook:    TaskLifecycleHookPoststop,
+				Sidecar: false,
+			},
+		},
+		Tasks: map[string]*AllocatedTaskResources{
+			"prestart-task": {
+				Cpu: AllocatedCpuResources{
+					CpuShares:     1000,
+					ReservedCores: []uint16{0},
+				},
+			},
+			"prestart-sidecar-task": {
+				Cpu: AllocatedCpuResources{
+					CpuShares:     2000,
+					ReservedCores: []uint16{1, 2},
+				},
+			},
+			"main-task": {
+				Cpu: AllocatedCpuResources{
+					CpuShares:     2000,
+					ReservedCores: []uint16{3, 4},
+				},
+			},
+			"poststop-task": {
+				Cpu: AllocatedCpuResources{
+					CpuShares:     1000,
+					ReservedCores: []uint16{5},
+				},
+			},
+		},
+	}
+
+	// Reserved core resources are claimed throughout the lifespan of the allocation
+	must.Eq(t, 6000, allocationResources.Comparable().Flattened.Cpu.CpuShares)
+	must.Len(t, 6, allocationResources.Comparable().Flattened.Cpu.ReservedCores)
+
+	allocationResources = AllocatedResources{
+		TaskLifecycles: map[string]*TaskLifecycleConfig{
+			"prestart-task": {
+				Hook:    TaskLifecycleHookPrestart,
+				Sidecar: false,
+			},
+			"poststop-task": {
+				Hook:    TaskLifecycleHookPoststop,
+				Sidecar: false,
+			},
+		},
+		Tasks: map[string]*AllocatedTaskResources{
+			"prestart-task": {
+				Cpu: AllocatedCpuResources{
+					CpuShares: 1000,
+				},
+			},
+			"main-task": {
+				Cpu: AllocatedCpuResources{
+					CpuShares:     2000,
+					ReservedCores: []uint16{1, 2},
+				},
+			},
+			"poststop-task": {
+				Cpu: AllocatedCpuResources{
+					CpuShares: 1000,
+				},
+			},
+		},
+	}
+
+	// Reserved core resources are claimed throughout the lifespan of the allocation,
+	// but the prestart and poststop task can reuse the CpuShares. It's important to
+	// note that we will only claim 1000 MHz as part of the share slice.
+	must.Eq(t, 3000, allocationResources.Comparable().Flattened.Cpu.CpuShares)
+	must.Len(t, 2, allocationResources.Comparable().Flattened.Cpu.ReservedCores)
+
+	allocationResources = AllocatedResources{
+		TaskLifecycles: map[string]*TaskLifecycleConfig{
+			"prestart-task": {
+				Hook:    TaskLifecycleHookPrestart,
+				Sidecar: false,
+			},
+			"prestart-sidecar-task": {
+				Hook:    TaskLifecycleHookPrestart,
+				Sidecar: true,
+			},
+			"poststart-task": {
+				Hook:    TaskLifecycleHookPoststart,
+				Sidecar: false,
+			},
+			"poststop-task": {
+				Hook:    TaskLifecycleHookPoststop,
+				Sidecar: false,
+			},
+		},
+		Tasks: map[string]*AllocatedTaskResources{
+			"prestart-task": {
+				Cpu: AllocatedCpuResources{
+					CpuShares:     2000,
+					ReservedCores: []uint16{0, 1},
+				},
+			},
+			"prestart-sidecar-task": {
+				Cpu: AllocatedCpuResources{
+					CpuShares:     2000,
+					ReservedCores: []uint16{2, 3},
+				},
+			},
+			"main-task": {
+				Cpu: AllocatedCpuResources{
+					CpuShares:     1000,
+					ReservedCores: []uint16{4},
+				},
+			},
+			"poststart-task": {
+				Cpu: AllocatedCpuResources{
+					CpuShares:     2000,
+					ReservedCores: []uint16{5, 6},
+				},
+			},
+			"poststop-task": {
+				Cpu: AllocatedCpuResources{
+					CpuShares:     2000,
+					ReservedCores: []uint16{7, 8},
+				},
+			},
+		},
+	}
+
+	// The output of Flattened should return the resource required during the execution of the largest lifecycle
+	must.Eq(t, 9000, allocationResources.Comparable().Flattened.Cpu.CpuShares)
+	must.Len(t, 9, allocationResources.Comparable().Flattened.Cpu.ReservedCores)
+}
+
 func requireErrors(t *testing.T, err error, expected ...string) {
 	t.Helper()
 	require.Error(t, err)
@@ -7355,6 +7984,7 @@ func TestDNSConfig_Equal(t *testing.T) {
 
 	must.Equal[*DNSConfig](t, nil, nil)
 	must.NotEqual[*DNSConfig](t, nil, new(DNSConfig))
+	must.NotEqual[*DNSConfig](t, nil, &DNSConfig{Servers: []string{"8.8.8.8"}})
 
 	must.StructEqual(t, &DNSConfig{
 		Servers:  []string{"8.8.8.8", "8.8.4.4"},
@@ -7420,7 +8050,7 @@ func TestTaskArtifact_Equal(t *testing.T) {
 	ci.Parallel(t)
 
 	must.Equal[*TaskArtifact](t, nil, nil)
-	must.NotEqual[*TaskArtifact](t, nil, new(TaskArtifact))
+	must.NotEqual(t, nil, new(TaskArtifact))
 
 	must.StructEqual(t, &TaskArtifact{
 		GetterSource:  "source",
@@ -7443,7 +8073,11 @@ func TestTaskArtifact_Equal(t *testing.T) {
 	}, {
 		Field: "RelativeDest",
 		Apply: func(ta *TaskArtifact) { ta.RelativeDest = "./alloc" },
-	}})
+	}, {
+		Field: "Chown",
+		Apply: func(ta *TaskArtifact) { ta.Chown = true },
+	},
+	})
 }
 
 func TestVault_Equal(t *testing.T) {
@@ -7693,484 +8327,4 @@ func TestTaskIdentity_Canonicalize(t *testing.T) {
 	must.Len(t, 0, task.Identities[1].Audience)
 	must.True(t, task.Identities[1].Env)
 	must.False(t, task.Identities[1].File)
-}
-
-func TestNewIdentityClaims(t *testing.T) {
-	ci.Parallel(t)
-
-	job := &Job{
-		ID:        "job",
-		Name:      "job",
-		Namespace: "default",
-		Region:    "global",
-
-		TaskGroups: []*TaskGroup{
-			{
-				Name: "group",
-				Services: []*Service{{
-					Name:      "group-service-",
-					PortLabel: "http",
-					Identity: &WorkloadIdentity{
-						Audience: []string{"group-service.consul.io"},
-					},
-				}},
-				Tasks: []*Task{
-					{
-						Name: "task",
-						Identity: &WorkloadIdentity{
-							Name:     "default-identity",
-							Audience: []string{"example.com"},
-						},
-						Identities: []*WorkloadIdentity{
-							{
-								Name:     "alt-identity",
-								Audience: []string{"alt.example.com"},
-							},
-							{
-								Name:     "consul_default",
-								Audience: []string{"consul.io"},
-							},
-							{
-								Name:     "vault_default",
-								Audience: []string{"vault.io"},
-							},
-						},
-						Services: []*Service{{
-							Name:      "task-service",
-							PortLabel: "http",
-							Identity: &WorkloadIdentity{
-								Audience: []string{"task-service.consul.io"},
-							},
-						}},
-					},
-					{
-						Name: "consul-vault-task",
-						Consul: &Consul{
-							Namespace: "task-consul-namespace",
-						},
-						Vault: &Vault{
-							Namespace: "vault-namespace",
-							Role:      "role-from-spec-group",
-						},
-						Identity: &WorkloadIdentity{
-							Name:     "default-identity",
-							Audience: []string{"example.com"},
-						},
-						Identities: []*WorkloadIdentity{
-							{
-								Name:     "consul_default",
-								Audience: []string{"consul.io"},
-							},
-							{
-								Name:     "vault_default",
-								Audience: []string{"vault.io"},
-							},
-						},
-						Services: []*Service{{
-							Name:      "consul-task-service",
-							PortLabel: "http",
-							Identity: &WorkloadIdentity{
-								Audience: []string{"task-service.consul.io"},
-							},
-						}},
-					},
-				},
-			},
-			{
-				Name: "consul-group",
-				Consul: &Consul{
-					Namespace: "group-consul-namespace",
-				},
-				Services: []*Service{{
-					Name:      "group-service",
-					PortLabel: "http",
-					Identity: &WorkloadIdentity{
-						Audience: []string{"group-service.consul.io"},
-					},
-				}},
-				Tasks: []*Task{
-					{
-						Name: "task",
-						Identity: &WorkloadIdentity{
-							Name:     "default-identity",
-							Audience: []string{"example.com"},
-						},
-						Identities: []*WorkloadIdentity{
-							{
-								Name:     "alt-identity",
-								Audience: []string{"alt.example.com"},
-							},
-							{
-								Name:     "consul_default",
-								Audience: []string{"consul.io"},
-							},
-							{
-								Name:     "vault_default",
-								Audience: []string{"vault.io"},
-							},
-						},
-						Services: []*Service{{
-							Name:      "task-service",
-							PortLabel: "http",
-							Identity: &WorkloadIdentity{
-								Audience: []string{"task-service.consul.io"},
-							},
-						}},
-					},
-					{
-						Name: "consul-vault-task",
-						Consul: &Consul{
-							Namespace: "task-consul-namespace",
-						},
-						Vault: &Vault{
-							Namespace: "vault-namespace",
-							Role:      "role-from-spec-consul-group",
-						},
-						Identity: &WorkloadIdentity{
-							Name:     "default-identity",
-							Audience: []string{"example.com"},
-						},
-						Identities: []*WorkloadIdentity{
-							{
-								Name:     "consul_default",
-								Audience: []string{"consul.io"},
-							},
-							{
-								Name:     "vault_default",
-								Audience: []string{"vault.io"},
-							},
-						},
-						Services: []*Service{{
-							Name:      "consul-task-service",
-							PortLabel: "http",
-							Identity: &WorkloadIdentity{
-								Audience: []string{"consul.io"},
-							},
-						}},
-					},
-				},
-			},
-		},
-	}
-	job.Canonicalize()
-
-	expectedClaims := map[string]*IdentityClaims{
-		// group: no consul.
-		"job/group/services/group-service": {
-			Namespace:   "default",
-			JobID:       "job",
-			ServiceName: "group-service",
-			Claims: jwt.Claims{
-				Subject:  "global:default:job:group:group-service:consul-service_group-service-http",
-				Audience: jwt.Audience{"group-service.consul.io"},
-			},
-		},
-		// group: no consul.
-		// task:  no consul, no vault.
-		"job/group/task/default-identity": {
-			Namespace: "default",
-			JobID:     "job",
-			TaskName:  "task",
-			Claims: jwt.Claims{
-				Subject:  "global:default:job:group:task:default-identity",
-				Audience: jwt.Audience{"example.com"},
-			},
-		},
-		"job/group/task/alt-identity": {
-			Namespace: "default",
-			JobID:     "job",
-			TaskName:  "task",
-			Claims: jwt.Claims{
-				Subject:  "global:default:job:group:task:alt-identity",
-				Audience: jwt.Audience{"alt.example.com"},
-			},
-		},
-		// No ConsulNamespace because there is no consul block at either task
-		// or group level.
-		"job/group/task/consul_default": {
-			ConsulNamespace: "",
-			Namespace:       "default",
-			JobID:           "job",
-			TaskName:        "task",
-			Claims: jwt.Claims{
-				Subject:  "global:default:job:group:task:consul_default",
-				Audience: jwt.Audience{"consul.io"},
-			},
-		},
-		// No VaultNamespace because there is no vault block at either task
-		// or group level.
-		"job/group/task/vault_default": {
-			VaultNamespace: "",
-			Namespace:      "default",
-			JobID:          "job",
-			TaskName:       "task",
-			VaultRole:      "", // not specified in jobspec
-			Claims: jwt.Claims{
-				Subject:  "global:default:job:group:task:vault_default",
-				Audience: jwt.Audience{"vault.io"},
-			},
-		},
-		"job/group/task/services/task-service": {
-			Namespace:   "default",
-			JobID:       "job",
-			ServiceName: "task-service",
-			Claims: jwt.Claims{
-				Subject:  "global:default:job:group:task-service:consul-service_task-task-service-http",
-				Audience: jwt.Audience{"task-service.consul.io"},
-			},
-		},
-		// group: no consul.
-		// task:  with consul, with vault.
-		"job/group/consul-vault-task/default-identity": {
-			Namespace: "default",
-			JobID:     "job",
-			TaskName:  "consul-vault-task",
-			Claims: jwt.Claims{
-				Subject:  "global:default:job:group:consul-vault-task:default-identity",
-				Audience: jwt.Audience{"example.com"},
-			},
-		},
-		// Use task-level Consul namespace.
-		"job/group/consul-vault-task/consul_default": {
-			ConsulNamespace: "task-consul-namespace",
-			Namespace:       "default",
-			JobID:           "job",
-			TaskName:        "consul-vault-task",
-			Claims: jwt.Claims{
-				Subject:  "global:default:job:group:consul-vault-task:consul_default",
-				Audience: jwt.Audience{"consul.io"},
-			},
-		},
-		// Use task-level Vault namespace.
-		"job/group/consul-vault-task/vault_default": {
-			VaultNamespace: "vault-namespace",
-			Namespace:      "default",
-			JobID:          "job",
-			TaskName:       "consul-vault-task",
-			VaultRole:      "role-from-spec-group",
-			Claims: jwt.Claims{
-				Subject:  "global:default:job:group:consul-vault-task:vault_default",
-				Audience: jwt.Audience{"vault.io"},
-			},
-		},
-		// Use task-level Consul namespace for task services.
-		"job/group/consul-vault-task/services/consul-vault-task-service": {
-			ConsulNamespace: "task-consul-namespace",
-			Namespace:       "default",
-			JobID:           "job",
-			ServiceName:     "consul-vault-task-service",
-			Claims: jwt.Claims{
-				Subject:  "global:default:job:group:consul-vault-task-service:consul-service_consul-vault-task-service-http",
-				Audience: jwt.Audience{"consul.io"},
-			},
-		},
-		// group: with consul.
-		// Use group-level Consul namespace for group services.
-		"job/consul-group/services/group-service": {
-			ConsulNamespace: "group-consul-namespace",
-			Namespace:       "default",
-			JobID:           "job",
-			ServiceName:     "group-service",
-			Claims: jwt.Claims{
-				Subject:  "global:default:job:consul-group:group-service:consul-service_group-service-http",
-				Audience: jwt.Audience{"group-service.consul.io"},
-			},
-		},
-		// group: with consul.
-		// task:  no consul, no vault.
-		"job/consul-group/task/default-identity": {
-			Namespace: "default",
-			JobID:     "job",
-			TaskName:  "task",
-			Claims: jwt.Claims{
-				Subject:  "global:default:job:consul-group:task:default-identity",
-				Audience: jwt.Audience{"example.com"},
-			},
-		},
-		"job/consul-group/task/alt-identity": {
-			Namespace: "default",
-			JobID:     "job",
-			TaskName:  "task",
-			Claims: jwt.Claims{
-				Subject:  "global:default:job:consul-group:task:alt-identity",
-				Audience: jwt.Audience{"alt.example.com"},
-			},
-		},
-		// Use group-level Consul namespace because task doesn't have a consul
-		// block.
-		"job/consul-group/task/consul_default": {
-			ConsulNamespace: "group-consul-namespace",
-			Namespace:       "default",
-			JobID:           "job",
-			TaskName:        "task",
-			Claims: jwt.Claims{
-				Subject:  "global:default:job:consul-group:task:consul_default",
-				Audience: jwt.Audience{"consul.io"},
-			},
-		},
-		"job/consul-group/task/vault_default": {
-			Namespace: "default",
-			JobID:     "job",
-			TaskName:  "task",
-			VaultRole: "", // not specified in jobspec
-			Claims: jwt.Claims{
-				Subject:  "global:default:job:consul-group:task:vault_default",
-				Audience: jwt.Audience{"vault.io"},
-			},
-		},
-		// Use group-level Consul namespace for task service because task
-		// doesn't have a consul block.
-		"job/consul-group/task/services/task-service": {
-			ConsulNamespace: "group-consul-namespace",
-			Namespace:       "default",
-			JobID:           "job",
-			ServiceName:     "task-service",
-			Claims: jwt.Claims{
-				Subject:  "global:default:job:consul-group:task-service:consul-service_task-task-service-http",
-				Audience: jwt.Audience{"task-service.consul.io"},
-			},
-		},
-		// group: no consul.
-		// task:  with consul, with vault.
-		"job/consul-group/consul-vault-task/default-identity": {
-			Namespace: "default",
-			JobID:     "job",
-			TaskName:  "consul-vault-task",
-			Claims: jwt.Claims{
-				Subject:  "global:default:job:consul-group:consul-vault-task:default-identity",
-				Audience: jwt.Audience{"example.com"},
-			},
-		},
-		// Use task-level Consul namespace.
-		"job/consul-group/consul-vault-task/consul_default": {
-			ConsulNamespace: "task-consul-namespace",
-			Namespace:       "default",
-			JobID:           "job",
-			TaskName:        "consul-vault-task",
-			Claims: jwt.Claims{
-				Subject:  "global:default:job:consul-group:consul-vault-task:consul_default",
-				Audience: jwt.Audience{"consul.io"},
-			},
-		},
-		"job/consul-group/consul-vault-task/vault_default": {
-			VaultNamespace: "vault-namespace",
-			Namespace:      "default",
-			JobID:          "job",
-			TaskName:       "consul-vault-task",
-			VaultRole:      "role-from-spec-consul-group",
-			Claims: jwt.Claims{
-				Subject:  "global:default:job:consul-group:consul-vault-task:vault_default",
-				Audience: jwt.Audience{"vault.io"},
-			},
-		},
-		// Use task-level Consul namespace for task services.
-		"job/consul-group/consul-vault-task/services/consul-task-service": {
-			ConsulNamespace: "task-consul-namespace",
-			Namespace:       "default",
-			JobID:           "job",
-			ServiceName:     "consul-task-service",
-			Claims: jwt.Claims{
-				Subject:  "global:default:job:consul-group:consul-task-service:consul-service_consul-vault-task-consul-task-service-http",
-				Audience: jwt.Audience{"consul.io"},
-			},
-		},
-	}
-
-	// Generate service identity names.
-	for _, tg := range job.TaskGroups {
-		for _, s := range tg.Services {
-			if s.Identity != nil {
-				s.Identity.Name = s.MakeUniqueIdentityName()
-			}
-		}
-		for _, t := range tg.Tasks {
-			for _, s := range t.Services {
-				if s.Identity != nil {
-					s.Identity.Name = s.MakeUniqueIdentityName()
-				}
-			}
-		}
-	}
-
-	// Find all indentites in test job and create a test case for each.
-	// Tests for identities missing from expectedClaims are skipped.
-	type testCase struct {
-		name           string
-		group          string
-		wid            *WorkloadIdentity
-		wiHandle       *WIHandle
-		expectedClaims *IdentityClaims
-	}
-	testCases := []testCase{}
-	for _, tg := range job.TaskGroups {
-		path := job.ID + "/" + tg.Name
-
-		for _, s := range tg.Services {
-			path := path + "/services/" + s.Name
-
-			testCases = append(testCases, testCase{
-				name:           path,
-				group:          tg.Name,
-				wid:            s.Identity,
-				wiHandle:       s.IdentityHandle(),
-				expectedClaims: expectedClaims[path],
-			})
-		}
-
-		for _, t := range tg.Tasks {
-			path := path + "/" + t.Name
-
-			for _, wid := range append(t.Identities, t.Identity) {
-				if wid == nil {
-					continue
-				}
-
-				path := path + "/" + wid.Name
-				testCases = append(testCases, testCase{
-					name:           path,
-					group:          tg.Name,
-					wid:            wid,
-					wiHandle:       t.IdentityHandle(wid),
-					expectedClaims: expectedClaims[path],
-				})
-			}
-
-			for _, s := range t.Services {
-				path := path + "/services/" + s.Name
-				testCases = append(testCases, testCase{
-					name:           path,
-					group:          tg.Name,
-					wid:            s.Identity,
-					wiHandle:       s.IdentityHandle(),
-					expectedClaims: expectedClaims[path],
-				})
-			}
-		}
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			if tc.expectedClaims == nil {
-				t.Skip("missing expected claims")
-			}
-
-			now := time.Now()
-			alloc := &Allocation{
-				ID:        uuid.Generate(),
-				Namespace: job.Namespace,
-				JobID:     job.ID,
-				TaskGroup: tc.group,
-			}
-
-			got := NewIdentityClaims(job, alloc, tc.wiHandle, tc.wid, now)
-
-			must.Eq(t, tc.expectedClaims, got, must.Cmp(cmpopts.IgnoreFields(
-				IdentityClaims{},
-				"ID", "AllocationID", "IssuedAt", "NotBefore",
-			)))
-			must.Eq(t, alloc.ID, got.AllocationID)
-			must.Eq(t, jwt.NewNumericDate(now), got.IssuedAt)
-			must.Eq(t, jwt.NewNumericDate(now), got.NotBefore)
-		})
-	}
 }

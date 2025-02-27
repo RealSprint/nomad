@@ -1,6 +1,6 @@
 [
   {
-    "title": "Installing Nomad",
+    "title": "Install Nomad",
     "routes": [
       {
         "title": "Overview",
@@ -47,6 +47,32 @@
       {
         "title": "Specific Version Details",
         "path": "upgrade/upgrade-specific"
+      }
+    ]
+  },
+  {
+    "title": "Release Notes",
+    "routes": [
+      {
+        "title": "Overview",
+        "path": "release-notes"
+      },
+      {
+        "title": "Nomad",
+        "routes": [
+          {
+            "title": "Upcoming",
+            "path": "release-notes/nomad/upcoming"
+          },
+          {
+            "title": "v1.8.x",
+            "path": "release-notes/nomad/v1_8_x"
+          },
+          {
+            "title": "v1.9.x",
+            "path": "release-notes/nomad/v1_9_x"
+          }
+        ]
       }
     ]
   },
@@ -101,11 +127,38 @@
       },
       {
         "title": "ACL",
-        "path": "concepts/acl"
+        "routes": [
+          {
+            "title": "Overview",
+            "path": "concepts/acl"
+          },
+          {
+            "title": "Auth Methods",
+            "routes": [
+              {
+                "title": "JWT",
+                "path": "concepts/acl/auth-methods/jwt"
+              },
+              {
+                "title": "OIDC",
+                "path": "concepts/acl/auth-methods/oidc"
+              }
+            ]
+          }
+        ]
       },
       {
         "title": "Architecture",
-        "path": "concepts/architecture"
+        "routes": [
+          {
+            "title": "Overview",
+            "path": "concepts/architecture"
+          },
+          {
+            "title": "Federation",
+            "path": "concepts/architecture/federation"
+          }
+        ]
       },
       {
         "title": "CPU",
@@ -132,7 +185,20 @@
           },
           {
             "title": "Storage",
-            "path": "concepts/plugins/csi"
+            "routes": [
+              {
+                "title": "Overview",
+                "path": "concepts/plugins/storage"
+              },
+              {
+                "title": "CSI",
+                "path": "concepts/plugins/storage/csi"
+              },
+              {
+                "title": "Host Volumes",
+                "path": "concepts/plugins/storage/host-volumes"
+              }
+            ]
           },
           {
             "title": "Networking",
@@ -182,6 +248,10 @@
         "path": "concepts/security"
       },
       {
+        "title": "Job",
+        "path": "concepts/job"
+      },
+      {
         "title": "Workload Identity",
         "path": "concepts/workload-identity"
       },
@@ -219,6 +289,31 @@
         "path": "configuration/consul"
       },
       {
+        "title": "keyring",
+        "routes": [
+          {
+            "title": "Overview",
+            "path": "configuration/keyring"
+          },
+          {
+            "title": "AWS KMS",
+            "path": "configuration/keyring/awskms"
+          },
+          {
+            "title": "Azure Key Vault",
+            "path": "configuration/keyring/azurekeyvault"
+          },
+          {
+            "title": "GCP Cloud KMS",
+            "path": "configuration/keyring/gcpckms"
+          },
+          {
+            "title": "Vault Transit",
+            "path": "configuration/keyring/transit"
+          }
+        ]
+      },
+      {
         "title": "plugin",
         "path": "configuration/plugin"
       },
@@ -227,12 +322,12 @@
         "path": "configuration/reporting"
       },
       {
-        "title": "sentinel",
-        "path": "configuration/sentinel"
-      },
-      {
         "title": "search",
         "path": "configuration/search"
+      },
+      {
+        "title": "sentinel",
+        "path": "configuration/sentinel"
       },
       {
         "title": "server",
@@ -437,6 +532,10 @@
             "path": "commands/alloc/logs"
           },
           {
+            "title": "pause",
+            "path": "commands/alloc/pause"
+          },
+          {
             "title": "restart",
             "path": "commands/alloc/restart"
           },
@@ -609,6 +708,10 @@
             "path": "commands/job/stop"
           },
           {
+            "title": "tag",
+            "path": "commands/job/tag"
+          },
+          {
             "title": "validate",
             "path": "commands/job/validate"
           }
@@ -768,6 +871,10 @@
               {
                 "title": "set-config",
                 "path": "commands/operator/autopilot/set-config"
+              },
+              {
+                "title": "health",
+                "path": "commands/operator/autopilot/health"
               }
             ]
           },
@@ -877,6 +984,10 @@
               {
                 "title": "inspect",
                 "path": "commands/operator/snapshot/inspect"
+              },
+              {
+                "title": "redact",
+                "path": "commands/operator/snapshot/redact"
               },
               {
                 "title": "restore",
@@ -1684,6 +1795,10 @@
         "path": "job-specification/device"
       },
       {
+        "title": "disconnect",
+        "path": "job-specification/disconnect"
+      },
+      {
         "title": "dispatch_payload",
         "path": "job-specification/dispatch_payload"
       },
@@ -1772,6 +1887,10 @@
         "path": "job-specification/scaling"
       },
       {
+        "title": "schedule",
+        "path": "job-specification/schedule"
+      },
+      {
         "title": "service",
         "path": "job-specification/service"
       },
@@ -1794,6 +1913,14 @@
       {
         "title": "template",
         "path": "job-specification/template"
+      },
+      {
+        "title": "transparent_proxy",
+        "path": "job-specification/transparent_proxy"
+      },
+      {
+        "title": "ui",
+        "path": "job-specification/ui"
       },
       {
         "title": "update",
@@ -1837,6 +1964,10 @@
         "path": "other-specifications/node-pool"
       },
       {
+        "title": "Resource Quota",
+        "path": "other-specifications/quota"
+      },
+      {
         "title": "Variables",
         "path": "other-specifications/variables"
       },
@@ -1846,6 +1977,14 @@
           {
             "title": "Overview",
             "path": "other-specifications/volume"
+          },
+          {
+            "title": "CSI",
+            "path": "other-specifications/volume/csi"
+          },
+          {
+            "title": "Dynamic Host Volumes",
+            "path": "other-specifications/volume/host"
           },
           {
             "title": "capability",
@@ -1883,10 +2022,6 @@
         "path": "drivers/java"
       },
       {
-        "title": "Podman",
-        "href": "/plugins/drivers/podman"
-      },
-      {
         "title": "QEMU",
         "path": "drivers/qemu"
       },
@@ -1895,81 +2030,23 @@
         "path": "drivers/raw_exec"
       },
       {
-        "title": "Community",
+        "title": "Plugins",
         "routes": [
           {
-            "title": "Overview",
+            "title": "Exec2",
+            "href": "/plugins/drivers/exec2"
+          },
+          {
+            "title": "Podman",
+            "href": "/plugins/drivers/podman"
+          },
+          {
+            "title": "Virt <sup>Beta</sup>",
+            "href": "/plugins/drivers/virt"
+          },
+          {
+            "title": "Community",
             "href": "/plugins/drivers/community"
-          },
-          {
-            "title": "containerd",
-            "href": "/plugins/drivers/community/containerd"
-          },
-          {
-            "title": "Pledge",
-            "href": "/plugins/drivers/community/pledge"
-          },
-          {
-            "title": "Firecracker driver",
-            "href": "/plugins/drivers/community/firecracker-task-driver"
-          },
-          {
-            "title": "Jailtask driver",
-            "href": "/plugins/drivers/community/jail-task-driver"
-          },
-          {
-            "title": "Lightrun",
-            "href": "/plugins/drivers/community/lightrun"
-          },
-          {
-            "title": "LXC",
-            "href": "/plugins/drivers/community/lxc"
-          },
-          {
-            "title": "Pot",
-            "href": "/plugins/drivers/community/pot"
-          },
-          {
-            "title": "Rkt",
-            "badge": {
-              "text": "Deprecated",
-              "type": "outlined",
-              "color": "neutral"
-            },
-            "href": "/plugins/drivers/community/rkt"
-          },
-          {
-            "title": "Rookout",
-            "href": "/plugins/drivers/community/rookout"
-          },
-          {
-            "title": "Singularity",
-            "href": "/plugins/drivers/community/singularity"
-          },
-          {
-            "title": "systemd-nspawn",
-            "href": "/plugins/drivers/community/nspawn"
-          },
-          {
-            "title": "Windows IIS",
-            "href": "/plugins/drivers/community/iis"
-          },
-          {
-            "title": "Windows IIS",
-            "href": "/plugins/drivers/community/nomad-iis"
-          }
-        ]
-      },
-      {
-        "title": "Remote",
-        "routes": [
-          {
-            "title": "Overview",
-            "href": "/plugins/drivers/remote"
-          },
-          {
-            "title": "ECS",
-            "href": "/plugins/drivers/remote/ecs"
           }
         ]
       }
@@ -1977,34 +2054,7 @@
   },
   {
     "title": "Device Plugins",
-    "routes": [
-      {
-        "title": "Overview",
-        "path": "devices"
-      },
-      {
-        "title": "External",
-        "routes": [
-          {
-            "title": "Overview",
-            "href": "/plugins/devices"
-          },
-          {
-            "title": "Nvidia",
-            "href": "/plugins/devices/nvidia"
-          },
-          {
-            "title": "USB",
-            "badge": {
-              "text": "Beta",
-              "type": "outlined",
-              "color": "neutral"
-            },
-            "href": "/plugins/devices/community/usb"
-          }
-        ]
-      }
-    ]
+    "href": "/plugins/devices"
   },
   {
     "title": "Schedulers",
@@ -2085,10 +2135,6 @@
           {
             "title": "policy_eval",
             "href": "/tools/autoscaling/agent/policy_eval"
-          },
-          {
-            "title": "source",
-            "href": "/tools/autoscaling/agent/source"
           },
           {
             "title": "strategy",
@@ -2300,8 +2346,33 @@
         "path": "operations/key-management"
       },
       {
+        "title": "Federation",
+        "routes": [
+          {
+            "title": "Overview",
+            "path": "operations/federation"
+          },
+          {
+            "title": "Failure",
+            "path": "operations/federation/failure"
+          }
+        ]
+      },
+      {
         "title": "Considerations for Stateful Workloads",
         "path": "operations/stateful-workloads"
+      },
+      {
+        "title": "Benchmarking Nomad",
+        "path": "operations/benchmarking"
+      },
+      {
+        "title": "Federate AWS Access with Workload Identity",
+        "path": "operations/aws-oidc-provider"
+      },
+      {
+        "title": "IPv6 Support",
+        "path": "operations/ipv6-support"
       }
     ]
   },

@@ -4,17 +4,21 @@
 package nomad
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	capOIDC "github.com/hashicorp/cap/oidc"
+	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/go-memdb"
-	msgpackrpc "github.com/hashicorp/net-rpc-msgpackrpc"
+	msgpackrpc "github.com/hashicorp/net-rpc-msgpackrpc/v2"
 	"github.com/hashicorp/nomad/ci"
 	"github.com/hashicorp/nomad/helper/uuid"
 	"github.com/hashicorp/nomad/nomad/mock"
@@ -1944,9 +1948,12 @@ func TestACLEndpoint_WhoAmI(t *testing.T) {
 	// Lookup identity claim
 	alloc := mock.Alloc()
 	s1.fsm.State().UpsertAllocs(structs.MsgTypeTestSetup, 1500, []*structs.Allocation{alloc})
-	claims := structs.NewIdentityClaims(alloc.Job, alloc,
+	task := alloc.LookupTask("web")
+	claims := structs.NewIdentityClaimsBuilder(alloc.Job, alloc,
 		wiHandle, // see encrypter_test.go
-		alloc.LookupTask("web").Identity, time.Now().Add(-10*time.Minute))
+		task.Identity).
+		WithTask(task).
+		Build(time.Now().Add(-10 * time.Minute))
 	jwtToken, _, err := s1.encrypter.SignClaims(claims)
 	must.NoError(t, err)
 
@@ -3628,7 +3635,14 @@ func TestACL_OIDCAuthURL(t *testing.T) {
 func TestACL_OIDCCompleteAuth(t *testing.T) {
 	ci.Parallel(t)
 
-	testServer, _, testServerCleanupFn := TestACLServer(t, nil)
+	// setup logging output to test verbose logging
+	var buf bytes.Buffer
+	testServer, _, testServerCleanupFn := TestACLServer(t, func(c *Config) {
+		c.Logger = hclog.NewInterceptLogger(&hclog.LoggerOptions{
+			Level:  hclog.Debug,
+			Output: io.MultiWriter(&buf, os.Stderr),
+		})
+	})
 	defer testServerCleanupFn()
 	codec := rpcClient(t, testServer)
 	testutil.WaitForLeader(t, testServer.RPC)
@@ -3717,6 +3731,12 @@ func TestACL_OIDCCompleteAuth(t *testing.T) {
 	must.Error(t, err)
 	must.ErrorContains(t, err, "400")
 	must.ErrorContains(t, err, "no role or policy bindings matched")
+	must.False(t, strings.Contains(buf.String(), verboseLoggingMessage))
+
+	// Reset buf and enable verbose logging
+	buf.Reset()
+	mockedAuthMethod.Config.VerboseLogging = true
+	must.NoError(t, testServer.fsm.State().UpsertACLAuthMethods(11, []*structs.ACLAuthMethod{mockedAuthMethod}))
 
 	// Upsert an ACL policy and role, so that we can reference this within our
 	// OIDC claims.
@@ -3764,6 +3784,7 @@ func TestACL_OIDCCompleteAuth(t *testing.T) {
 	must.Len(t, 1, completeAuthResp4.ACLToken.Roles)
 	must.Eq(t, mockACLRole.Name, completeAuthResp4.ACLToken.Roles[0].Name)
 	must.Eq(t, mockACLRole.ID, completeAuthResp4.ACLToken.Roles[0].ID)
+	must.True(t, strings.Contains(buf.String(), verboseLoggingMessage))
 
 	// Create a binding rule which generates management tokens. This should
 	// override the other rules, giving us a management token when we next
@@ -3800,7 +3821,14 @@ func TestACL_OIDCCompleteAuth(t *testing.T) {
 func TestACL_Login(t *testing.T) {
 	ci.Parallel(t)
 
-	testServer, _, testServerCleanupFn := TestACLServer(t, nil)
+	// setup logging output to test verbose logging
+	var buf bytes.Buffer
+	testServer, _, testServerCleanupFn := TestACLServer(t, func(c *Config) {
+		c.Logger = hclog.NewInterceptLogger(&hclog.LoggerOptions{
+			Level:  hclog.Debug,
+			Output: io.MultiWriter(&buf, os.Stderr),
+		})
+	})
 	defer testServerCleanupFn()
 	codec := rpcClient(t, testServer)
 	testutil.WaitForLeader(t, testServer.RPC)
@@ -3882,6 +3910,12 @@ func TestACL_Login(t *testing.T) {
 	must.Error(t, err)
 	must.ErrorContains(t, err, "400")
 	must.ErrorContains(t, err, "no role or policy bindings matched")
+	must.False(t, strings.Contains(buf.String(), verboseLoggingMessage))
+
+	// Reset buf and enable verbose logging
+	buf.Reset()
+	mockedAuthMethod.Config.VerboseLogging = true
+	must.NoError(t, testServer.fsm.State().UpsertACLAuthMethods(11, []*structs.ACLAuthMethod{mockedAuthMethod}))
 
 	// Upsert an ACL policy and role, so that we can reference this within our
 	// JWT claims.
@@ -3927,6 +3961,7 @@ func TestACL_Login(t *testing.T) {
 	must.Eq(t, mockACLRole.Name, completeAuthResp4.ACLToken.Roles[0].Name)
 	must.Eq(t, mockACLRole.ID, completeAuthResp4.ACLToken.Roles[0].ID)
 	must.Eq(t, mockedAuthMethod.Type+"-"+mockedAuthMethod.Name, completeAuthResp4.ACLToken.Name)
+	must.True(t, strings.Contains(buf.String(), verboseLoggingMessage))
 
 	// Create a binding rule which generates management tokens. This should
 	// override the other rules, giving us a management token when we next

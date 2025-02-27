@@ -65,8 +65,8 @@ type ClientCSIControllerValidateVolumeRequest struct {
 
 	// COMPAT(1.1.1): the AttachmentMode and AccessMode fields are deprecated
 	// and replaced by the VolumeCapabilities field above
-	AttachmentMode structs.CSIVolumeAttachmentMode
-	AccessMode     structs.CSIVolumeAccessMode
+	AttachmentMode structs.VolumeAttachmentMode
+	AccessMode     structs.VolumeAccessMode
 
 	// Parameters as returned by storage provider in CreateVolumeResponse.
 	// This field is optional.
@@ -117,10 +117,10 @@ type ClientCSIControllerAttachVolumeRequest struct {
 
 	// AttachmentMode indicates how the volume should be attached and mounted into
 	// a task.
-	AttachmentMode structs.CSIVolumeAttachmentMode
+	AttachmentMode structs.VolumeAttachmentMode
 
 	// AccessMode indicates the desired concurrent access model for the volume
-	AccessMode structs.CSIVolumeAccessMode
+	AccessMode structs.VolumeAccessMode
 
 	// MountOptions is an optional field that contains additional configuration
 	// when providing an AttachmentMode of CSIVolumeAttachmentModeFilesystem
@@ -440,16 +440,17 @@ type ClientCSIControllerListSnapshotsResponse struct {
 // a Nomad client to tell a CSI node plugin on that client to perform
 // NodeUnpublish and NodeUnstage.
 type ClientCSINodeDetachVolumeRequest struct {
-	PluginID   string // ID of the plugin that manages the volume (required)
-	VolumeID   string // ID of the volume to be unpublished (required)
-	AllocID    string // ID of the allocation we're unpublishing for (required)
-	NodeID     string // ID of the Nomad client targeted
-	ExternalID string // External ID of the volume to be unpublished (required)
+	PluginID        string // ID of the plugin that manages the volume (required)
+	VolumeID        string // ID of the volume to be unpublished (required)
+	VolumeNamespace string // Namespace of the volume to be unpublished (required)
+	AllocID         string // ID of the allocation we're unpublishing for (required)
+	NodeID          string // ID of the Nomad client targeted
+	ExternalID      string // External ID of the volume to be unpublished (required)
 
 	// These fields should match the original volume request so that
 	// we can find the mount points on the client
-	AttachmentMode structs.CSIVolumeAttachmentMode
-	AccessMode     structs.CSIVolumeAccessMode
+	AttachmentMode structs.VolumeAttachmentMode
+	AccessMode     structs.VolumeAccessMode
 	ReadOnly       bool
 }
 
@@ -459,9 +460,10 @@ type ClientCSINodeDetachVolumeResponse struct{}
 // a Nomad client to tell a CSI node plugin on that client to perform
 // NodeExpandVolume.
 type ClientCSINodeExpandVolumeRequest struct {
-	PluginID   string // ID of the plugin that manages the volume (required)
-	VolumeID   string // ID of the volume to be expanded (required)
-	ExternalID string // External ID of the volume to be expanded (required)
+	PluginID        string // ID of the plugin that manages the volume (required)
+	VolumeID        string // ID of the volume to be expanded (required)
+	VolumeNamespace string // Namespace of the volume to be expanded (required)
+	ExternalID      string // External ID of the volume to be expanded (required)
 
 	// Capacity range (required) to be sent to the node plugin
 	Capacity *csi.CapacityRange

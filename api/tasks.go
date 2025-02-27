@@ -455,6 +455,7 @@ type VolumeRequest struct {
 	Type           string           `hcl:"type,optional"`
 	Source         string           `hcl:"source,optional"`
 	ReadOnly       bool             `hcl:"read_only,optional"`
+	Sticky         bool             `hcl:"sticky,optional"`
 	AccessMode     string           `hcl:"access_mode,optional"`
 	AttachmentMode string           `hcl:"attachment_mode,optional"`
 	MountOptions   *CSIMountOptions `hcl:"mount_options,block"`
@@ -801,6 +802,8 @@ type Task struct {
 	Identities []*WorkloadIdentity `hcl:"identity,block"`
 
 	Actions []*Action `hcl:"action,block"`
+
+	Schedule *TaskSchedule `hcl:"schedule,block"`
 }
 
 func (t *Task) Canonicalize(tg *TaskGroup, job *Job) {
@@ -856,16 +859,21 @@ func (t *Task) Canonicalize(tg *TaskGroup, job *Job) {
 
 // TaskArtifact is used to download artifacts before running a task.
 type TaskArtifact struct {
-	GetterSource  *string           `mapstructure:"source" hcl:"source,optional"`
-	GetterOptions map[string]string `mapstructure:"options" hcl:"options,block"`
-	GetterHeaders map[string]string `mapstructure:"headers" hcl:"headers,block"`
-	GetterMode    *string           `mapstructure:"mode" hcl:"mode,optional"`
-	RelativeDest  *string           `mapstructure:"destination" hcl:"destination,optional"`
+	GetterSource   *string           `mapstructure:"source" hcl:"source,optional"`
+	GetterOptions  map[string]string `mapstructure:"options" hcl:"options,block"`
+	GetterHeaders  map[string]string `mapstructure:"headers" hcl:"headers,block"`
+	GetterMode     *string           `mapstructure:"mode" hcl:"mode,optional"`
+	GetterInsecure *bool             `mapstructure:"insecure" hcl:"insecure,optional"`
+	RelativeDest   *string           `mapstructure:"destination" hcl:"destination,optional"`
+	Chown          bool              `mapstructure:"chown" hcl:"chown,optional"`
 }
 
 func (a *TaskArtifact) Canonicalize() {
 	if a.GetterMode == nil {
 		a.GetterMode = pointerOf("any")
+	}
+	if a.GetterInsecure == nil {
+		a.GetterInsecure = pointerOf(false)
 	}
 	if a.GetterSource == nil {
 		// Shouldn't be possible, but we don't want to panic
@@ -1104,17 +1112,6 @@ type TaskState struct {
 	StartedAt   time.Time
 	FinishedAt  time.Time
 	Events      []*TaskEvent
-
-	// Experimental -  TaskHandle is based on drivers.TaskHandle and used
-	// by remote task drivers to migrate task handles between allocations.
-	TaskHandle *TaskHandle
-}
-
-// Experimental - TaskHandle is based on drivers.TaskHandle and used by remote
-// task drivers to migrate task handles between allocations.
-type TaskHandle struct {
-	Version     int
-	DriverState []byte
 }
 
 const (
@@ -1240,6 +1237,7 @@ type WorkloadIdentity struct {
 	ChangeSignal string        `mapstructure:"change_signal" hcl:"change_signal,optional"`
 	Env          bool          `hcl:"env,optional"`
 	File         bool          `hcl:"file,optional"`
+	Filepath     string        `hcl:"filepath,optional"`
 	ServiceName  string        `hcl:"service_name,optional"`
 	TTL          time.Duration `mapstructure:"ttl" hcl:"ttl,optional"`
 }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	humanize "github.com/dustin/go-humanize"
+	"github.com/hashicorp/go-set/v3"
 	"github.com/hashicorp/nomad/api"
 	"github.com/hashicorp/nomad/api/contexts"
 	"github.com/hashicorp/nomad/helper/pointer"
@@ -129,8 +130,12 @@ func (c *NodeStatusCommand) AutocompleteFlags() complete.Flags {
 }
 
 func (c *NodeStatusCommand) AutocompleteArgs() complete.Predictor {
+	return nodePredictor(c.Client, nil)
+}
+
+func nodePredictor(factory ApiClientFactory, filter *set.Set[string]) complete.Predictor {
 	return complete.PredictFunc(func(a complete.Args) []string {
-		client, err := c.Meta.Client()
+		client, err := factory()
 		if err != nil {
 			return nil
 		}
@@ -793,18 +798,16 @@ func formatEventDetails(details map[string]string) string {
 }
 
 func (c *NodeStatusCommand) formatAttributes(node *api.Node) {
-	// Print the attributes
-	keys := make([]string, len(node.Attributes))
+	keys := make([]string, 0, len(node.Attributes))
 	for k := range node.Attributes {
 		keys = append(keys, k)
 	}
+
 	sort.Strings(keys)
 
 	var attributes []string
 	for _, k := range keys {
-		if k != "" {
-			attributes = append(attributes, fmt.Sprintf("%s|%s", k, node.Attributes[k]))
-		}
+		attributes = append(attributes, fmt.Sprintf("%s|%s", k, node.Attributes[k]))
 	}
 	c.Ui.Output(c.Colorize().Color("\n[bold]Attributes[reset]"))
 	c.Ui.Output(formatKV(attributes))
@@ -830,7 +833,7 @@ func (c *NodeStatusCommand) formatDeviceAttributes(node *api.Node) {
 		}
 
 		if first {
-			c.Ui.Output("\n[bold]Device Group Attributes[reset]")
+			c.Ui.Output(c.Colorize().Color("\n[bold]Device Group Attributes[reset]"))
 			first = false
 		} else {
 			c.Ui.Output("")

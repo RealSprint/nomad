@@ -15,7 +15,7 @@ import (
 
 	"github.com/hashicorp/go-bexpr"
 	"github.com/hashicorp/go-multierror"
-	"github.com/hashicorp/go-set/v2"
+	"github.com/hashicorp/go-set/v3"
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/hashicorp/nomad/helper"
 	"github.com/hashicorp/nomad/helper/pointer"
@@ -474,6 +474,16 @@ func (a *ACLToken) UnmarshalJSON(data []byte) (err error) {
 	return nil
 }
 
+func (a *ACLToken) Sanitize() *ACLToken {
+	if a == nil {
+		return nil
+	}
+
+	out := a.Copy()
+	out.SecretID = ""
+	return out
+}
+
 // ACLRole is an abstraction for the ACL system which allows the grouping of
 // ACL policies into a single object. ACL tokens can be created and linked to
 // a role; the token then inherits all the permissions granted by the policies.
@@ -785,6 +795,7 @@ func (a *ACLAuthMethod) SetHash() []byte {
 		_, _ = hash.Write([]byte(a.Config.OIDCClientID))
 		_, _ = hash.Write([]byte(a.Config.OIDCClientSecret))
 		_, _ = hash.Write([]byte(strconv.FormatBool(a.Config.OIDCDisableUserInfo)))
+		_, _ = hash.Write([]byte(strconv.FormatBool(a.Config.VerboseLogging)))
 		_, _ = hash.Write([]byte(a.Config.ExpirationLeeway.String()))
 		_, _ = hash.Write([]byte(a.Config.NotBeforeLeeway.String()))
 		_, _ = hash.Write([]byte(a.Config.ClockSkewLeeway.String()))
@@ -1033,6 +1044,10 @@ type ACLAuthMethodConfig struct {
 	// (value).
 	ClaimMappings     map[string]string
 	ListClaimMappings map[string]string
+
+	// Enables logging of claims and binding-rule evaluations when
+	// debug level logging is enabled.
+	VerboseLogging bool
 }
 
 func (a *ACLAuthMethodConfig) Copy() *ACLAuthMethodConfig {

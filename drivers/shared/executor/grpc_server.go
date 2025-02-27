@@ -41,6 +41,10 @@ func (s *grpcExecutorServer) Launch(ctx context.Context, req *proto.LaunchReques
 		ModePID:          req.DefaultPidMode,
 		ModeIPC:          req.DefaultIpcMode,
 		Capabilities:     req.Capabilities,
+		OverrideCgroupV2: req.CgroupV2Override,
+		OverrideCgroupV1: req.CgroupV1Override,
+		OOMScoreAdj:      req.OomScoreAdj,
+		WorkDir:          req.WorkDir,
 	})
 
 	if err != nil {

@@ -16,12 +16,11 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-cleanhttp"
-	"github.com/hashicorp/go-set/v2"
+	"github.com/hashicorp/go-set/v3"
 	"github.com/hashicorp/go-version"
 	goversion "github.com/hashicorp/go-version"
 	"github.com/hashicorp/nomad/api"
 	nomadapi "github.com/hashicorp/nomad/api"
-	"github.com/hashicorp/nomad/helper/pointer"
 	"github.com/hashicorp/nomad/helper/testlog"
 	"github.com/hashicorp/nomad/helper/uuid"
 	"github.com/hashicorp/nomad/testutil"
@@ -54,11 +53,10 @@ func TestVaultCompat(t *testing.T) {
 
 func testVaultVersions(t *testing.T) {
 	versions := scanVaultVersions(t, getMinimumVersion(t))
-	versions.ForEach(func(b build) bool {
+	for b := range versions.Items() {
 		downloadVaultBuild(t, b)
 		testVaultBuild(t, b)
-		return true
-	})
+	}
 }
 
 func testVaultBuild(t *testing.T, b build) {
@@ -66,9 +64,6 @@ func testVaultBuild(t *testing.T, b build) {
 	must.NoError(t, err)
 
 	t.Run("vault("+b.Version+")", func(t *testing.T) {
-		t.Run("legacy", func(t *testing.T) {
-			testVaultLegacy(t, b)
-		})
 
 		if version.GreaterThanOrEqual(minJWTVersion) {
 			t.Run("jwt", func(t *testing.T) {
@@ -79,16 +74,6 @@ func testVaultBuild(t *testing.T, b build) {
 		// give nomad and vault time to stop
 		defer func() { time.Sleep(5 * time.Second) }()
 	})
-}
-
-func validateLegacyAllocs(allocs []*nomadapi.AllocationListStub) error {
-	if n := len(allocs); n != 1 {
-		return fmt.Errorf("expected 1 alloc, got %d", n)
-	}
-	if s := allocs[0].ClientStatus; s != "complete" {
-		return fmt.Errorf("expected alloc status complete, got %s", s)
-	}
-	return nil
 }
 
 func validateJWTAllocs(allocs []*nomadapi.AllocationListStub) error {
@@ -182,27 +167,6 @@ func startVault(t *testing.T, b build) (func(), *vaultapi.Client) {
 	return vlt.Stop, vlt.Client
 }
 
-func setupVaultLegacy(t *testing.T, vc *vaultapi.Client) {
-	policy, err := os.ReadFile("input/policy_legacy.hcl")
-	must.NoError(t, err)
-
-	sys := vc.Sys()
-	must.NoError(t, sys.PutPolicy("nomad-server", string(policy)))
-
-	log := vc.Logical()
-	log.Write("auth/token/roles/nomad-cluster", roleLegacy)
-
-	token := vc.Auth().Token()
-	secret, err := token.Create(&vaultapi.TokenCreateRequest{
-		Policies: []string{"nomad-server"},
-		Period:   "72h",
-		NoParent: true,
-	})
-	must.NoError(t, err, must.Sprint("failed to create vault token"))
-	must.NotNil(t, secret)
-	must.NotNil(t, secret.Auth)
-}
-
 func setupVaultJWT(t *testing.T, vc *vaultapi.Client, jwksURL string) {
 	logical := vc.Logical()
 	sys := vc.Sys()
@@ -239,6 +203,20 @@ func setupVaultJWT(t *testing.T, vc *vaultapi.Client, jwksURL string) {
 	rolePath = fmt.Sprintf("auth/%s/role/nomad-restricted", jwtPath)
 	_, err = logical.Write(rolePath, roleWID([]string{"nomad-restricted"}))
 	must.NoError(t, err)
+
+	entityOut, err := logical.Write("identity/entity", map[string]any{
+		"name":     "default:restricted_jwt",
+		"policies": []string{"nomad-restricted"},
+	})
+	must.NoError(t, err)
+	entityID := entityOut.Data["id"]
+
+	_, err = logical.Write("identity/entity-alias", map[string]any{
+		"name":           "default:restricted_jwt",
+		"canonical_id":   entityID,
+		"mount_accessor": jwtAuthAccessor,
+	})
+	must.NoError(t, err)
 }
 
 func startNomad(t *testing.T, cb func(*testutil.TestServerConfig)) (func(), *nomadapi.Client) {
@@ -265,18 +243,6 @@ func startNomad(t *testing.T, cb func(*testutil.TestServerConfig)) (func(), *nom
 	return ts.Stop, nc
 }
 
-func configureNomadVaultLegacy(vc *vaultapi.Client) func(*testutil.TestServerConfig) {
-	return func(c *testutil.TestServerConfig) {
-		c.Vaults = []*testutil.VaultConfig{{
-			Enabled:              true,
-			Address:              vc.Address(),
-			Token:                vc.Token(),
-			Role:                 "nomad-cluster",
-			AllowUnauthenticated: pointer.Of(true),
-		}}
-	}
-}
-
 func configureNomadVaultJWT(vc *vaultapi.Client) func(*testutil.TestServerConfig) {
 	return func(c *testutil.TestServerConfig) {
 		c.Vaults = []*testutil.VaultConfig{{
@@ -285,6 +251,9 @@ func configureNomadVaultJWT(vc *vaultapi.Client) func(*testutil.TestServerConfig
 			DefaultIdentity: &testutil.WorkloadIdentityConfig{
 				Audience: []string{"vault.io"},
 				TTL:      "10m",
+				ExtraClaims: map[string]string{
+					"nomad_workload_id": "${job.namespace}:${job.id}",
+				},
 			},
 
 			// Client configs.
@@ -313,6 +282,12 @@ func downloadVaultBuild(t *testing.T, b build) {
 
 	cmd := exec.CommandContext(ctx, "hc-install", "install", "-version", b.Version, "-path", path, "vault")
 	bs, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Logf("download: failed to download %s, retrying once: %v", b.Version, err)
+		cmd = exec.CommandContext(ctx, "hc-install", "install",
+			"-version", b.Version, "-path", path, "vault")
+		bs, err = cmd.CombinedOutput()
+	}
 	must.NoError(t, err, must.Sprintf("failed to download vault %s: %s", b.Version, string(bs)))
 }
 
