@@ -1,5 +1,8 @@
 name: test-ui
 
+on:
+  workflow_dispatch:
+
 jobs:
   pre-test:
     runs-on: ubuntu-latest

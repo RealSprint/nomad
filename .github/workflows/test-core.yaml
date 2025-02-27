@@ -70,7 +70,7 @@ jobs:
           make dev
   tests-api:
     needs: [checks]
-    runs-on: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ubuntu-22.04
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
