@@ -2097,7 +2097,7 @@ func (a *ACL) GetAuthMethod(
 
 			// We didn't encounter an error looking up the index; set the auth
 			// method on the reply and exit successfully.
-			reply.AuthMethod = out
+			reply.AuthMethod = out.Sanitize()
 			return nil
 		},
 	})
@@ -2792,9 +2792,15 @@ func (a *ACL) OIDCCompleteAuth(
 
 		internalClaimBytes, err := json.MarshalIndent(oidcInternalClaims.List, "", " ")
 		if err != nil {
-			vlog.Debug("failed to marshal OIDC internal claims list")
+			vlog.Debug("failed to marshal OIDC internal list claims")
 		}
-		vlog.Debug("claims after mapping to nomad identity attributes", "internal_claims", string(internalClaimBytes))
+		vlog.Debug("list claims after mapping to nomad identity attributes", "internal_claims", string(internalClaimBytes))
+
+		internalClaimBytes, err = json.MarshalIndent(oidcInternalClaims.Value, "", " ")
+		if err != nil {
+			vlog.Debug("failed to marshal OIDC internal value claims")
+		}
+		vlog.Debug("value claims after mapping to nomad identity attributes", "internal_claims", string(internalClaimBytes))
 	}
 
 	// Create a new binder object based on the current state snapshot to
