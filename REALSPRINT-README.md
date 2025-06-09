@@ -4,6 +4,11 @@
 - Merge the changes from latest upstream release tag (e.g. `v1.3.1`) into the new branch.
 - Make sure patches in rs-nomad-patch.patch are still applied.
 - Push the new branch to the origin repository (realsprint/nomad).
+- Set consul and vault versions to match target environment.
+  ```
+  CONSUL_VERSION: 1.20.1
+  VAULT_VERSION: 1.8.2
+  ```
 - Make sure all builds pass
 - If all builds pass, create a release on github.
   - Trigger the release-workflow appropriate release branch (`release/1.3.1-rs-1` for example)
